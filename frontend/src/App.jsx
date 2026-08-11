@@ -413,6 +413,7 @@ export default function App() {
 
       <div className="main-flex">
         <div className="panel left">
+          <ErrorBoundary fallbackMessage="The side panel hit a rendering error.">
           <LeftPanel
             mode={mode}
             poles={poles}
@@ -438,9 +439,11 @@ export default function App() {
             onClearRoute={clearCableRoute}
             onCancelMode={() => handleModeChange("view")}
           />
+          </ErrorBoundary>
         </div>
 
         <div className="map-container">
+          <ErrorBoundary fallbackMessage="The map hit a rendering error. Try switching map provider.">
           {mapProvider === "leaflet" && (
             <MapView
               poles={poles}
@@ -518,6 +521,7 @@ export default function App() {
               onCableClick={handleSelectCable}
             />
           )}
+          </ErrorBoundary>
         </div>
 
         <div
@@ -532,6 +536,7 @@ export default function App() {
           className="panel right"
           style={{ width: rightPanelWidth, minWidth: 280, maxWidth: 800 }}
         >
+          <ErrorBoundary fallbackMessage="The details panel hit a rendering error.">
           <RightPanel
             mode={mode}
             selectedEnclosure={selectedEnclosure}
@@ -542,6 +547,7 @@ export default function App() {
             onChanged={reloadAll}
             onSplitPointChange={handleSplitPointChange}
           />
+          </ErrorBoundary>
         </div>
       </div>
     </div>

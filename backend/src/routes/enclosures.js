@@ -67,8 +67,20 @@ router.patch('/:id', async (req, res, next) => {
 });
 
 // DELETE /api/enclosures/:id
+// Guard: deleting a box that still has cables attached fails with an opaque 500
+// (cables.from_enclosure_id/to_enclosure_id are ON DELETE RESTRICT), so reject
+// with a clear 409 up front instead.
 router.delete('/:id', async (req, res, next) => {
   try {
+    const [cableUse] = await db('cables')
+      .where({ from_enclosure_id: req.params.id })
+      .orWhere({ to_enclosure_id: req.params.id })
+      .count('id as count');
+    if (parseInt(cableUse.count, 10) > 0) {
+      return res.status(409).json({
+        error: `Enclosure still has ${cableUse.count} cable(s) attached. Delete or re-route the cables first.`,
+      });
+    }
     await db('enclosures').where({ id: req.params.id }).del();
     res.status(204).send();
   } catch (err) {
@@ -266,8 +278,10 @@ const splitterPorts = splitterIds.length
 // Build splitters array
     const splittersData = splitters.map((splitter) => {
       const ports = splitterPorts.filter((p) => p.splitter_id === splitter.id);
-      const inputCore = cores.find((c) => c.cable_id === splitter.input_cable_id);
-      
+      // splitters reference their input core by ID (input_core_id) — there is
+      // no input_cable_id column, so the lookup must be by core id.
+      const inputCore = cores.find((c) => c.id === splitter.input_core_id);
+
       return {
         sourceCoreIndex: inputCore ? trunkCores.findIndex((c) => c.id === inputCore.id) : 0,
         splitterType: `1:${splitter.split_count}`,

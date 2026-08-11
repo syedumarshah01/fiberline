@@ -35,7 +35,7 @@ class ErrorBoundary extends React.Component {
             <p style={styles.message}>
               {this.props.fallbackMessage || "An unexpected error occurred."}
             </p>
-            {process.env.NODE_ENV === "development" && this.state.error && (
+            {import.meta.env.DEV && this.state.error && (
               <details style={styles.details}>
                 <summary style={styles.summary}>Error details</summary>
                 <pre style={styles.pre}>{this.state.error.toString()}</pre>

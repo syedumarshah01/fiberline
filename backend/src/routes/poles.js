@@ -102,8 +102,31 @@ router.patch("/:id", async (req, res, next) => {
 });
 
 // DELETE /api/poles/:id
+// Deleting a pole CASCADEs its enclosures, but any cable attached to those
+// enclosures is ON DELETE RESTRICT — without this guard the delete dies as an
+// opaque 500. Fail fast with a clear 409 instead.
 router.delete("/:id", async (req, res, next) => {
   try {
+    const pole = await db("poles").where({ id: req.params.id }).first();
+    if (!pole) return res.status(404).json({ error: "Pole not found" });
+
+    const [cableUse] = await db("cables")
+      .join("enclosures", function () {
+        this.on("cables.from_enclosure_id", "=", "enclosures.id").orOn(
+          "cables.to_enclosure_id",
+          "=",
+          "enclosures.id",
+        );
+      })
+      .where("enclosures.pole_id", req.params.id)
+      .countDistinct("cables.id as count");
+
+    if (parseInt(cableUse.count, 10) > 0) {
+      return res.status(409).json({
+        error: `Pole ${pole.code} has ${cableUse.count} cable(s) attached via its enclosures. Remove the cables first.`,
+      });
+    }
+
     await db("poles").where({ id: req.params.id }).del();
     res.status(204).send();
   } catch (err) {

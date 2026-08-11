@@ -1,5 +1,9 @@
 /**
  * Validation utilities for frontend data validation.
+ *
+ * These mirror the payload contracts of the backend middleware
+ * (backend/src/middleware/validation.js) and the route handlers — keep them in
+ * sync or forms will build payloads the API rejects.
  */
 
 /**
@@ -84,7 +88,7 @@ export function sanitizeObject(obj) {
   if (typeof obj === 'object') {
     const sanitized = {};
     for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
         sanitized[key] = sanitizeObject(obj[key]);
       }
     }
@@ -99,6 +103,37 @@ export function sanitizeObject(obj) {
 export function isValidNumber(value, min = -Infinity, max = Infinity) {
   const num = Number(value);
   return !isNaN(num) && isFinite(num) && num >= min && num <= max;
+}
+
+/**
+ * Validates a coordinate list. Accepts [lng, lat] pairs and { lat, lng }
+ * point objects (route_points are sent as objects). Returns an error string
+ * or null.
+ */
+function checkCoordList(arr, fieldName, { require = false } = {}) {
+  if (arr === undefined || arr === null) {
+    return require ? `${fieldName} is required` : null;
+  }
+  if (!Array.isArray(arr) || arr.length < 2) {
+    return `${fieldName} must be an array of at least 2 coordinates`;
+  }
+  for (let i = 0; i < arr.length; i++) {
+    const point = arr[i];
+    let lng, lat;
+    if (Array.isArray(point)) {
+      if (point.length < 2) return `${fieldName}[${i}] must be a [lng, lat] pair`;
+      [lng, lat] = point;
+    } else if (point && typeof point === 'object') {
+      lng = point.lng;
+      lat = point.lat;
+    } else {
+      return `${fieldName}[${i}] must be a [lng, lat] pair or { lat, lng } object`;
+    }
+    if (!isValidCoordinate(lat, lng)) {
+      return `Invalid coordinates at ${fieldName}[${i}]`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -121,6 +156,8 @@ export function validatePoleData(data) {
 
 /**
  * Validates enclosure data structure.
+ * A box is attached to a pole (pole_id) OR placed at a direct location
+ * (lat/lng — customer boxes). Coordinates are only required without a pole.
  */
 export function validateEnclosureData(data) {
   const errors = [];
@@ -128,7 +165,11 @@ export function validateEnclosureData(data) {
     errors.push('Enclosure data must be an object');
     return errors;
   }
-  if (!isValidCoordinate(data.lat, data.lng)) {
+  const hasPole = data.pole_id !== undefined && data.pole_id !== null && data.pole_id !== '';
+  const hasCoords = data.lat !== undefined && data.lat !== null && data.lng !== undefined && data.lng !== null;
+  if (!hasPole && !hasCoords) {
+    errors.push('Either pole_id or lat/lng is required');
+  } else if (hasCoords && !isValidCoordinate(data.lat, data.lng)) {
     errors.push('Invalid coordinates');
   }
   if (data.pole_id !== undefined && (typeof data.pole_id !== 'string' && typeof data.pole_id !== 'number')) {
@@ -142,6 +183,8 @@ export function validateEnclosureData(data) {
 
 /**
  * Validates cable data structure.
+ * Geometry is optional — the API can draw a straight line between endpoints —
+ * but any provided geometry list must contain at least 2 valid coordinates.
  */
 export function validateCableData(data) {
   const errors = [];
@@ -149,13 +192,12 @@ export function validateCableData(data) {
     errors.push('Cable data must be an object');
     return errors;
   }
-  if (!Array.isArray(data.route) || data.route.length < 2) {
-    errors.push('Route must be an array of at least 2 coordinate pairs');
-  } else {
-    const invalidCoords = validateCoordinatesArray(data.route);
-    if (invalidCoords.length > 0) {
-      errors.push(`Invalid coordinates at indices: ${invalidCoords.join(', ')}`);
-    }
+  if (data.from_enclosure_id === undefined || data.from_enclosure_id === null || data.from_enclosure_id === '') {
+    errors.push('from_enclosure_id is required');
+  }
+  for (const field of ['route', 'route_geometry', 'route_points']) {
+    const error = checkCoordList(data[field], field);
+    if (error) errors.push(error);
   }
   return errors;
 }
@@ -179,7 +221,8 @@ export function validateCustomerData(data) {
 }
 
 /**
- * Validates splice data structure.
+ * Validates splice data structure — matches POST /api/splices and the splice
+ * form in RightPanel (core_a is spliced onto core_b inside an enclosure).
  */
 export function validateSpliceData(data) {
   const errors = [];
@@ -187,20 +230,23 @@ export function validateSpliceData(data) {
     errors.push('Splice data must be an object');
     return errors;
   }
-  if (data.cable_id === undefined) {
-    errors.push('cable_id is required');
-  }
-  if (data.enclosure_id === undefined) {
+  if (data.enclosure_id === undefined || data.enclosure_id === null || data.enclosure_id === '') {
     errors.push('enclosure_id is required');
   }
-  if (!Array.isArray(data.core_assignments)) {
-    errors.push('core_assignments must be an array');
+  if (data.core_a_id === undefined || data.core_a_id === null || data.core_a_id === '') {
+    errors.push('core_a_id is required');
+  }
+  if (data.core_b_id === undefined || data.core_b_id === null || data.core_b_id === '') {
+    errors.push('core_b_id is required');
+  }
+  if (errors.length === 0 && data.core_a_id === data.core_b_id) {
+    errors.push('A core cannot be spliced to itself');
   }
   return errors;
 }
 
 /**
- * Validates splitter data structure.
+ * Validates splitter data structure — matches POST /api/splitters.
  */
 export function validateSplitterData(data) {
   const errors = [];
@@ -208,17 +254,21 @@ export function validateSplitterData(data) {
     errors.push('Splitter data must be an object');
     return errors;
   }
-  if (data.enclosure_id === undefined) {
+  if (data.enclosure_id === undefined || data.enclosure_id === null || data.enclosure_id === '') {
     errors.push('enclosure_id is required');
   }
-  if (!isValidNumber(data.split_ratio, 1, 128)) {
-    errors.push('split_ratio must be between 1 and 128');
+  if (data.input_core_id === undefined || data.input_core_id === null || data.input_core_id === '') {
+    errors.push('input_core_id is required');
+  }
+  if (data.split_count !== undefined && ![2, 4, 8].includes(Number(data.split_count))) {
+    errors.push('split_count must be 2, 4, or 8');
   }
   return errors;
 }
 
 /**
- * Validates fiber core data structure.
+ * Validates fiber core PATCH data — every field is optional; the API applies
+ * what is present.
  */
 export function validateFiberCoreData(data) {
   const errors = [];
@@ -226,11 +276,11 @@ export function validateFiberCoreData(data) {
     errors.push('Fiber core data must be an object');
     return errors;
   }
-  if (data.cable_id === undefined) {
-    errors.push('cable_id is required');
+  if (data.status !== undefined && typeof data.status !== 'string') {
+    errors.push('status must be a string');
   }
-  if (!isValidNumber(data.core_number, 1, 288)) {
-    errors.push('core_number must be between 1 and 288');
+  if (data.notes !== undefined && data.notes !== null && typeof data.notes !== 'string') {
+    errors.push('notes must be a string');
   }
   return errors;
 }

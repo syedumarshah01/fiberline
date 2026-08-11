@@ -1,14 +1,18 @@
 const db = require('../db');
 
 /**
- * Given a starting fiber_core id, walk the chain of splices outward in both
- * directions until it dead-ends (an unspliced/terminated core = the physical
- * end of the fiber path). Returns an ordered list of "hops", each describing
- * the cable/core segment and the splice (if any) that connects it to the next.
+ * Given a starting fiber_core id, walk the chain of splices outward until it
+ * dead-ends (an unspliced/terminated core = the physical end of the fiber path).
+ * Returns an ordered list of "hops", each describing the cable/core segment and
+ * the splice (if any) that connects it to the next.
  *
- * A core can appear in at most one splice (enforced at the application level
- * by the 'available'/'reserved' check before splicing), so the chain is a
- * simple linked list, not a branching tree.
+ * Splices are undirected edges between cores. Because splice chaining allows a
+ * core to take part in several splices (branching), we do a deterministic
+ * depth-first traversal from the start core: deterministic splice ordering
+ * (splice_date, created_at, id) and every reachable splice is followed, so a
+ * trace started mid-chain still documents both directions — previously only one
+ * arbitrary branch was returned because the backward walk was never invoked and
+ * `.first()` picked an unordered row.
  */
 async function traceFiber(startCoreId) {
   const visitedSpliceIds = new Set();
@@ -26,33 +30,55 @@ async function traceFiber(startCoreId) {
       .first();
   }
 
-  async function walk(coreId, direction) {
-    const chain = [];
-    let currentCoreId = coreId;
-
-    // Safety cap so a data error (accidental splice loop) can't hang the request
-    for (let i = 0; i < 200; i++) {
-      const core = await loadCoreWithCable(currentCoreId);
-      if (!core) break;
-      chain.push(core);
-
-      const splice = await db('splices')
-        .where('core_a_id', currentCoreId)
-        .orWhere('core_b_id', currentCoreId)
-        .first();
-
-      if (!splice || visitedSpliceIds.has(splice.id)) break;
-      visitedSpliceIds.add(splice.id);
-
-      const nextCoreId = splice.core_a_id === currentCoreId ? splice.core_b_id : splice.core_a_id;
-      chain.push({ splice_id: splice.id, enclosure_id: splice.enclosure_id, splice_type: splice.splice_type });
-      currentCoreId = nextCoreId;
-    }
-    return direction === 'backward' ? chain.reverse() : chain;
+  // All splices touching a core, ordered deterministically so repeated traces
+  // always walk the same path.
+  async function splicesFor(coreId) {
+    return db('splices')
+      .where(function () {
+        this.where('core_a_id', coreId).orWhere('core_b_id', coreId);
+      })
+      .orderBy([
+        { column: 'splice_date', order: 'asc' },
+        { column: 'created_at', order: 'asc' },
+        { column: 'id', order: 'asc' },
+      ]);
   }
 
-  const forwardChain = await walk(startCoreId, 'forward');
-  segments.push(...forwardChain);
+  // Iterative DFS over the splice graph. The explicit stack keeps splice-marker
+  // hops adjacent to the core they connect, matching the original output shape.
+  const stack = [{ coreId: startCoreId, via: null }];
+  // Safety cap so a data error (accidental splice loop) can't hang the request.
+  let steps = 0;
+  const MAX_STEPS = 500;
+
+  while (stack.length && steps < MAX_STEPS) {
+    const { coreId, via } = stack.pop();
+    steps++;
+
+    const core = await loadCoreWithCable(coreId);
+    if (!core) continue;
+
+    if (via) {
+      segments.push({
+        splice_id: via.id,
+        enclosure_id: via.enclosure_id,
+        splice_type: via.splice_type,
+      });
+    }
+    segments.push(core);
+
+    const candidates = (await splicesFor(coreId)).filter(
+      (s) => !visitedSpliceIds.has(s.id),
+    );
+    for (const splice of candidates) {
+      visitedSpliceIds.add(splice.id);
+    }
+    // Push in reverse so the earliest splice is explored first (stable order).
+    for (const splice of [...candidates].reverse()) {
+      const nextCoreId = splice.core_a_id === coreId ? splice.core_b_id : splice.core_a_id;
+      stack.push({ coreId: nextCoreId, via: splice });
+    }
+  }
 
   return segments;
 }
