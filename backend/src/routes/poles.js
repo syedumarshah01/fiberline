@@ -1,5 +1,6 @@
 const express = require("express");
 const db = require("../db");
+const { validatePoleData } = require("../middleware/validation");
 const router = express.Router();
 
 // GET /api/poles  — all poles, as GeoJSON-friendly plain objects
@@ -40,7 +41,7 @@ router.get("/:id", async (req, res, next) => {
 });
 
 // POST /api/poles
-router.post("/", async (req, res, next) => {
+router.post("/", validatePoleData, async (req, res, next) => {
   try {
     const { code, name, status, pole_type, height_m, notes, lat, lng } =
       req.body;

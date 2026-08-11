@@ -1,0 +1,208 @@
+import React, { useEffect, useRef, useCallback } from "react";
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+
+const CABLE_COLORS = {
+  feeder: "#8b7cf6",
+  distribution: "#f0b429",
+  drop: "#3fd0c9",
+};
+
+const defaultCenter = [71.5788, 34.0083]; // Peshawar [lng, lat]
+
+export default function MapViewMapbox({
+  poles,
+  enclosures,
+  cables,
+  capacityByEnclosure,
+  mode,
+  pendingCableRoute,
+  pendingCableWaypoints,
+  selectedEnclosureId,
+  selectedPoleId,
+  selectedCableId,
+  splitPointLngLat,
+  onMapClick,
+  onPoleClick,
+  onEnclosureClick,
+}) {
+  const mapContainer = useRef(null);
+  const map = useRef(null);
+
+  const updateMap = useCallback(() => {
+    if (!map.current) return;
+
+    // Check if map is loaded
+    if (!map.current.isStyleLoaded()) return;
+
+    // Clear existing sources and layers
+    const style = map.current.getStyle();
+    if (style && style.sources) {
+      Object.keys(style.sources).forEach((sourceId) => {
+        if (sourceId.startsWith("cable-") || sourceId === "pending-route" || sourceId === "poles" || sourceId === "enclosures" || sourceId === "split-point") {
+          if (map.current.getSource(sourceId)) {
+            map.current.removeSource(sourceId);
+          }
+        }
+      });
+    }
+
+    // Add pending route
+    if (pendingCableRoute.length >= 2) {
+      map.current.addSource("pending-route", {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          properties: {},
+          geometry: {
+            type: "LineString",
+            coordinates: pendingCableRoute.map(([lat, lng]) => [lng, lat]),
+          },
+        },
+      });
+      map.current.addLayer({
+        id: "pending-route-line",
+        type: "line",
+        source: "pending-route",
+        paint: {
+          "line-color": "#3fd0c9",
+          "line-width": 4,
+          "line-opacity": 0.9,
+          "line-dasharray": [8, 7],
+        },
+      });
+    }
+
+    // Add cables
+    cables.forEach((cable) => {
+      if (!cable.route || cable.route.length < 2) return;
+      
+      const isSelected = cable.id === selectedCableId;
+      const sourceId = `cable-${cable.id}`;
+      
+      map.current.addSource(sourceId, {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          properties: {},
+          geometry: {
+            type: "LineString",
+            coordinates: cable.route.map(([lng, lat]) => [lng, lat]),
+          },
+        },
+      });
+      
+      map.current.addLayer({
+        id: `cable-line-${cable.id}`,
+        type: "line",
+        source: sourceId,
+        paint: {
+          "line-color": CABLE_COLORS[cable.cable_type] || "#8b96a8",
+          "line-width": isSelected
+            ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
+            : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
+          "line-opacity": isSelected ? 1 : 0.85,
+          "line-dasharray": cable.cable_type === "drop" ? [4, 5] : isSelected ? [2, 2] : [10, 6],
+        },
+      });
+    });
+
+    // Add poles as markers
+    poles.forEach((pole) => {
+      const el = document.createElement("div");
+      el.className = "map-marker";
+      el.style.width = pole.id === selectedPoleId ? "16px" : "10px";
+      el.style.height = pole.id === selectedPoleId ? "16px" : "10px";
+      el.style.borderRadius = "50%";
+      el.style.backgroundColor = pole.id === selectedPoleId ? "#ff6b35" : "#333";
+      el.style.border = "2px solid #fff";
+      el.style.cursor = "pointer";
+      
+      new maplibregl.Marker({ element: el })
+        .setLngLat([pole.lng, pole.lat])
+        .addTo(map.current);
+    });
+
+    // Add enclosures as markers
+    enclosures.forEach((enc) => {
+      const availableCores = capacityByEnclosure?.[enc.id];
+      const el = document.createElement("div");
+      el.className = "map-marker";
+      el.style.width = enc.id === selectedEnclosureId ? "20px" : "14px";
+      el.style.height = enc.id === selectedEnclosureId ? "20px" : "14px";
+      el.style.borderRadius = "50%";
+      el.style.backgroundColor = 
+        enc.id === selectedEnclosureId
+          ? "#ff6b35"
+          : availableCores > 0
+            ? "#4caf50"
+            : "#e53935";
+      el.style.border = "2px solid #fff";
+      el.style.cursor = "pointer";
+      
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([enc.lng, enc.lat])
+        .addTo(map.current);
+      
+      el.addEventListener("click", () => onEnclosureClick(enc));
+    });
+
+    // Add split point marker
+    if (splitPointLngLat && Array.isArray(splitPointLngLat) && splitPointLngLat.length === 2) {
+      const el = document.createElement("div");
+      el.className = "map-marker";
+      el.style.width = "18px";
+      el.style.height = "18px";
+      el.style.borderRadius = "50%";
+      el.style.backgroundColor = "#3fd0c9";
+      el.style.border = "2px solid #fff";
+      
+      new maplibregl.Marker({ element: el })
+        .setLngLat([splitPointLngLat[0], splitPointLngLat[1]])
+        .addTo(map.current);
+    }
+  }, [pendingCableRoute, cables, poles, enclosures, capacityByEnclosure, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, onEnclosureClick]);
+
+  useEffect(() => {
+    if (map.current) return; // initialize only once
+    
+    const center = poles.length 
+      ? [poles[0].lng, poles[0].lat] 
+      : defaultCenter;
+    
+    map.current = new maplibregl.Map({
+      container: mapContainer.current,
+      style: "https://demotiles.maplibre.org/style.json",
+      center: center,
+      zoom: 16,
+    });
+
+    map.current.on("click", (e) => {
+      onMapClick({ lat: e.lngLat[1], lng: e.lngLat[0] });
+    });
+
+    // When map loads, run the update
+    map.current.on("load", updateMap);
+
+    return () => {
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+      }
+    };
+  }, [poles, onMapClick, updateMap]);
+
+  // Update map when data changes
+  useEffect(() => {
+    if (map.current && map.current.isStyleLoaded()) {
+      updateMap();
+    }
+  }, [updateMap]);
+
+  return (
+    <div 
+      ref={mapContainer} 
+      style={{ width: "100%", height: "100%" }}
+    />
+  );
+}

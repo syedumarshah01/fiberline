@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { traceFiber } = require('../services/fiberTrace');
+const { validateFiberCoreData } = require('../middleware/validation');
 const router = express.Router();
 
 // GET /api/fiber-cores/:id
@@ -15,7 +16,7 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // PATCH /api/fiber-cores/:id — e.g. mark 'terminated', 'damaged', 'reserved'
-router.patch('/:id', async (req, res, next) => {
+router.patch('/:id', validateFiberCoreData, async (req, res, next) => {
   try {
     const { status, notes } = req.body;
     const allowed = ['available', 'spliced', 'terminated', 'reserved', 'damaged'];

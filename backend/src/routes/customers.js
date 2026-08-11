@@ -1,5 +1,6 @@
 const express = require("express");
 const db = require("../db");
+const { validateCustomerData } = require("../middleware/validation");
 const router = express.Router();
 
 router.get("/", async (req, res, next) => {
@@ -36,7 +37,7 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", validateCustomerData, async (req, res, next) => {
   try {
     const { customer_code, name, phone, email, address, status, lat, lng } =
       req.body;

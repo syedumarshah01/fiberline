@@ -60,7 +60,118 @@ function coordinatesToWkt(coordinates) {
     .join(", ")})`;
 }
 
+function normalizeRouteCoordinates(route) {
+  if (!Array.isArray(route) || route.length < 2) {
+    throw new Error("A route needs at least two coordinates");
+  }
+
+  return route.map((point, index) => {
+    const lng = Array.isArray(point) ? point[0] : point?.lng;
+    const lat = Array.isArray(point) ? point[1] : point?.lat;
+
+    if (!Number.isFinite(Number(lng)) || !Number.isFinite(Number(lat))) {
+      throw new Error(`route[${index}] must include numeric lng and lat`);
+    }
+
+    return { lng: Number(lng), lat: Number(lat) };
+  });
+}
+
+function haversineMeters(a, b) {
+  const radiusMeters = 6371000;
+  const toRadians = (value) => (value * Math.PI) / 180;
+  const deltaLat = toRadians(b.lat - a.lat);
+  const deltaLng = toRadians(b.lng - a.lng);
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+
+  const sinLat = Math.sin(deltaLat / 2);
+  const sinLng = Math.sin(deltaLng / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+  return 2 * radiusMeters * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function measurePolylineMeters(route) {
+  const points = normalizeRouteCoordinates(route);
+  return points.reduce((total, point, index) => {
+    if (index === 0) return total;
+    return total + haversineMeters(points[index - 1], point);
+  }, 0);
+}
+
+function interpolatePoint(a, b, ratio) {
+  return {
+    lng: a.lng + (b.lng - a.lng) * ratio,
+    lat: a.lat + (b.lat - a.lat) * ratio,
+  };
+}
+
+function splitRouteAtDistance(route, targetMeters) {
+  const points = normalizeRouteCoordinates(route);
+  const totalMeters = measurePolylineMeters(points);
+
+  if (targetMeters <= 0 || totalMeters <= 0) {
+    return {
+      upstream: [points[0]],
+      downstream: points,
+      upstream_length_m: 0,
+      downstream_length_m: totalMeters,
+      split_point: points[0],
+    };
+  }
+
+  if (targetMeters >= totalMeters) {
+    return {
+      upstream: points,
+      downstream: [points[points.length - 1]],
+      upstream_length_m: totalMeters,
+      downstream_length_m: 0,
+      split_point: points[points.length - 1],
+    };
+  }
+
+  const upstream = [points[0]];
+  let traveled = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const previousPoint = points[index - 1];
+    const currentPoint = points[index];
+    const segmentMeters = haversineMeters(previousPoint, currentPoint);
+
+    if (traveled + segmentMeters < targetMeters) {
+      upstream.push(currentPoint);
+      traveled += segmentMeters;
+      continue;
+    }
+
+    const ratio =
+      segmentMeters === 0 ? 0 : (targetMeters - traveled) / segmentMeters;
+    const splitPoint = interpolatePoint(previousPoint, currentPoint, ratio);
+    upstream.push(splitPoint);
+
+    const downstream = [splitPoint, ...points.slice(index)];
+    return {
+      upstream,
+      downstream,
+      upstream_length_m: targetMeters,
+      downstream_length_m: totalMeters - targetMeters,
+      split_point: splitPoint,
+    };
+  }
+
+  return {
+    upstream: points,
+    downstream: [points[points.length - 1]],
+    upstream_length_m: totalMeters,
+    downstream_length_m: 0,
+    split_point: points[points.length - 1],
+  };
+}
+
 module.exports = {
   fetchStreetRoute,
   coordinatesToWkt,
+  normalizeRouteCoordinates,
+  measurePolylineMeters,
+  splitRouteAtDistance,
 };

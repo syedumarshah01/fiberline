@@ -157,6 +157,86 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel }) {
   );
 }
 
+export function AddCustomerEnclosureForm({ point, onSubmit, onCancel }) {
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [type, setType] = useState("terminal");
+  const [capacity, setCapacity] = useState(4);
+
+  if (!point) {
+    return (
+      <p className="empty-state">
+        Click the map at the customer's location to place a box.
+      </p>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!code.trim()) return;
+        onSubmit({
+          code,
+          name,
+          type,
+          capacity: Number(capacity),
+          lat: point.lat,
+          lng: point.lng,
+        });
+        setCode("");
+        setName("");
+      }}
+    >
+      <p className="empty-state">
+        Customer location: {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
+      </p>
+      <Field label="Box code *">
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="CUST-BOX-001"
+          autoFocus
+        />
+      </Field>
+      <Field label="Name">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Optional"
+        />
+      </Field>
+      <Field label="Type">
+        <select value={type} onChange={(e) => setType(e.target.value)}>
+          <option value="terminal">Terminal (customer box)</option>
+          <option value="splice_closure">Splice closure</option>
+          <option value="cabinet">Cabinet</option>
+          <option value="nap">NAP (customer access point)</option>
+        </select>
+      </Field>
+      <Field label="Core capacity">
+        <input
+          type="number"
+          value={capacity}
+          onChange={(e) => setCapacity(e.target.value)}
+          min="1"
+        />
+      </Field>
+      <button className="btn btn-primary btn-block" type="submit">
+        Create customer box
+      </button>
+      <button
+        className="btn btn-block"
+        type="button"
+        style={{ marginTop: 6 }}
+        onClick={onCancel}
+      >
+        Cancel
+      </button>
+    </form>
+  );
+}
+
 export function DrawCableForm({
   fromEnclosure,
   toEnclosure,
@@ -175,7 +255,8 @@ export function DrawCableForm({
   const [customerId, setCustomerId] = useState("");
 
   const isDrop = cableType === "drop";
-  const destinationReady = isDrop ? !!customerId : !!toEnclosure;
+  // For drop cables, customer is optional - can be set later
+  const destinationReady = isDrop ? true : !!toEnclosure;
   const previewReady = !!routePreview?.route?.length;
   const canSubmit = code.trim() && destinationReady && previewReady;
 
@@ -193,8 +274,8 @@ export function DrawCableForm({
         const preview = await api.previewCableRoute({
           cable_type: cableType,
           from_enclosure_id: fromEnclosure.id,
-          to_enclosure_id: isDrop ? undefined : toEnclosure.id,
-          customer_id: isDrop ? customerId : undefined,
+          to_enclosure_id: isDrop ? toEnclosure?.id : toEnclosure.id,
+          customer_id: isDrop && !toEnclosure ? customerId : undefined,
           route_points: routePoints.map((point) => ({
             lat: point.lat,
             lng: point.lng,
@@ -242,9 +323,9 @@ export function DrawCableForm({
           cable_type: cableType,
           core_count: Number(coreCount),
           from_enclosure_id: fromEnclosure.id,
-          to_enclosure_id: isDrop ? undefined : toEnclosure.id,
-          customer_id: isDrop ? customerId : undefined,
-          customer_label: isDrop ? `CUST-${customerId.slice(0, 6)}` : undefined,
+          to_enclosure_id: isDrop ? toEnclosure?.id : toEnclosure.id,
+          customer_id: isDrop && !toEnclosure ? customerId : undefined,
+          customer_label: isDrop && !toEnclosure && customerId ? `CUST-${customerId.slice(0, 6)}` : undefined,
           route_points: routePoints.map((point) => ({
             lat: point.lat,
             lng: point.lng,
@@ -299,19 +380,26 @@ export function DrawCableForm({
       </Field>
 
       {isDrop && (
-        <Field label="Customer">
-          <select
-            value={customerId}
-            onChange={(e) => setCustomerId(e.target.value)}
-          >
-            <option value="">Select customer…</option>
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.customer_code} — {c.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <div style={{ marginBottom: 12 }}>
+          <p className="empty-state" style={{ fontSize: 12, marginBottom: 8 }}>
+            Drop cable will go to: {toEnclosure ? toEnclosure.code : "click destination on map"}
+          </p>
+          {customers.length > 0 && (
+            <Field label="Or select customer (optional)">
+              <select
+                value={customerId}
+                onChange={(e) => setCustomerId(e.target.value)}
+              >
+                <option value="">No customer selected</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.customer_code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+        </div>
       )}
 
       <Field label="Cable code *">
@@ -358,6 +446,7 @@ export default function LeftPanel(props) {
     onSelectEnclosure,
     onSelectCable,
     selectedId,
+    onDeletePole,
   } = props;
 
   const [tab, setTab] = useState("poles");
@@ -378,6 +467,14 @@ export default function LeftPanel(props) {
           <AddEnclosureForm
             {...props}
             pole={props.pendingEnclosurePole}
+            onSubmit={props.onCreateEnclosure}
+            onCancel={props.onCancelMode}
+          />
+        )}
+        {mode === "add-customer-enclosure" && (
+          <AddCustomerEnclosureForm
+            {...props}
+            point={props.pendingCustomerEnclosurePoint}
             onSubmit={props.onCreateEnclosure}
             onCancel={props.onCancelMode}
           />
@@ -434,9 +531,25 @@ export default function LeftPanel(props) {
               className={`list-item ${selectedId === p.id ? "selected" : ""}`}
               onClick={() => onSelectPole(p)}
             >
-              <div className="code">{p.code}</div>
-              <div className="sub">
-                {p.name || "—"} · {p.pole_type}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div className="code">{p.code}</div>
+                  <div className="sub">
+                    {p.name || "—"} · {p.pole_type}
+                  </div>
+                </div>
+                {onDeletePole && (
+                  <button
+                    className="btn btn-danger"
+                    style={{ padding: "2px 6px", fontSize: 10, marginLeft: 8 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeletePole(p.id);
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
           ))
@@ -445,6 +558,14 @@ export default function LeftPanel(props) {
             No poles yet. Switch to "Add pole" and click the map.
           </p>
         ))}
+
+      {onDeletePole && (
+        <div style={{ marginTop: 12 }}>
+          <p className="empty-state" style={{ fontSize: 11 }}>
+            Click "Delete" on a pole to remove it. All attached boxes will also be removed.
+          </p>
+        </div>
+      )}
 
       {tab === "enclosures" &&
         (enclosures.length ? (
@@ -456,7 +577,7 @@ export default function LeftPanel(props) {
             >
               <div className="code">{e.code}</div>
               <div className="sub">
-                {e.type.replace("_", " ")} · on {e.pole_code}
+                {e.type.replace("_", " ")} · {e.pole_code ? `on ${e.pole_code}` : "customer location"}
               </div>
             </div>
           ))
