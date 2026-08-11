@@ -45,15 +45,19 @@ router.get('/:id', async (req, res, next) => {
     const splitter = await db('splitters').where({ id: req.params.id }).first();
     if (!splitter) return res.status(404).json({ error: 'Splitter not found' });
 
+    // LEFT JOINs (not inner): freshly created ports have output_core_id = NULL
+    // and would silently vanish from the response otherwise — inconsistent with
+    // the list endpoint above.
     const ports = await db('splitter_ports')
       .where({ splitter_id: req.params.id })
-      .join('fiber_cores', 'fiber_cores.id', 'splitter_ports.output_core_id')
-      .join('cables', 'cables.id', 'fiber_cores.cable_id')
+      .leftJoin('fiber_cores', 'fiber_cores.id', 'splitter_ports.output_core_id')
+      .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
       .select(
         'splitter_ports.id as port_id',
         'splitter_ports.port_number',
         'splitter_ports.status as port_status',
         'splitter_ports.notes',
+        'splitter_ports.output_core_id',
         'fiber_cores.id as core_id',
         'fiber_cores.core_number',
         'fiber_cores.status as core_status',
@@ -262,9 +266,10 @@ router.delete('/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Splitter not found' });
     }
 
-    // Get all output ports
+    // Get all output ports (ignore empty ports — NULL core ids would end up in
+    // the whereIn list otherwise)
     const ports = await trx('splitter_ports').where({ splitter_id: req.params.id });
-    const outputCoreIds = ports.map((p) => p.output_core_id);
+    const outputCoreIds = ports.map((p) => p.output_core_id).filter(Boolean);
 
     // Return input core to available
     await trx('fiber_cores').where({ id: splitter.input_core_id }).update({

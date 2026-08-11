@@ -9,10 +9,13 @@ const router = express.Router();
 router.get('/enclosures', async (req, res, next) => {
   try {
     const capacity = await getAvailableCoreCounts();
+    // LEFT JOIN + COALESCE: customer boxes have no pole — they carry their own
+    // location column and must not disappear from capacity listings.
     const enclosures = await db.raw(`
       SELECT e.id, e.code, e.name, e.type,
-             ST_Y(p.location::geometry) AS lat, ST_X(p.location::geometry) AS lng
-      FROM enclosures e JOIN poles p ON p.id = e.pole_id
+             COALESCE(ST_Y(e.location::geometry), ST_Y(p.location::geometry)) AS lat,
+             COALESCE(ST_X(e.location::geometry), ST_X(p.location::geometry)) AS lng
+      FROM enclosures e LEFT JOIN poles p ON p.id = e.pole_id
     `);
     const result = enclosures.rows.map((e) => ({ ...e, available_cores: capacity[e.id] || 0 }));
     res.json(result);
@@ -54,13 +57,15 @@ router.get('/customer-lookup', async (req, res, next) => {
       return res.status(400).json({ error: 'lat and lng are required' });
     }
 
+    // LEFT JOIN + COALESCE so customer boxes (no pole, own location) are found.
     const nearby = await db.raw(
       `
       SELECT e.id, e.code, e.name, e.type,
-             ST_Y(p.location::geometry) AS lat, ST_X(p.location::geometry) AS lng,
-             ST_Distance(p.location, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography) AS distance_m
-      FROM enclosures e JOIN poles p ON p.id = e.pole_id
-      WHERE ST_DWithin(p.location, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography, ?)
+             COALESCE(ST_Y(e.location::geometry), ST_Y(p.location::geometry)) AS lat,
+             COALESCE(ST_X(e.location::geometry), ST_X(p.location::geometry)) AS lng,
+             ST_Distance(COALESCE(e.location, p.location), ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography) AS distance_m
+      FROM enclosures e LEFT JOIN poles p ON p.id = e.pole_id
+      WHERE ST_DWithin(COALESCE(e.location, p.location), ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography, ?)
       ORDER BY distance_m ASC
       LIMIT ?
       `,
@@ -109,10 +114,12 @@ router.get('/customer-route', async (req, res, next) => {
     }
 
     // Get enclosure location
+    // LEFT JOIN + COALESCE so routes to customer boxes (no pole) work too.
     const enclosure = await db.raw(
       `SELECT e.id, e.code,
-              ST_Y(p.location::geometry) AS lat, ST_X(p.location::geometry) AS lng
-       FROM enclosures e JOIN poles p ON p.id = e.pole_id
+              COALESCE(ST_Y(e.location::geometry), ST_Y(p.location::geometry)) AS lat,
+              COALESCE(ST_X(e.location::geometry), ST_X(p.location::geometry)) AS lng
+       FROM enclosures e LEFT JOIN poles p ON p.id = e.pole_id
        WHERE e.id = ?`,
       [enclosureId]
     );

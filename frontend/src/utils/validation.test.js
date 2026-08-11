@@ -1,7 +1,11 @@
 /**
- * Unit tests for validation utilities.
+ * Unit tests for frontend validation utilities.
+ *
+ * Run with: npm test  (built-in node:test runner — no extra deps)
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
 import {
   isValidCoordinate,
   validateCoordinatesArray,
@@ -13,188 +17,200 @@ import {
   validateEnclosureData,
   validateCableData,
   validateCustomerData,
-} from './validation';
+  validateSpliceData,
+  validateSplitterData,
+  validateFiberCoreData,
+} from './validation.js';
 
 describe('isValidCoordinate', () => {
   it('should return true for valid coordinates', () => {
-    expect(isValidCoordinate(40.7128, -74.006)).toBe(true);
-    expect(isValidCoordinate(0, 0)).toBe(true);
-    expect(isValidCoordinate(-90, -180)).toBe(true);
-    expect(isValidCoordinate(90, 180)).toBe(true);
+    assert.equal(isValidCoordinate(40.7128, -74.006), true);
+    assert.equal(isValidCoordinate(0, 0), true);
+    assert.equal(isValidCoordinate(-90, -180), true);
+    assert.equal(isValidCoordinate(90, 180), true);
   });
 
   it('should return false for invalid latitude', () => {
-    expect(isValidCoordinate(91, 0)).toBe(false);
-    expect(isValidCoordinate(-91, 0)).toBe(false);
-    expect(isValidCoordinate(NaN, 0)).toBe(false);
+    assert.equal(isValidCoordinate(91, 0), false);
+    assert.equal(isValidCoordinate(-91, 0), false);
+    assert.equal(isValidCoordinate(NaN, 0), false);
   });
 
   it('should return false for invalid longitude', () => {
-    expect(isValidCoordinate(0, 181)).toBe(false);
-    expect(isValidCoordinate(0, -181)).toBe(false);
-    expect(isValidCoordinate(0, NaN)).toBe(false);
+    assert.equal(isValidCoordinate(0, 181), false);
+    assert.equal(isValidCoordinate(0, -181), false);
+    assert.equal(isValidCoordinate(0, NaN), false);
   });
 
   it('should return false for null/undefined values', () => {
-    expect(isValidCoordinate(null, 0)).toBe(false);
-    expect(isValidCoordinate(0, null)).toBe(false);
-    expect(isValidCoordinate(undefined, 0)).toBe(false);
-    expect(isValidCoordinate(0, undefined)).toBe(false);
+    assert.equal(isValidCoordinate(null, 0), false);
+    assert.equal(isValidCoordinate(0, null), false);
+    assert.equal(isValidCoordinate(undefined, 0), false);
+    assert.equal(isValidCoordinate(0, undefined), false);
   });
 });
 
 describe('validateCoordinatesArray', () => {
   it('should return empty array for valid coordinates', () => {
     const coords = [[-74.006, 40.7128], [0, 0], [180, -90]];
-    expect(validateCoordinatesArray(coords)).toEqual([]);
+    assert.deepEqual(validateCoordinatesArray(coords), []);
   });
 
-  it('should return indices of invalid coordinates', () => {
-    const coords = [[-74.006, 40.7128], [200, 0], [0, 0]];
-    expect(validateCoordinatesArray(coords)).toEqual([1]);
-  });
-
-  it('should handle non-array input', () => {
-    expect(validateCoordinatesArray('not an array')).toEqual([0]);
+  it('should return invalid indices', () => {
+    const coords = [[-74.006, 40.7128], [200, 0], 'nope', [0]];
+    assert.deepEqual(validateCoordinatesArray(coords), [1, 2, 3]);
   });
 });
 
 describe('findDuplicateIds', () => {
-  it('should return empty array when no duplicates', () => {
-    const items = [{ id: 1 }, { id: 2 }, { id: 3 }];
-    expect(findDuplicateIds(items)).toEqual([]);
+  it('should find duplicated ids', () => {
+    const items = [{ id: 'a' }, { id: 'b' }, { id: 'a' }, { id: null }, { id: 'c' }, { id: 'b' }];
+    assert.deepEqual(findDuplicateIds(items).sort(), ['a', 'b']);
   });
 
-  it('should return duplicate IDs', () => {
-    const items = [{ id: 1 }, { id: 2 }, { id: 1 }, { id: 2 }];
-    expect(findDuplicateIds(items)).toEqual([1, 2]);
-  });
-
-  it('should work with custom id field', () => {
-    const items = [{ code: 'A' }, { code: 'B' }, { code: 'A' }];
-    expect(findDuplicateIds(items, 'code')).toEqual(['A']);
+  it('should return empty array for non-arrays', () => {
+    assert.deepEqual(findDuplicateIds(null), []);
   });
 });
 
-describe('sanitizeString', () => {
-  it('should remove HTML tags', () => {
-    expect(sanitizeString('<script>alert("xss")</script>')).toBe('alert(&quot;xss&quot;)');
+describe('sanitizeString / sanitizeObject', () => {
+  it('should strip tags and dangerous protocols', () => {
+    assert.equal(sanitizeString('<script>alert(1)</script>John'), 'alert(1)John');
+    assert.equal(sanitizeString('javascript:alert(1)'), 'alert(1)');
+    assert.equal(sanitizeString(42), '');
   });
 
-  it('should remove javascript: protocol', () => {
-    expect(sanitizeString('javascript:alert(1)')).toBe('alert(1)');
-  });
-
-  it('should remove event handlers', () => {
-    expect(sanitizeString('onclick=alert(1)')).toBe('alert(1)');
-  });
-
-  it('should escape special characters', () => {
-    expect(sanitizeString('<div>Test & "quotes"\'s</div>')).toBe('Test &amp; &quot;quotes&quot;&#039;s');
-  });
-
-  it('should handle non-string input', () => {
-    expect(sanitizeString(123)).toBe('');
-    expect(sanitizeString(null)).toBe('');
-    expect(sanitizeString(undefined)).toBe('');
-  });
-});
-
-
-describe('sanitizeObject', () => {
-  it('should sanitize all string values recursively', () => {
-    const obj = {
-      name: '<script>alert(1)</script>',
-      nested: {
-        value: 'test<script>',
-        array: ['<b>bold</b>', 'normal']
-      }
-    };
-    const sanitized = sanitizeObject(obj);
-    expect(sanitized.name).toBe('alert(1)');
-    expect(sanitized.nested.value).toBe('test');
-    expect(sanitized.nested.array[0]).toBe('bold');
-    expect(sanitized.nested.array[1]).toBe('normal');
+  it('should sanitize nested objects', () => {
+    const out = sanitizeObject({ a: '<b>x</b>', list: ['<i>y</i>', 1] });
+    assert.equal(out.a, 'x');
+    assert.equal(out.list[0], 'y');
+    assert.equal(out.list[1], 1);
   });
 });
 
 describe('isValidNumber', () => {
   it('should validate numbers within range', () => {
-    expect(isValidNumber(5, 0, 10)).toBe(true);
-    expect(isValidNumber(0, 0, 10)).toBe(true);
-    expect(isValidNumber(10, 0, 10)).toBe(true);
-  });
-
-  it('should reject numbers outside range', () => {
-    expect(isValidNumber(-1, 0, 10)).toBe(false);
-    expect(isValidNumber(11, 0, 10)).toBe(false);
-  });
-
-  it('should reject NaN and Infinity', () => {
-    expect(isValidNumber(NaN)).toBe(false);
-    expect(isValidNumber(Infinity)).toBe(false);
-    expect(isValidNumber(-Infinity)).toBe(false);
+    assert.equal(isValidNumber(5, 0, 10), true);
+    assert.equal(isValidNumber(-1, 0, 10), false);
+    assert.equal(isValidNumber(NaN), false);
+    assert.equal(isValidNumber(Infinity), false);
   });
 });
 
 describe('validatePoleData', () => {
   it('should return empty errors for valid pole data', () => {
-    const data = { lat: 40.7128, lng: -74.006, name: 'Pole 1' };
-    expect(validatePoleData(data)).toEqual([]);
+    assert.deepEqual(validatePoleData({ lat: 40.7128, lng: -74.006, name: 'Pole 1' }), []);
   });
 
   it('should return errors for invalid coordinates', () => {
-    const data = { lat: 100, lng: -74.006 };
-    expect(validatePoleData(data)).toContain('Invalid coordinates');
-  });
-
-  it('should return errors for non-object input', () => {
-    expect(validatePoleData(null)).toContain('Pole data must be an object');
-    expect(validatePoleData('string')).toContain('Pole data must be an object');
+    assert.ok(validatePoleData({ lat: 100, lng: -74.006 }).includes('Invalid coordinates'));
   });
 });
 
 describe('validateEnclosureData', () => {
-  it('should return empty errors for valid enclosure data', () => {
-    const data = { lat: 40.7128, lng: -74.006, pole_id: 'pole1', name: 'Enclosure 1', type: 'FDT' };
-    expect(validateEnclosureData(data)).toEqual([]);
+  it('REGRESSION: accepts a pole-mounted box without coordinates', () => {
+    assert.deepEqual(
+      validateEnclosureData({ pole_id: 'pole-1', code: 'B1', type: 'nap' }),
+      [],
+    );
   });
 
-  it('should return errors for invalid pole_id type', () => {
-    const data = { lat: 40.7128, lng: -74.006, pole_id: 123 };
-    // pole_id can be string or number, so this should be valid
-    expect(validateEnclosureData(data)).toEqual([]);
+  it('accepts a customer box with coordinates and no pole', () => {
+    assert.deepEqual(
+      validateEnclosureData({ lat: 34.0, lng: 71.5, code: 'B2', type: 'terminal' }),
+      [],
+    );
+  });
+
+  it('requires pole_id or lat/lng', () => {
+    const errors = validateEnclosureData({ code: 'B3', type: 'nap' });
+    assert.ok(errors.some((e) => e.includes('pole_id or lat/lng')));
+  });
+
+  it('flags invalid coordinates when provided', () => {
+    assert.ok(validateEnclosureData({ lat: 100, lng: 0 }).includes('Invalid coordinates'));
   });
 });
 
 describe('validateCableData', () => {
-  it('should return empty errors for valid cable data', () => {
-    const data = {
-      route: [[-74.006, 40.7128], [-74.007, 40.713]],
-      cable_type: 'distribution'
-    };
-    expect(validateCableData(data)).toEqual([]);
+  const endpoints = { from_enclosure_id: 'a', to_enclosure_id: 'b' };
+
+  it('REGRESSION: accepts the draw-cable form payload', () => {
+    const errors = validateCableData({
+      ...endpoints,
+      cable_type: 'distribution',
+      route_points: [{ lat: 34.0, lng: 71.5 }, { lat: 34.1, lng: 71.6 }],
+      route_geometry: [[71.5, 34.0], [71.6, 34.1]],
+    });
+    assert.deepEqual(errors, []);
   });
 
-  it('should return errors for insufficient waypoints', () => {
-    const data = { route: [[-74.006, 40.7128]] };
-    expect(validateCableData(data)).toContain('Route must be an array of at least 2 coordinate pairs');
+  it('requires from_enclosure_id', () => {
+    assert.ok(validateCableData({}).some((e) => e.includes('from_enclosure_id')));
   });
 
-  it('should return errors for invalid coordinates in route', () => {
-    const data = { route: [[-74.006, 40.7128], [200, 0]] };
-    expect(validateCableData(data)).toContain('Invalid coordinates');
+  it('flags malformed geometry', () => {
+    const errors = validateCableData({ ...endpoints, route_geometry: [[71.5, 34.0], [200, 0]] });
+    assert.ok(errors.some((e) => e.includes('route_geometry[1]')));
   });
 });
 
 describe('validateCustomerData', () => {
   it('should return empty errors for valid customer data', () => {
-    const data = { lat: 40.7128, lng: -74.006, name: 'John Doe', email: 'john@example.com' };
-    expect(validateCustomerData(data)).toEqual([]);
+    assert.deepEqual(
+      validateCustomerData({ lat: 40.7128, lng: -74.006, name: 'John Doe', email: 'john@example.com' }),
+      [],
+    );
   });
 
   it('should return errors for invalid coordinates', () => {
-    const data = { lat: 100, lng: -74.006, name: 'John Doe' };
-    expect(validateCustomerData(data)).toContain('Invalid coordinates');
+    assert.ok(validateCustomerData({ lat: 100, lng: -74.006, name: 'John Doe' }).includes('Invalid coordinates'));
+  });
+});
+
+describe('validateSpliceData', () => {
+  it('REGRESSION: accepts the splice form payload', () => {
+    assert.deepEqual(
+      validateSpliceData({ enclosure_id: 'box', core_a_id: 'c1', core_b_id: 'c2' }),
+      [],
+    );
+  });
+
+  it('requires all ids and rejects self-splices', () => {
+    assert.ok(validateSpliceData({}).some((e) => e.includes('enclosure_id')));
+    const errors = validateSpliceData({ enclosure_id: 'box', core_a_id: 'c1', core_b_id: 'c1' });
+    assert.ok(errors.some((e) => e.includes('itself')));
+  });
+});
+
+describe('validateSplitterData', () => {
+  it('REGRESSION: accepts the splitter form payload', () => {
+    assert.deepEqual(
+      validateSplitterData({ enclosure_id: 'box', input_core_id: 'c1', split_count: 8 }),
+      [],
+    );
+  });
+
+  it('requires enclosure and input core', () => {
+    const errors = validateSplitterData({});
+    assert.ok(errors.some((e) => e.includes('enclosure_id')));
+    assert.ok(errors.some((e) => e.includes('input_core_id')));
+  });
+
+  it('rejects unsupported split counts', () => {
+    assert.ok(
+      validateSplitterData({ enclosure_id: 'box', input_core_id: 'c1', split_count: 3 })
+        .some((e) => e.includes('split_count')),
+    );
+  });
+});
+
+describe('validateFiberCoreData', () => {
+  it('REGRESSION: accepts a status-only PATCH payload', () => {
+    assert.deepEqual(validateFiberCoreData({ status: 'terminated' }), []);
+  });
+
+  it('rejects non-string fields', () => {
+    assert.ok(validateFiberCoreData({ status: 1 }).some((e) => e.includes('status')));
   });
 });

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 
-// Module-level flag to track if a cable was clicked
+// Module-level flag to track if a cable was clicked (prevents map click from clearing selection)
 let cableWasClicked = false;
 
 const CABLE_COLORS = {
@@ -13,9 +13,13 @@ const CABLE_COLORS = {
 
 const defaultCenter = [71.5788, 34.0083]; // Peshawar [lng, lat]
 
-// Use a free Mapbox style via the demotiles URL
-// This uses Mapbox's own vector tiles with streets, labels, etc.
-const MAPBOX_STYLE = "mapbox://styles/mapbox/streets-v12";
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
+// The commented intent was "free style via demotiles": only mapbox:// styles
+// need an access token. Without a token, fall back to MapLibre's free demo
+// style so this provider isn't a blank grey canvas out of the box.
+const MAP_STYLE = MAPBOX_TOKEN
+  ? "mapbox://styles/mapbox/streets-v12"
+  : "https://demotiles.maplibre.org/style.json";
 
 export default function MapViewMapbox({
   poles,
@@ -38,33 +42,57 @@ export default function MapViewMapbox({
 }) {
   const mapContainer = useRef(null);
   const map = useRef(null);
-  const dataRef = useRef({ poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, userPosition, customerRoute, onEnclosureClick, onCableClick });
+  const mapLoaded = useRef(false);
+  // DOM markers must be tracked and removed on every redraw, otherwise they
+  // pile up on the map each time data changes.
+  const markersRef = useRef([]);
+  const dataRef = useRef({});
+  // Keep dataRef in sync so stable map callbacks always see fresh data/handlers.
+  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
 
-  // Keep dataRef in sync
-  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, userPosition, customerRoute, onEnclosureClick, onCableClick };
-
-  const updateMap = useCallback(() => {
+  const clearDynamicContent = useCallback(() => {
     if (!map.current) return;
 
-    const d = dataRef.current;
+    // Remove DOM markers
+    markersRef.current.forEach((m) => m.remove());
+    markersRef.current = [];
 
-    // Clear existing sources and layers
+    // Remove layers FIRST, then the sources they reference — removing a source
+    // while a layer still uses it throws, which previously aborted the whole
+    // redraw halfway through.
     const style = map.current.getStyle();
-    if (style && style.sources) {
-      Object.keys(style.sources).forEach((sourceId) => {
-        if (sourceId.startsWith("cable-") || sourceId === "pending-route" || sourceId === "poles" || sourceId === "enclosures" || sourceId === "split-point" || sourceId === "customer-route") {
-          if (map.current.getSource(sourceId)) {
-            map.current.removeSource(sourceId);
-          }
+    if (style && style.layers) {
+      style.layers.forEach((layer) => {
+        if (
+          layer.id.startsWith("cable-line-") ||
+          layer.id === "pending-route-line" ||
+          layer.id === "customer-route-line"
+        ) {
+          if (map.current.getLayer(layer.id)) map.current.removeLayer(layer.id);
         }
       });
     }
-    // Also remove customer-route layer if it exists
-    if (map.current.getLayer("customer-route-line")) {
-      map.current.removeLayer("customer-route-line");
+    if (style && style.sources) {
+      Object.keys(style.sources).forEach((sourceId) => {
+        if (
+          sourceId.startsWith("cable-") ||
+          sourceId === "pending-route" ||
+          sourceId === "customer-route"
+        ) {
+          if (map.current.getSource(sourceId)) map.current.removeSource(sourceId);
+        }
+      });
     }
+  }, []);
 
-    // Add pending route
+  const updateMap = useCallback(() => {
+    if (!map.current || !mapLoaded.current) return;
+    if (!map.current.isStyleLoaded()) return;
+
+    const d = dataRef.current;
+    clearDynamicContent();
+
+    // Pending cable draft
     if (d.pendingCableRoute.length >= 2) {
       map.current.addSource("pending-route", {
         type: "geojson",
@@ -90,50 +118,47 @@ export default function MapViewMapbox({
       });
     }
 
-    // Add cables
+    // Cables. One delegated click handler (bound in the init effect) reads the
+    // cable id from feature properties — no per-layer listeners to leak.
     d.cables.forEach((cable) => {
       if (!cable.route || cable.route.length < 2) return;
-      
+
       const isSelected = cable.id === d.selectedCableId;
       const sourceId = `cable-${cable.id}`;
-      
+
       map.current.addSource(sourceId, {
         type: "geojson",
         data: {
           type: "Feature",
-          properties: {},
+          properties: { cableId: cable.id },
           geometry: {
             type: "LineString",
             coordinates: cable.route.map(([lng, lat]) => [lng, lat]),
           },
         },
       });
-      
-      const layerId = `cable-line-${cable.id}`;
+
+      const paint = {
+        "line-color": CABLE_COLORS[cable.cable_type] || "#8b96a8",
+        "line-width": isSelected
+          ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
+          : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
+        "line-opacity": isSelected ? 1 : 0.85,
+      };
+      // An empty dash array is invalid — only set it when spliced cores exist.
+      if ((cable.spliced_core_count || 0) > 0) {
+        paint["line-dasharray"] = isSelected ? [2, 2] : [10, 6];
+      }
+
       map.current.addLayer({
-        id: layerId,
+        id: `cable-line-${cable.id}`,
         type: "line",
         source: sourceId,
-        paint: {
-          "line-color": CABLE_COLORS[cable.cable_type] || "#8b96a8",
-          "line-width": isSelected
-            ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
-            : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-          "line-opacity": isSelected ? 1 : 0.85,
-      "line-dasharray": (cable.spliced_core_count || 0) > 0 ? (isSelected ? [2, 2] : [10, 6]) : [],
-        },
+        paint,
       });
-      
-      // Add click handler for cable
-      if (d.onCableClick) {
-        map.current.on("click", layerId, () => {
-          cableWasClicked = true;
-          d.onCableClick(cable);
-        });
-      }
     });
 
-    // Add poles as markers
+    // Poles
     d.poles.forEach((pole) => {
       if (pole.lat == null || pole.lng == null) return;
       const el = document.createElement("div");
@@ -144,13 +169,19 @@ export default function MapViewMapbox({
       el.style.backgroundColor = pole.id === d.selectedPoleId ? "#ff6b35" : "#333";
       el.style.border = "2px solid #fff";
       el.style.cursor = "pointer";
-      
-      new mapboxgl.Marker({ element: el })
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cableWasClicked = true;
+        dataRef.current.onPoleClick?.(pole);
+      });
+
+      const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([pole.lng, pole.lat])
         .addTo(map.current);
+      markersRef.current.push(marker);
     });
 
-    // Add enclosures as markers
+    // Enclosures
     d.enclosures.forEach((enc) => {
       if (enc.lat == null || enc.lng == null) return;
       const availableCores = d.capacityByEnclosure?.[enc.id];
@@ -159,7 +190,7 @@ export default function MapViewMapbox({
       el.style.width = enc.id === d.selectedEnclosureId ? "20px" : "14px";
       el.style.height = enc.id === d.selectedEnclosureId ? "20px" : "14px";
       el.style.borderRadius = "50%";
-      el.style.backgroundColor = 
+      el.style.backgroundColor =
         enc.id === d.selectedEnclosureId
           ? "#ff6b35"
           : availableCores > 0
@@ -167,15 +198,19 @@ export default function MapViewMapbox({
             : "#e53935";
       el.style.border = "2px solid #fff";
       el.style.cursor = "pointer";
-      
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cableWasClicked = true;
+        dataRef.current.onEnclosureClick?.(enc);
+      });
+
       const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([enc.lng, enc.lat])
         .addTo(map.current);
-      
-      el.addEventListener("click", () => d.onEnclosureClick(enc));
+      markersRef.current.push(marker);
     });
 
-    // Add split point marker
+    // Cable split-point preview marker
     if (d.splitPointLngLat && Array.isArray(d.splitPointLngLat) && d.splitPointLngLat.length === 2) {
       const el = document.createElement("div");
       el.className = "map-marker";
@@ -184,13 +219,14 @@ export default function MapViewMapbox({
       el.style.borderRadius = "50%";
       el.style.backgroundColor = "#3fd0c9";
       el.style.border = "2px solid #fff";
-      
-      new mapboxgl.Marker({ element: el })
+
+      const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([d.splitPointLngLat[0], d.splitPointLngLat[1]])
         .addTo(map.current);
+      markersRef.current.push(marker);
     }
 
-    // Add user location marker
+    // User's own location
     if (d.userPosition && d.userPosition.lat != null && d.userPosition.lng != null) {
       const el = document.createElement("div");
       el.className = "user-location-marker";
@@ -199,13 +235,14 @@ export default function MapViewMapbox({
       el.style.borderRadius = "50%";
       el.style.backgroundColor = "#4285f4";
       el.style.border = "2px solid #fff";
-      
-      new mapboxgl.Marker({ element: el })
+
+      const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([d.userPosition.lng, d.userPosition.lat])
         .addTo(map.current);
+      markersRef.current.push(marker);
     }
 
-    // Add customer route (from customer location to recommended enclosure)
+    // Customer route (customer location → recommended box)
     if (d.customerRoute && d.customerRoute.route && d.customerRoute.route.length >= 2) {
       map.current.addSource("customer-route", {
         type: "geojson",
@@ -230,52 +267,84 @@ export default function MapViewMapbox({
         },
       });
     }
-  }, []);
+  }, [clearDynamicContent]);
 
+  // Mount the map exactly once. Previously this effect depended on
+  // `[poles, onMapClick, updateMap]` — a new onMapClick identity every App
+  // render destroyed and rebuilt the entire map, and the bound handlers went
+  // stale between rebuilds.
   useEffect(() => {
     if (map.current) return; // initialize only once
-    
-    const center = poles.length && poles[0].lat != null && poles[0].lng != null
-      ? [poles[0].lng, poles[0].lat] 
-      : defaultCenter;
 
-    // Set Mapbox access token from env or use a public demo token
-    mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || "";
-    
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: MAPBOX_STYLE,
-      center: center,
+      style: MAP_STYLE,
+      center: defaultCenter,
       zoom: 16,
     });
-
-    // Add navigation controls
     map.current.addControl(new mapboxgl.NavigationControl(), "top-right");
 
-    map.current.on("click", (e) => {
-      // Only call onMapClick if no cable was clicked
-      if (!cableWasClicked) {
-        onMapClick({ lat: e.lngLat.lat, lng: e.lngLat.lng });
+    map.current.on("load", () => {
+      mapLoaded.current = true;
+      // center on data if we already have poles
+      const d = dataRef.current;
+      if (d.poles.length && d.poles[0].lat != null && d.poles[0].lng != null) {
+        map.current.setCenter([d.poles[0].lng, d.poles[0].lat]);
       }
-      // Reset the flag
-      cableWasClicked = false;
+      updateMap();
     });
 
-    // When map loads, run the update
-    map.current.on("load", updateMap);
+    // Delegated click: a cable feature under the cursor wins; otherwise it's a
+    // plain map click (draw/place/clear-selection behavior lives in App).
+    map.current.on("click", (e) => {
+      const d = dataRef.current;
+
+      if (!cableWasClicked) {
+        const cableLayerIds = (map.current.getStyle()?.layers || [])
+          .map((l) => l.id)
+          .filter((id) => id.startsWith("cable-line-"));
+
+        if (cableLayerIds.length) {
+          const hits = map.current.queryRenderedFeatures(e.point, { layers: cableLayerIds });
+          if (hits.length) {
+            const cableId = hits[0].properties?.cableId;
+            const cable = d.cables.find((c) => c.id === cableId);
+            if (cable) {
+              cableWasClicked = true;
+              d.onCableClick?.(cable);
+              cableWasClicked = false;
+              return;
+            }
+          }
+        }
+
+        d.onMapClick?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
+      }
+      cableWasClicked = false;
+    });
 
     return () => {
       if (map.current) {
         map.current.remove();
         map.current = null;
+        mapLoaded.current = false;
       }
     };
-  }, [poles, onMapClick, updateMap]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Redraw whenever the data changes (this effect is what makes the map live —
+  // previously updateMap only ran on the initial style load).
+  useEffect(() => {
+    updateMap();
+  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, userPosition, customerRoute, updateMap]);
 
   // Fly to selected enclosure or pole
   useEffect(() => {
-    if (!map.current) return;
-    
+    if (!map.current || !mapLoaded.current) return;
+
     let target = null;
     if (selectedPoleId) {
       const pole = poles.find((p) => p.id === selectedPoleId);
@@ -292,54 +361,15 @@ export default function MapViewMapbox({
     } else if (userPosition && userPosition.lat != null && userPosition.lng != null) {
       target = [userPosition.lng, userPosition.lat];
     }
-    
+
     if (target) {
       map.current.flyTo({ center: target, zoom: Math.max(map.current.getZoom(), 16), duration: 800 });
     }
   }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables, userPosition]);
 
-  // Update customer route on map
-  useEffect(() => {
-    if (!map.current) return;
-    
-    // Remove existing customer route
-    if (map.current.getSource("customer-route")) {
-      map.current.removeSource("customer-route");
-    }
-    if (map.current.getLayer("customer-route-line")) {
-      map.current.removeLayer("customer-route-line");
-    }
-    
-    // Add new customer route if available
-    if (customerRoute && customerRoute.route && customerRoute.route.length >= 2) {
-      map.current.addSource("customer-route", {
-        type: "geojson",
-        data: {
-          type: "Feature",
-          properties: {},
-          geometry: {
-            type: "LineString",
-            coordinates: customerRoute.route.map(([lng, lat]) => [lng, lat]),
-          },
-        },
-      });
-      map.current.addLayer({
-        id: "customer-route-line",
-        type: "line",
-        source: "customer-route",
-        paint: {
-          "line-color": "#ff6b35",
-          "line-width": 5,
-          "line-opacity": 0.8,
-          "line-dasharray": [10, 5],
-        },
-      });
-    }
-  }, [customerRoute]);
-
   return (
-    <div 
-      ref={mapContainer} 
+    <div
+      ref={mapContainer}
       style={{ width: "100%", height: "100%" }}
     />
   );

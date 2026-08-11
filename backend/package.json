@@ -9,7 +9,8 @@
     "start": "node src/server.js",
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
-    "seed": "knex seed:run"
+    "seed": "knex seed:run",
+    "test": "node --test"
   },
   "dependencies": {
     "cors": "^2.8.5",

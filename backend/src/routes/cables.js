@@ -441,6 +441,8 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         ratio: totalLengthM > 0 ? (targetMeters / totalLengthM).toFixed(4) : 0.5,
         target_meters: Math.round(targetMeters),
         total_length_m: Math.round(totalLengthM),
+        upstream_length_m: Math.round(split.upstream_length_m),
+        downstream_length_m: Math.round(split.downstream_length_m),
       },
       upstream_cable: {
         ...cable,
@@ -597,8 +599,47 @@ router.patch("/:id", async (req, res, next) => {
 });
 
 // DELETE /api/cables/:id
+// Guard: fiber_cores rows CASCADE away with the cable, but splices and
+// splitter references on those cores are ON DELETE RESTRICT — without this
+// check the delete dies as an opaque 500 FK violation (and even when it
+// "succeeds" it would silently strand splice documentation). Refuse with a
+// actionable 409 instead.
 router.delete("/:id", async (req, res, next) => {
   try {
+    const cable = await db("cables").where({ id: req.params.id }).first();
+    if (!cable) return res.status(404).json({ error: "Cable not found" });
+
+    const referencing = await db.raw(
+      `
+      SELECT
+        (SELECT COUNT(DISTINCT s.id) FROM splices s
+           JOIN fiber_cores fc ON fc.id = s.core_a_id OR fc.id = s.core_b_id
+           WHERE fc.cable_id = :cableId) AS splice_refs,
+        (SELECT COUNT(*) FROM splitters sp
+           JOIN fiber_cores fc ON fc.id = sp.input_core_id
+           WHERE fc.cable_id = :cableId) AS splitter_input_refs,
+        (SELECT COUNT(*) FROM splitter_ports pp
+           JOIN fiber_cores fc ON fc.id = pp.output_core_id
+           WHERE fc.cable_id = :cableId) AS splitter_port_refs
+      `,
+      { cableId: req.params.id },
+    );
+
+    const { splice_refs, splitter_input_refs, splitter_port_refs } = referencing.rows[0];
+    const total =
+      parseInt(splice_refs, 10) +
+      parseInt(splitter_input_refs, 10) +
+      parseInt(splitter_port_refs, 10);
+
+    if (total > 0) {
+      return res.status(409).json({
+        error:
+          `Cable ${cable.code} still has cores referenced by ` +
+          `${splice_refs} splice(s), ${splitter_input_refs} splitter input(s) and ` +
+          `${splitter_port_refs} splitter port(s). Un-splice/unassign them first.`,
+      });
+    }
+
     await db("cables").where({ id: req.params.id }).del();
     res.status(204).send();
   } catch (err) {

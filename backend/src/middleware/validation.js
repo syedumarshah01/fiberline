@@ -1,5 +1,9 @@
 /**
  * Backend validation middleware for input sanitization and data validation.
+ *
+ * IMPORTANT: these validators must mirror the payload contracts actually used by
+ * the route handlers and the frontend (frontend/src/api.js). A mismatch here
+ * silently breaks whole UI workflows with 400s, so keep them in sync.
  */
 
 function sanitizeString(str) {
@@ -17,7 +21,7 @@ function sanitizeObject(obj) {
   if (typeof obj === 'object' && !Array.isArray(obj)) {
     const sanitized = {};
     for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
         sanitized[key] = sanitizeObject(obj[key]);
       }
     }
@@ -41,13 +45,45 @@ function isValidNumber(value, min = -Infinity, max = Infinity) {
   return !isNaN(num) && isFinite(num) && num >= min && num <= max;
 }
 
+const INVALID_COORDS_MSG =
+  'Invalid coordinates. lat must be between -90 and 90, lng between -180 and 180.';
+
+/**
+ * A route-ish array of coordinates. Accepts both [lng, lat] pairs and
+ * { lat, lng } point objects (the frontend sends route_points as objects).
+ */
+function validateCoordArray(arr, fieldName, { require } = {}) {
+  if (arr === undefined || arr === null) {
+    return require ? `${fieldName} is required` : null;
+  }
+  if (!Array.isArray(arr) || arr.length < 2) {
+    return `${fieldName} must be an array of at least 2 coordinates`;
+  }
+  for (let i = 0; i < arr.length; i++) {
+    const point = arr[i];
+    let lng, lat;
+    if (Array.isArray(point)) {
+      if (point.length < 2) {
+        return `Invalid coordinate at ${fieldName}[${i}]. Expected [lng, lat] array.`;
+      }
+      [lng, lat] = point;
+    } else if (point && typeof point === 'object') {
+      lng = point.lng;
+      lat = point.lat;
+    } else {
+      return `Invalid coordinate at ${fieldName}[${i}]. Expected [lng, lat] or { lat, lng }.`;
+    }
+    if (!isValidCoordinate(lat, lng)) {
+      return `Invalid coordinates at ${fieldName}[${i}]. lat must be between -90 and 90, lng between -180 and 180.`;
+    }
+  }
+  return null;
+}
 
 function validatePoleData(req, res, next) {
   const { lat, lng, name } = req.body;
   if (!isValidCoordinate(lat, lng)) {
-    return res.status(400).json({
-      error: 'Invalid coordinates. lat must be between -90 and 90, lng between -180 and 180.'
-    });
+    return res.status(400).json({ error: INVALID_COORDS_MSG });
   }
   if (name !== undefined && typeof name !== 'string') {
     return res.status(400).json({ error: 'Name must be a string' });
@@ -58,10 +94,19 @@ function validatePoleData(req, res, next) {
 
 function validateEnclosureData(req, res, next) {
   const { lat, lng, pole_id, name, type } = req.body;
-  if (!isValidCoordinate(lat, lng)) {
-    return res.status(400).json({
-      error: 'Invalid coordinates. lat must be between -90 and 90, lng between -180 and 180.'
-    });
+
+  // A box is either attached to a pole (pole_id) OR placed at a direct
+  // location (lat/lng, e.g. customer enclosures). Coordinates are only
+  // required when no pole is given — the route handler enforces the
+  // either/or rule itself.
+  const hasPole = pole_id !== undefined && pole_id !== null && pole_id !== '';
+  const hasCoords = lat !== undefined && lat !== null && lng !== undefined && lng !== null;
+
+  if (!hasPole && !hasCoords) {
+    return res.status(400).json({ error: 'Either pole_id or lat/lng is required' });
+  }
+  if (hasCoords && !isValidCoordinate(lat, lng)) {
+    return res.status(400).json({ error: INVALID_COORDS_MSG });
   }
   if (pole_id !== undefined && typeof pole_id !== 'string' && typeof pole_id !== 'number') {
     return res.status(400).json({ error: 'pole_id must be a string or number' });
@@ -78,34 +123,30 @@ function validateEnclosureData(req, res, next) {
 }
 
 function validateCableData(req, res, next) {
-  const { route, cable_type, start_enclosure_id, end_enclosure_id } = req.body;
-  if (!Array.isArray(route) || route.length < 2) {
-    return res.status(400).json({
-      error: 'Route must be an array of at least 2 coordinate pairs [lng, lat]'
-    });
+  const { route, route_geometry, route_points, cable_type, from_enclosure_id, to_enclosure_id } = req.body;
+
+  // Geometry is optional at the middleware level: the route handler builds a
+  // straight line from the two endpoints when no explicit geometry is given.
+  // Validate any geometry arrays that ARE present.
+  for (const [field, value] of [['route', route], ['route_geometry', route_geometry], ['route_points', route_points]]) {
+    const error = validateCoordArray(value, field, { require: false });
+    if (error) return res.status(400).json({ error });
   }
-  for (let i = 0; i < route.length; i++) {
-    const coord = route[i];
-    if (!Array.isArray(coord) || coord.length < 2) {
-      return res.status(400).json({
-        error: `Invalid coordinate at index ${i}. Expected [lng, lat] array.`
-      });
-    }
-    const [lng, lat] = coord;
-    if (!isValidCoordinate(lat, lng)) {
-      return res.status(400).json({
-        error: `Invalid coordinates at index ${i}. lat must be between -90 and 90, lng between -180 and 180.`
-      });
-    }
+
+  if (!from_enclosure_id) {
+    return res.status(400).json({ error: 'from_enclosure_id is required' });
   }
   if (cable_type !== undefined && typeof cable_type !== 'string') {
     return res.status(400).json({ error: 'cable_type must be a string' });
   }
-  if (start_enclosure_id !== undefined && typeof start_enclosure_id !== 'string' && typeof start_enclosure_id !== 'number') {
-    return res.status(400).json({ error: 'start_enclosure_id must be a string or number' });
+  if (cable_type !== undefined && !['feeder', 'distribution', 'drop'].includes(cable_type)) {
+    return res.status(400).json({ error: "cable_type must be 'feeder', 'distribution' or 'drop'" });
   }
-  if (end_enclosure_id !== undefined && typeof end_enclosure_id !== 'string' && typeof end_enclosure_id !== 'number') {
-    return res.status(400).json({ error: 'end_enclosure_id must be a string or number' });
+  if (from_enclosure_id !== undefined && typeof from_enclosure_id !== 'string' && typeof from_enclosure_id !== 'number') {
+    return res.status(400).json({ error: 'from_enclosure_id must be a string or number' });
+  }
+  if (to_enclosure_id !== undefined && typeof to_enclosure_id !== 'string' && typeof to_enclosure_id !== 'number') {
+    return res.status(400).json({ error: 'to_enclosure_id must be a string or number' });
   }
   req.body.cable_type = cable_type ? sanitizeString(cable_type) : cable_type;
   next();
@@ -114,9 +155,7 @@ function validateCableData(req, res, next) {
 function validateCustomerData(req, res, next) {
   const { lat, lng, name, email, phone } = req.body;
   if (!isValidCoordinate(lat, lng)) {
-    return res.status(400).json({
-      error: 'Invalid coordinates. lat must be between -90 and 90, lng between -180 and 180.'
-    });
+    return res.status(400).json({ error: INVALID_COORDS_MSG });
   }
   if (name !== undefined && typeof name !== 'string') {
     return res.status(400).json({ error: 'Name must be a string' });
@@ -134,45 +173,63 @@ function validateCustomerData(req, res, next) {
 }
 
 function validateSpliceData(req, res, next) {
-  const { cable_id, enclosure_id, core_assignments } = req.body;
-  if (cable_id === undefined) {
-    return res.status(400).json({ error: 'cable_id is required' });
-  }
-  if (enclosure_id === undefined) {
+  // Contract used by POST /api/splices and the frontend splice form.
+  const { enclosure_id, core_a_id, core_b_id, loss_db, splice_type } = req.body;
+
+  if (enclosure_id === undefined || enclosure_id === null || enclosure_id === '') {
     return res.status(400).json({ error: 'enclosure_id is required' });
   }
-  if (!Array.isArray(core_assignments)) {
-    return res.status(400).json({ error: 'core_assignments must be an array' });
+  if (core_a_id === undefined || core_a_id === null || core_a_id === '') {
+    return res.status(400).json({ error: 'core_a_id is required' });
+  }
+  if (core_b_id === undefined || core_b_id === null || core_b_id === '') {
+    return res.status(400).json({ error: 'core_b_id is required' });
+  }
+  if (core_a_id === core_b_id) {
+    return res.status(400).json({ error: 'A core cannot be spliced to itself' });
+  }
+  if (splice_type !== undefined && !['fusion', 'mechanical'].includes(splice_type)) {
+    return res.status(400).json({ error: "splice_type must be 'fusion' or 'mechanical'" });
+  }
+  if (loss_db !== undefined && loss_db !== null && loss_db !== '' && !isValidNumber(loss_db, 0, 10)) {
+    return res.status(400).json({ error: 'loss_db must be a number between 0 and 10' });
   }
   next();
 }
 
 function validateSplitterData(req, res, next) {
-  const { enclosure_id, split_ratio, ports } = req.body;
-  if (enclosure_id === undefined) {
+  // Contract used by POST /api/splitters and the frontend splitter form.
+  const { enclosure_id, input_core_id, split_count, loss_db, splice_type } = req.body;
+
+  if (enclosure_id === undefined || enclosure_id === null || enclosure_id === '') {
     return res.status(400).json({ error: 'enclosure_id is required' });
   }
-  if (!isValidNumber(split_ratio, 1, 128)) {
-    return res.status(400).json({ error: 'split_ratio must be a number between 1 and 128' });
+  if (input_core_id === undefined || input_core_id === null || input_core_id === '') {
+    return res.status(400).json({ error: 'input_core_id is required' });
   }
-  if (ports !== undefined && !isValidNumber(ports, 1, 64)) {
-    return res.status(400).json({ error: 'ports must be a number between 1 and 64' });
+  if (split_count !== undefined && ![2, 4, 8].includes(Number(split_count))) {
+    return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
+  }
+  if (splice_type !== undefined && !['fusion', 'mechanical'].includes(splice_type)) {
+    return res.status(400).json({ error: "splice_type must be 'fusion' or 'mechanical'" });
+  }
+  if (loss_db !== undefined && loss_db !== null && loss_db !== '' && !isValidNumber(loss_db, 0, 40)) {
+    return res.status(400).json({ error: 'loss_db must be a number between 0 and 40' });
   }
   next();
 }
 
 function validateFiberCoreData(req, res, next) {
-  const { cable_id, core_number, status } = req.body;
-  if (cable_id === undefined) {
-    return res.status(400).json({ error: 'cable_id is required' });
-  }
-  if (!isValidNumber(core_number, 1, 288)) {
-    return res.status(400).json({ error: 'core_number must be a number between 1 and 288' });
-  }
+  // Used on PATCH /api/fiber-cores/:id — every field is optional; the handler
+  // decides what to apply. Just type-check what is present.
+  const { status, notes } = req.body;
   if (status !== undefined && typeof status !== 'string') {
     return res.status(400).json({ error: 'status must be a string' });
   }
-  req.body.status = status ? sanitizeString(status) : status;
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return res.status(400).json({ error: 'notes must be a string' });
+  }
+  if (status) req.body.status = sanitizeString(status);
   next();
 }
 
