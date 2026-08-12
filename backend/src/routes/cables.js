@@ -1,5 +1,6 @@
 const express = require("express");
 const db = require("../db");
+const { nextCode } = require("../utils/codegen");
 const {
   coordinatesToWkt,
   fetchStreetRoute,
@@ -186,11 +187,12 @@ async function resolveRoute(body) {
 
   const route = buildExactRoutePoints({ fromPoint, toPoint, route_points });
 
-  // Try to lay the cable along real streets (OSRM) through the control
-  // points (start → duct bends → end). If the routing service is unreachable
-  // or can't compute a route, fall back to the straight polyline so cable
-  // creation always works offline.
-  if (process.env.STREET_ROUTING !== "off") {
+  // Default: the cable follows EXACTLY what was drawn — a straight line when
+  // there are no duct bends, otherwise a polyline through each bend. Street
+  // routing (snapping the line to roads via OSRM) is opt-in: it reinterprets
+  // the drawn geometry, e.g. detouring off-road endpoints to roads, which is
+  // rarely what the drafter intended. Set STREET_ROUTING=on to enable it.
+  if (process.env.STREET_ROUTING === "on") {
     try {
       const street = await fetchStreetRoute(route);
       return {
@@ -332,6 +334,14 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
     const route = JSON.parse(cable.route_geojson).coordinates;
     const totalLengthM = measurePolylineMeters(route);
 
+    // Poles are anonymous mounting points — auto-assign a code when the
+    // caller doesn't provide one.
+    let finalPoleCode = pole_code;
+    if (!finalPoleCode || !String(finalPoleCode).trim()) {
+      const existing = await trx("poles").select("code");
+      finalPoleCode = nextCode(existing.map((r) => r.code), "POLE-");
+    }
+
     // Determine split distance: prefer split_distance_m, then split_ratio, default to midpoint
     let targetMeters;
     if (split_distance_m != null && !Number.isNaN(Number(split_distance_m))) {
@@ -357,7 +367,7 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
     // Create the new pole at the split point
     const [pole] = await trx("poles")
       .insert({
-        code: pole_code,
+        code: finalPoleCode,
         name: pole_name ?? null,
         status: pole_status,
         pole_type,

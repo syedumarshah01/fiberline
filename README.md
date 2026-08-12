@@ -44,6 +44,6 @@ npm run dev                # http://localhost:5173, proxies /api to :4000
 ## What's still manual / next steps if you want to keep going
 
 - **Auth** — no login/roles yet; anyone with API access can write. Needed before this touches production data.
-- **Cable routing along real streets** — cable creation and draft preview now use a street-routing service, so routes bend along mapped streets instead of a straight endpoint-to-endpoint segment.
+- **Cable geometry is exactly what you draw** — a cable is stored as the straight segment between its two boxes when no duct bends are placed, or as a polyline through every bend you click. It is never silently snapped to roads. Set `STREET_ROUTING=on` in the backend env to opt into street routing (via OSRM) if you want road-following geometry instead.
 - **Multi-hop cable segments** — a single physical cable currently connects exactly two enclosures. If a feeder cable physically passes through several poles before terminating, model it as several `cable_segments` chained together (mentioned in the schema notes) rather than one row.
 - **Editing/deleting spliced cores safely** — deleting a cable currently cascades and could silently orphan splice records; add a guard before going live.

@@ -1,6 +1,7 @@
 const express = require("express");
 const db = require("../db");
 const { validatePoleData } = require("../middleware/validation");
+const { nextCode } = require("../utils/codegen");
 const router = express.Router();
 
 // GET /api/poles  — all poles, as GeoJSON-friendly plain objects
@@ -45,8 +46,16 @@ router.post("/", validatePoleData, async (req, res, next) => {
   try {
     const { code, name, status, pole_type, height_m, notes, lat, lng } =
       req.body;
-    if (lat == null || lng == null || !code) {
-      return res.status(400).json({ error: "code, lat, and lng are required" });
+    if (lat == null || lng == null) {
+      return res.status(400).json({ error: "lat and lng are required" });
+    }
+
+    // Poles are anonymous mounting points for boxes — callers no longer
+    // supply a code; auto-generate the next internal POLE-XXXX code.
+    let finalCode = code;
+    if (!finalCode || !String(finalCode).trim()) {
+      const existing = await db("poles").select("code");
+      finalCode = nextCode(existing.map((r) => r.code), "POLE-");
     }
 
     const normalizedName = name ?? null;
@@ -60,7 +69,7 @@ router.post("/", validatePoleData, async (req, res, next) => {
        VALUES (?, ?, COALESCE(?, 'active'), ?, ?, ?, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography)
        RETURNING id, code, name, status`,
       [
-        code,
+        finalCode,
         normalizedName,
         normalizedStatus,
         normalizedPoleType,

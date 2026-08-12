@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useState } from "react";
 import { api } from "../api";
-import { suggestCode, nearestWithCode } from "../utils/codeSuggestion";
+import {
+  buildTwoOptions,
+  nearestWithCode,
+} from "../utils/codeSuggestion";
+import { lookupAreaName } from "../utils/areaName";
 
 function Field({ label, children }) {
   return (
@@ -8,6 +12,82 @@ function Field({ label, children }) {
       <label>{label}</label>
       {children}
     </div>
+  );
+}
+
+// Human labels used when composing name suggestions.
+const BOX_LABELS = {
+  splice_closure: "Splice Closure",
+  cabinet: "Cabinet",
+  nap: "NAP",
+  handhole: "Handhole",
+  terminal: "Terminal",
+};
+const CABLE_LABELS = {
+  backbone: "Backbone",
+  feeder: "Feeder",
+  distribution: "Distribution",
+  drop: "Drop",
+};
+
+/**
+ * Resolve the map area name for a point (async, cached, fails soft to null).
+ */
+function useAreaName(point) {
+  const [area, setArea] = useState(null);
+  const lat = point?.lat;
+  const lng = point?.lng;
+  useEffect(() => {
+    let cancelled = false;
+    if (lat == null || lng == null) {
+      setArea(null);
+      return;
+    }
+    lookupAreaName(lat, lng).then((name) => {
+      if (!cancelled) setArea(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lat, lng]);
+  return area;
+}
+
+/**
+ * Two-option code/name suggestions for the add-box / draw-cable forms:
+ * option 1 is based on the nearest existing asset, option 2 on the name of
+ * the map area we're working in (via reverse geocoding).
+ *
+ * Returns { codeOptions, nameOptions } — arrays of at most 2 strings.
+ */
+function useTwoOptionSuggestions({ items, prefix, typeLabel, point }) {
+  const area = useAreaName(point);
+  return useMemo(() => {
+    const codes = (items || []).map((i) => i.code);
+    const names = (items || []).map((i) => i.name).filter(Boolean);
+    const nearest = point ? nearestWithCode(items, point) : null;
+    return buildTwoOptions({ codes, names, defaultPrefix: prefix, typeLabel, nearest, area });
+  }, [items, prefix, typeLabel, point, area]);
+}
+
+/** Text input with a native two-option suggestion dropdown. */
+function SuggestedField({ label, value, onChange, options, placeholder, autoFocus }) {
+  const listId = useId();
+  return (
+    <Field label={label}>
+      <input
+        list={listId}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+      />
+      <datalist id={listId}>
+        {options.map((option) => (
+          <option key={option} value={option} />
+        ))}
+      </datalist>
+    </Field>
   );
 }
 
@@ -45,45 +125,10 @@ function CapacityField({ type, value, onChange }) {
 }
 
 /**
- * Auto-suggested code input: fills itself from the existing inventory (nearest
- * asset's numbering family wins) but never overwrites something the user typed.
+ * Poles are anonymous mounting points for boxes — no code, no name.
+ * Just pick the type; the backend assigns an internal code automatically.
  */
-function useSuggestedCode(items, defaultPrefix, nearPoint) {
-  const [code, setCode] = useState("");
-  const lastApplied = useRef("");
-
-  const suggestion = useMemo(() => {
-    if (!nearPoint) {
-      return suggestCode(
-        (items || []).map((i) => i.code),
-        defaultPrefix,
-      );
-    }
-    return suggestCode(
-      (items || []).map((i) => i.code),
-      defaultPrefix,
-      nearestWithCode(items, nearPoint),
-    );
-  }, [items, defaultPrefix, nearPoint]);
-
-  // Apply only when the field is untouched or still holds an older suggestion.
-  useEffect(() => {
-    if (suggestion && (!code || code === lastApplied.current)) {
-      setCode(suggestion);
-      lastApplied.current = suggestion;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggestion]);
-
-  // Only show the "auto-suggested" hint while the field still holds it —
-  // once the user types their own code the hint would be misleading.
-  const hint = code && code === lastApplied.current ? code : null;
-  return [code, setCode, hint];
-}
-
-export function AddPoleForm({ point, onSubmit, onCancel, poles }) {
-  const [code, setCode, codeSuggestion] = useSuggestedCode(poles, "POLE-", point);
-  const [name, setName] = useState("");
+export function AddPoleForm({ point, onSubmit, onCancel }) {
   const [poleType, setPoleType] = useState("wooden");
 
   if (!point) {
@@ -96,44 +141,18 @@ export function AddPoleForm({ point, onSubmit, onCancel, poles }) {
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (!code.trim()) return;
         onSubmit({
-          code,
-          name,
           pole_type: poleType,
           lat: point.lat,
           lng: point.lng,
         });
-        setCode("");
-        setName("");
       }}
     >
       <p className="empty-state">
         {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
       </p>
-      <Field label="Pole code *">
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="POLE-0042"
-          autoFocus
-        />
-        {codeSuggestion && (
-          <p className="field-hint">
-            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
-            poles) — edit freely.
-          </p>
-        )}
-      </Field>
-      <Field label="Name">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Optional"
-        />
-      </Field>
       <Field label="Pole type">
-        <select value={poleType} onChange={(e) => setPoleType(e.target.value)}>
+        <select value={poleType} onChange={(e) => setPoleType(e.target.value)} autoFocus>
           <option value="wooden">Wooden</option>
           <option value="concrete">Concrete</option>
           <option value="existing-utility">Existing utility pole</option>
@@ -155,15 +174,17 @@ export function AddPoleForm({ point, onSubmit, onCancel, poles }) {
 }
 
 export function AddEnclosureForm({ pole, onSubmit, onCancel, enclosures }) {
-  const [code, setCode, codeSuggestion] = useSuggestedCode(
-    enclosures,
-    "BOX-",
-    pole ? { lat: pole.lat, lng: pole.lng } : null,
-  );
+  const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [type, setType] = useState("splice_closure");
   // Empty = use the typical default for the chosen type.
   const [capacity, setCapacity] = useState("");
+  const { codeOptions, nameOptions } = useTwoOptionSuggestions({
+    items: enclosures,
+    prefix: "BOX-",
+    typeLabel: BOX_LABELS[type] ?? "Box",
+    point: pole ? { lat: pole.lat, lng: pole.lng } : null,
+  });
 
   if (!pole) {
     return (
@@ -190,29 +211,23 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel, enclosures }) {
       }}
     >
       <p className="empty-state">
-        Attaching to pole <code>{pole.code}</code>
+        Attaching to the selected pole
       </p>
-      <Field label="Box code *">
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="BOX-0042"
-          autoFocus
-        />
-        {codeSuggestion && (
-          <p className="field-hint">
-            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
-            boxes) — edit freely.
-          </p>
-        )}
-      </Field>
-      <Field label="Name">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Optional"
-        />
-      </Field>
+      <SuggestedField
+        label="Box code *"
+        value={code}
+        onChange={setCode}
+        options={codeOptions}
+        placeholder="BOX-0042"
+        autoFocus
+      />
+      <SuggestedField
+        label="Name"
+        value={name}
+        onChange={setName}
+        options={nameOptions}
+        placeholder="Optional"
+      />
       <Field label="Type">
         <select value={type} onChange={(e) => setType(e.target.value)}>
           <option value="splice_closure">Splice closure</option>
@@ -239,10 +254,16 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel, enclosures }) {
 }
 
 export function AddCustomerEnclosureForm({ point, onSubmit, onCancel, enclosures }) {
-  const [code, setCode, codeSuggestion] = useSuggestedCode(enclosures, "CUST-BOX-", point);
+  const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [type, setType] = useState("terminal");
   const [capacity, setCapacity] = useState("");
+  const { codeOptions, nameOptions } = useTwoOptionSuggestions({
+    items: enclosures,
+    prefix: "CUST-BOX-",
+    typeLabel: BOX_LABELS[type] ?? "Box",
+    point,
+  });
 
   if (!point) {
     return (
@@ -272,27 +293,21 @@ export function AddCustomerEnclosureForm({ point, onSubmit, onCancel, enclosures
       <p className="empty-state">
         Customer location: {point.lat.toFixed(6)}, {point.lng.toFixed(6)}
       </p>
-      <Field label="Box code *">
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="CUST-BOX-001"
-          autoFocus
-        />
-        {codeSuggestion && (
-          <p className="field-hint">
-            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
-            boxes) — edit freely.
-          </p>
-        )}
-      </Field>
-      <Field label="Name">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Optional"
-        />
-      </Field>
+      <SuggestedField
+        label="Box code *"
+        value={code}
+        onChange={setCode}
+        options={codeOptions}
+        placeholder="CUST-BOX-001"
+        autoFocus
+      />
+      <SuggestedField
+        label="Name"
+        value={name}
+        onChange={setName}
+        options={nameOptions}
+        placeholder="Optional"
+      />
       <Field label="Type">
         <select value={type} onChange={(e) => setType(e.target.value)}>
           <option value="terminal">Terminal (customer box)</option>
@@ -338,22 +353,26 @@ export function DrawCableForm({
         const mid = c.route && c.route.length
           ? c.route[Math.floor(c.route.length / 2)]
           : null;
-        return mid ? { code: c.code, lng: mid[0], lat: mid[1] } : { code: c.code };
+        return mid
+          ? { code: c.code, name: c.name, lng: mid[0], lat: mid[1] }
+          : { code: c.code, name: c.name };
       }),
     [cables],
   );
-  const [code, setCode, codeSuggestion] = useSuggestedCode(
-    cablePoints,
-    "CBL-",
-    fromEnclosure,
-  );
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
   const [cableType, setCableType] = useState("distribution");
-  const [coreCount, setCoreCount] = useState(24);
   const [customerId, setCustomerId] = useState("");
 
   const isDrop = cableType === "drop";
   // For drop cables, customer is optional - can be set later
   const destinationReady = isDrop ? true : !!toEnclosure;
+  const { codeOptions, nameOptions } = useTwoOptionSuggestions({
+    items: cablePoints,
+    prefix: "CBL-",
+    typeLabel: CABLE_LABELS[cableType] ?? "Cable",
+    point: fromEnclosure ? { lat: fromEnclosure.lat, lng: fromEnclosure.lng } : null,
+  });
   const previewReady = !!routePreview?.route?.length;
   const canSubmit = code.trim() && destinationReady && previewReady;
 
@@ -417,6 +436,7 @@ export function DrawCableForm({
         if (!canSubmit) return;
         onSubmit({
           code,
+          name: name || undefined,
           cable_type: cableType,
           core_count: Number(coreCount),
           from_enclosure_id: fromEnclosure.id,
@@ -499,19 +519,20 @@ export function DrawCableForm({
         </div>
       )}
 
-      <Field label="Cable code *">
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="CBL-0042"
-        />
-        {codeSuggestion && (
-          <p className="field-hint">
-            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
-            cables) — edit freely.
-          </p>
-        )}
-      </Field>
+      <SuggestedField
+        label="Cable code *"
+        value={code}
+        onChange={setCode}
+        options={codeOptions}
+        placeholder="CBL-0042"
+      />
+      <SuggestedField
+        label="Name"
+        value={name}
+        onChange={setName}
+        options={nameOptions}
+        placeholder="Optional"
+      />
       <Field label="Core count">
         <input
           type="number"
@@ -639,9 +660,9 @@ export default function LeftPanel(props) {
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
-                  <div className="code">{p.code}</div>
+                  <div className="code">Pole</div>
                   <div className="sub">
-                    {p.name || "—"} · {p.pole_type}
+                    {p.pole_type || "standard"} pole
                   </div>
                 </div>
                 {onDeletePole && (
@@ -685,7 +706,7 @@ export default function LeftPanel(props) {
                 <div>
                   <div className="code">{e.code}</div>
                   <div className="sub">
-                    {e.type.replace("_", " ")} · {e.pole_code ? `on ${e.pole_code}` : "customer location"}
+                    {e.type.replace("_", " ")} · {e.pole_id ? "pole-mounted" : "free-standing"}
                   </div>
                 </div>
                 {onDeleteEnclosure && (
