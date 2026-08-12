@@ -1140,8 +1140,7 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
   function openInsertForm() {
     setInsertForm({
-      pole_code: `${full.code}-MID-POLE`,
-      pole_name: "",
+      // poles are anonymous mounting points — no code/name needed
       enclosure_code: `${full.code}-MID-BOX`,
       enclosure_name: "",
       downstream_cable_code: `${full.code}-B`,
@@ -1156,8 +1155,6 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
     try {
       const result = await api.insertEnclosureOnCable(full.id, {
-        pole_code: insertForm.pole_code,
-        pole_name: insertForm.pole_name || null,
         enclosure_code: insertForm.enclosure_code,
         enclosure_name: insertForm.enclosure_name || null,
         downstream_cable_code: insertForm.downstream_cable_code,
@@ -1171,7 +1168,7 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       await api.getCable(cable.id).then(setFull);
       onChanged?.();
       alert(
-        `Done! New pole "${result.pole.code}" and enclosure "${result.enclosure.code}" placed.\n` +
+        `Done! New pole and enclosure "${result.enclosure.code}" placed.\n` +
         `Upstream: ${Math.round(result.split_info.upstream_length_m)}m → Box → Downstream: ${Math.round(result.split_info.downstream_length_m)}m\n` +
         `${result.summary.available_cores} cores available for splicing to customer drops.`
       );
@@ -1324,25 +1321,6 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                 </div>
               )}
 
-              <div className="field">
-                <label>Pole code</label>
-                <input
-                  value={insertForm.pole_code}
-                  onChange={(e) =>
-                    setInsertForm((f) => ({ ...f, pole_code: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="field">
-                <label>Pole name</label>
-                <input
-                  value={insertForm.pole_name}
-                  onChange={(e) =>
-                    setInsertForm((f) => ({ ...f, pole_name: e.target.value }))
-                  }
-                  placeholder="Optional"
-                />
-              </div>
               <div className="field">
                 <label>Enclosure code</label>
                 <input

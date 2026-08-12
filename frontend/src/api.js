@@ -68,6 +68,13 @@ async function request(path, options = {}, retryCount = 0) {
       throw error;
     }
 
+    // DELETE endpoints (and some others) answer 204 No Content, i.e. a
+    // successful response WITHOUT a JSON body. That is a valid outcome, not
+    // an invalid response.
+    if (res.status === 204 || body === null) {
+      return { ok: true, status: res.status };
+    }
+
     return validateResponse(body, path);
   } catch (error) {
     if (error.name === 'AbortError') {
