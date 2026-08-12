@@ -227,6 +227,28 @@ export default function App() {
     reloadAll();
   }
 
+  async function handleDeleteEnclosure(enclosureId) {
+    if (!confirm("Delete this box? Any cables attached to it must be removed first.")) return;
+    try {
+      await api.deleteEnclosure(enclosureId);
+      if (selectedEnclosure?.id === enclosureId) setSelectedEnclosure(null);
+      reloadAll();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleDeleteCable(cableId) {
+    if (!confirm("Delete this cable? Its cores must not be wired into splices or splitters.")) return;
+    try {
+      await api.deleteCable(cableId);
+      if (selectedCable?.id === cableId) setSelectedCable(null);
+      reloadAll();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   async function handleCreateCable(data) {
     try {
       await api.createCable(data);
@@ -434,7 +456,9 @@ export default function App() {
             onCreatePole={handleCreatePole}
             onDeletePole={handleDeletePole}
             onCreateEnclosure={handleCreateEnclosure}
+            onDeleteEnclosure={handleDeleteEnclosure}
             onCreateCable={handleCreateCable}
+            onDeleteCable={handleDeleteCable}
             onUndoRoutePoint={undoCableRoutePoint}
             onClearRoute={clearCableRoute}
             onCancelMode={() => handleModeChange("view")}
@@ -545,6 +569,8 @@ export default function App() {
             customers={customers}
             onCreateCustomer={handleCreateCustomer}
             onChanged={reloadAll}
+            onDeleteEnclosure={handleDeleteEnclosure}
+            onDeleteCable={handleDeleteCable}
             onSplitPointChange={handleSplitPointChange}
           />
           </ErrorBoundary>

@@ -51,13 +51,22 @@ const INVALID_COORDS_MSG =
 /**
  * A route-ish array of coordinates. Accepts both [lng, lat] pairs and
  * { lat, lng } point objects (the frontend sends route_points as objects).
+ * An EMPTY array is valid for optional fields — e.g. the draw-cable form sends
+ * route_points: [] when the user adds no duct bends, meaning "straight line
+ * between the two boxes".
  */
 function validateCoordArray(arr, fieldName, { require } = {}) {
   if (arr === undefined || arr === null) {
     return require ? `${fieldName} is required` : null;
   }
-  if (!Array.isArray(arr) || arr.length < 2) {
+  if (!Array.isArray(arr)) {
+    return `${fieldName} must be an array of [lng, lat] pairs or { lat, lng } objects`;
+  }
+  if (require && arr.length < 2) {
     return `${fieldName} must be an array of at least 2 coordinates`;
+  }
+  if (arr.length === 1) {
+    return `${fieldName} must contain at least 2 coordinates when provided`;
   }
   for (let i = 0; i < arr.length; i++) {
     const point = arr[i];

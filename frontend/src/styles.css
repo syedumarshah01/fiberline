@@ -351,3 +351,29 @@ code, .mono { font-family: var(--font-mono); }
 
 .loading-row { color: var(--text-faint); font-size: 12px; padding: 8px 0; }
 .error-row { color: var(--red); font-size: 12px; padding: 8px 0; }
+
+/* Helper text under form inputs (code suggestions, capacity explanation) */
+.field-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 4px 0 0;
+  line-height: 1.45;
+}
+.field-hint code { color: var(--teal); font-family: var(--font-mono); font-size: 11px; }
+
+/* Per-cable core status chips in box documentation */
+.core-count-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.core-count-chip {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.chip-available { color: var(--amber); border-color: rgba(240,180,41,0.4); }
+.chip-spliced { color: var(--teal); border-color: rgba(63,208,201,0.4); }
+.chip-terminated { color: var(--violet); border-color: rgba(139,124,246,0.4); }
+.chip-reserved { color: var(--text-muted); }
+.chip-damaged { color: var(--red); border-color: rgba(239,83,80,0.4); }

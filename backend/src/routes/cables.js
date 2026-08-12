@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("../db");
 const {
   coordinatesToWkt,
+  fetchStreetRoute,
   measurePolylineMeters,
   splitRouteAtDistance,
 } = require("../services/streetRoute");
@@ -184,10 +185,32 @@ async function resolveRoute(body) {
   }
 
   const route = buildExactRoutePoints({ fromPoint, toPoint, route_points });
+
+  // Try to lay the cable along real streets (OSRM) through the control
+  // points (start → duct bends → end). If the routing service is unreachable
+  // or can't compute a route, fall back to the straight polyline so cable
+  // creation always works offline.
+  if (process.env.STREET_ROUTING !== "off") {
+    try {
+      const street = await fetchStreetRoute(route);
+      return {
+        control_points: route,
+        route: street.coordinates.map(([lng, lat]) => ({ lng, lat })),
+        length_m: street.distance_m,
+        routing: "street",
+      };
+    } catch (routeErr) {
+      console.warn(
+        `Street routing unavailable (${routeErr.message}); using straight line`,
+      );
+    }
+  }
+
   return {
     control_points: route,
     route,
     length_m: measureRouteMeters(route),
+    routing: "straight",
   };
 }
 

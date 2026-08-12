@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { suggestCode, nearestWithCode } from "../utils/codeSuggestion";
 
 function Field({ label, children }) {
   return (
@@ -10,8 +11,78 @@ function Field({ label, children }) {
   );
 }
 
-export function AddPoleForm({ point, onSubmit, onCancel }) {
+/**
+ * "Tray/port capacity" from the box form — informational metadata only.
+ * Real availability is derived from cores/splices by the backend, so this
+ * is just a physical reference for technicians (with per-type defaults).
+ */
+const CAPACITY_DEFAULTS = {
+  splice_closure: 24,
+  cabinet: 96,
+  nap: 16,
+  handhole: 12,
+  terminal: 8,
+};
+
+function CapacityField({ type, value, onChange }) {
+  return (
+    <Field label="Physical capacity (optional)">
+      <input
+        type="number"
+        value={value}
+        min="0"
+        placeholder={String(CAPACITY_DEFAULTS[type] ?? 0)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p className="field-hint">
+        Splice trays / ports this box physically has — a reference note only
+        (typical for a {type.replace("_", " ")}: {CAPACITY_DEFAULTS[type] ?? 0}).
+        The free-core counts on the map are computed live from cores and
+        splices, never from this number. Safe to leave as-is.
+      </p>
+    </Field>
+  );
+}
+
+/**
+ * Auto-suggested code input: fills itself from the existing inventory (nearest
+ * asset's numbering family wins) but never overwrites something the user typed.
+ */
+function useSuggestedCode(items, defaultPrefix, nearPoint) {
   const [code, setCode] = useState("");
+  const lastApplied = useRef("");
+
+  const suggestion = useMemo(() => {
+    if (!nearPoint) {
+      return suggestCode(
+        (items || []).map((i) => i.code),
+        defaultPrefix,
+      );
+    }
+    return suggestCode(
+      (items || []).map((i) => i.code),
+      defaultPrefix,
+      nearestWithCode(items, nearPoint),
+    );
+  }, [items, defaultPrefix, nearPoint]);
+
+  // Apply only when the field is untouched or still holds an older suggestion.
+  useEffect(() => {
+    if (suggestion && (!code || code === lastApplied.current)) {
+      setCode(suggestion);
+      lastApplied.current = suggestion;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestion]);
+
+  // Only show the "auto-suggested" hint while the field still holds it —
+  // once the user types their own code the hint would be misleading.
+  const hint = code && code === lastApplied.current ? code : null;
+  return [code, setCode, hint];
+}
+
+export function AddPoleForm({ point, onSubmit, onCancel, poles }) {
+  const [code, setCode, codeSuggestion] = useSuggestedCode(poles, "POLE-", point);
   const [name, setName] = useState("");
   const [poleType, setPoleType] = useState("wooden");
 
@@ -47,6 +118,12 @@ export function AddPoleForm({ point, onSubmit, onCancel }) {
           placeholder="POLE-0042"
           autoFocus
         />
+        {codeSuggestion && (
+          <p className="field-hint">
+            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
+            poles) — edit freely.
+          </p>
+        )}
       </Field>
       <Field label="Name">
         <input
@@ -77,11 +154,16 @@ export function AddPoleForm({ point, onSubmit, onCancel }) {
   );
 }
 
-export function AddEnclosureForm({ pole, onSubmit, onCancel }) {
-  const [code, setCode] = useState("");
+export function AddEnclosureForm({ pole, onSubmit, onCancel, enclosures }) {
+  const [code, setCode, codeSuggestion] = useSuggestedCode(
+    enclosures,
+    "BOX-",
+    pole ? { lat: pole.lat, lng: pole.lng } : null,
+  );
   const [name, setName] = useState("");
   const [type, setType] = useState("splice_closure");
-  const [capacity, setCapacity] = useState(48);
+  // Empty = use the typical default for the chosen type.
+  const [capacity, setCapacity] = useState("");
 
   if (!pole) {
     return (
@@ -100,7 +182,7 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel }) {
           code,
           name,
           type,
-          capacity: Number(capacity),
+          capacity: capacity === "" ? (CAPACITY_DEFAULTS[type] ?? 0) : Number(capacity),
           pole_id: pole.id,
         });
         setCode("");
@@ -117,6 +199,12 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel }) {
           placeholder="BOX-0042"
           autoFocus
         />
+        {codeSuggestion && (
+          <p className="field-hint">
+            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
+            boxes) — edit freely.
+          </p>
+        )}
       </Field>
       <Field label="Name">
         <input
@@ -134,14 +222,7 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel }) {
           <option value="terminal">Terminal</option>
         </select>
       </Field>
-      <Field label="Tray/port capacity">
-        <input
-          type="number"
-          value={capacity}
-          onChange={(e) => setCapacity(e.target.value)}
-          min="1"
-        />
-      </Field>
+      <CapacityField type={type} value={capacity} onChange={setCapacity} />
       <button className="btn btn-primary btn-block" type="submit">
         Create box
       </button>
@@ -157,11 +238,11 @@ export function AddEnclosureForm({ pole, onSubmit, onCancel }) {
   );
 }
 
-export function AddCustomerEnclosureForm({ point, onSubmit, onCancel }) {
-  const [code, setCode] = useState("");
+export function AddCustomerEnclosureForm({ point, onSubmit, onCancel, enclosures }) {
+  const [code, setCode, codeSuggestion] = useSuggestedCode(enclosures, "CUST-BOX-", point);
   const [name, setName] = useState("");
   const [type, setType] = useState("terminal");
-  const [capacity, setCapacity] = useState(4);
+  const [capacity, setCapacity] = useState("");
 
   if (!point) {
     return (
@@ -180,7 +261,7 @@ export function AddCustomerEnclosureForm({ point, onSubmit, onCancel }) {
           code,
           name,
           type,
-          capacity: Number(capacity),
+          capacity: capacity === "" ? (CAPACITY_DEFAULTS[type] ?? 0) : Number(capacity),
           lat: point.lat,
           lng: point.lng,
         });
@@ -198,6 +279,12 @@ export function AddCustomerEnclosureForm({ point, onSubmit, onCancel }) {
           placeholder="CUST-BOX-001"
           autoFocus
         />
+        {codeSuggestion && (
+          <p className="field-hint">
+            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
+            boxes) — edit freely.
+          </p>
+        )}
       </Field>
       <Field label="Name">
         <input
@@ -214,14 +301,7 @@ export function AddCustomerEnclosureForm({ point, onSubmit, onCancel }) {
           <option value="nap">NAP (customer access point)</option>
         </select>
       </Field>
-      <Field label="Core capacity">
-        <input
-          type="number"
-          value={capacity}
-          onChange={(e) => setCapacity(e.target.value)}
-          min="1"
-        />
-      </Field>
+      <CapacityField type={type} value={capacity} onChange={setCapacity} />
       <button className="btn btn-primary btn-block" type="submit">
         Create customer box
       </button>
@@ -241,6 +321,7 @@ export function DrawCableForm({
   fromEnclosure,
   toEnclosure,
   customers,
+  cables,
   routePoints,
   routePreview,
   onSubmit,
@@ -249,7 +330,23 @@ export function DrawCableForm({
   onClearRoute,
   onPreviewRoute,
 }) {
-  const [code, setCode] = useState("");
+  // Cables have no direct lat/lng — use each route's midpoint so the nearest
+  // cable's numbering family can win (mirrors "suggest based on nearby cables").
+  const cablePoints = useMemo(
+    () =>
+      (cables || []).map((c) => {
+        const mid = c.route && c.route.length
+          ? c.route[Math.floor(c.route.length / 2)]
+          : null;
+        return mid ? { code: c.code, lng: mid[0], lat: mid[1] } : { code: c.code };
+      }),
+    [cables],
+  );
+  const [code, setCode, codeSuggestion] = useSuggestedCode(
+    cablePoints,
+    "CBL-",
+    fromEnclosure,
+  );
   const [cableType, setCableType] = useState("distribution");
   const [coreCount, setCoreCount] = useState(24);
   const [customerId, setCustomerId] = useState("");
@@ -408,6 +505,12 @@ export function DrawCableForm({
           onChange={(e) => setCode(e.target.value)}
           placeholder="CBL-0042"
         />
+        {codeSuggestion && (
+          <p className="field-hint">
+            Auto-suggested: <code>{codeSuggestion}</code> (based on nearby
+            cables) — edit freely.
+          </p>
+        )}
       </Field>
       <Field label="Core count">
         <input
@@ -447,6 +550,8 @@ export default function LeftPanel(props) {
     onSelectCable,
     selectedId,
     onDeletePole,
+    onDeleteEnclosure,
+    onDeleteCable,
   } = props;
 
   const [tab, setTab] = useState("poles");
@@ -484,6 +589,7 @@ export default function LeftPanel(props) {
             fromEnclosure={props.cableDraft?.from}
             toEnclosure={props.cableDraft?.to}
             customers={props.customers}
+            cables={props.cables}
             routePoints={props.routePoints || []}
             routePreview={props.routePreview}
             onSubmit={props.onCreateCable}
@@ -575,9 +681,25 @@ export default function LeftPanel(props) {
               className={`list-item ${selectedId === e.id ? "selected" : ""}`}
               onClick={() => onSelectEnclosure(e)}
             >
-              <div className="code">{e.code}</div>
-              <div className="sub">
-                {e.type.replace("_", " ")} · {e.pole_code ? `on ${e.pole_code}` : "customer location"}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div className="code">{e.code}</div>
+                  <div className="sub">
+                    {e.type.replace("_", " ")} · {e.pole_code ? `on ${e.pole_code}` : "customer location"}
+                  </div>
+                </div>
+                {onDeleteEnclosure && (
+                  <button
+                    className="btn btn-danger"
+                    style={{ padding: "2px 6px", fontSize: 10, marginLeft: 8 }}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onDeleteEnclosure(e.id);
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
           ))
@@ -595,10 +717,26 @@ export default function LeftPanel(props) {
               className={`list-item ${selectedId === c.id ? "selected" : ""}`}
               onClick={() => onSelectCable(c)}
             >
-              <div className="code">{c.code}</div>
-              <div className="sub">
-                {c.cable_type} · {c.core_count} cores{" "}
-                {c.customer_label ? `· ${c.customer_label}` : ""}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div className="code">{c.code}</div>
+                  <div className="sub">
+                    {c.cable_type} · {c.core_count} cores{" "}
+                    {c.customer_label ? `· ${c.customer_label}` : ""}
+                  </div>
+                </div>
+                {onDeleteCable && (
+                  <button
+                    className="btn btn-danger"
+                    style={{ padding: "2px 6px", fontSize: 10, marginLeft: 8 }}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onDeleteCable(c.id);
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
           ))

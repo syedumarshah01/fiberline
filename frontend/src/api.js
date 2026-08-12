@@ -108,6 +108,7 @@ export const api = {
   getCable: (id) => request(`/cables/${id}`),
   createCable: (data) =>
     request("/cables", { method: "POST", body: JSON.stringify(data) }),
+  deleteCable: (id) => request(`/cables/${id}`, { method: "DELETE" }),
   previewCableRoute: (data) =>
     request("/cables/route-preview", {
       method: "POST",

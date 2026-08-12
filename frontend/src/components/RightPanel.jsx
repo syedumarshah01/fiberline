@@ -6,6 +6,23 @@ function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
 }
 
+// Per-cable core status counts, e.g. "4 available · 2 spliced · 1 terminated"
+function CoreCountChips({ cores }) {
+  const counts = {};
+  for (const c of cores) counts[c.status] = (counts[c.status] || 0) + 1;
+  const order = ["available", "spliced", "terminated", "reserved", "damaged"];
+  const entries = order.filter((s) => counts[s]);
+  return (
+    <span className="core-count-chips">
+      {entries.map((s) => (
+        <span key={s} className={`core-count-chip chip-${s}`}>
+          {counts[s]} {s}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 // Standard fiber color codes (IEC 60304)
 // For 12-fiber ribbon: Blue, Orange, Green, Brown, Slate, White, Red, Black, Yellow, Violet, Rose, Aqua
 // For 24+ fibers, the pattern repeats with a black stripe
@@ -60,7 +77,7 @@ function getFiberColorName(coreNumber) {
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
-function BoxDocumentation({ enclosureId, onChanged }) {
+function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -297,17 +314,19 @@ function BoxDocumentation({ enclosureId, onChanged }) {
     setSource(result);
   }
 
-  // Visual mode - show the visual documentation
+  // Visual mode - data-driven wiring diagram (uses the already-loaded doc)
   if (viewMode === "visual") {
     return (
       <div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <p className="section-title" style={{ margin: 0 }}>{doc.enclosure.code} — box documentation</p>
-          <button className="btn" onClick={() => setViewMode("text")} style={{ padding: "4px 12px", fontSize: 12 }}>
-            Back to text
-          </button>
-        </div>
-        <VisualDocumentation enclosureId={enclosureId} onBack={() => setViewMode("text")} />
+        <p className="section-title">{doc.enclosure.code} — wiring diagram</p>
+        <VisualDocumentation
+          doc={doc}
+          onBack={() => setViewMode("text")}
+          onChanged={() => {
+            load();
+            loadSplitters();
+          }}
+        />
       </div>
     );
   }
@@ -321,11 +340,22 @@ function BoxDocumentation({ enclosureId, onChanged }) {
   // Text mode - show the original text documentation
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 6, flexWrap: "wrap" }}>
         <p className="section-title" style={{ margin: 0 }}>{doc.enclosure.code} — box documentation</p>
-        <button className="btn" onClick={() => setViewMode("visual")} style={{ padding: "4px 12px", fontSize: 12 }}>
-          Visual view
-        </button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn" onClick={() => setViewMode("visual")} style={{ padding: "4px 12px", fontSize: 12 }}>
+            Visual view
+          </button>
+          {onDeleteEnclosure && (
+            <button
+              className="btn btn-danger"
+              onClick={() => onDeleteEnclosure(enclosureId)}
+              style={{ padding: "4px 12px", fontSize: 12 }}
+            >
+              Delete box
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="summary-grid">
@@ -389,6 +419,7 @@ function BoxDocumentation({ enclosureId, onChanged }) {
                   <th colSpan={3}>
                     {g.cable.code} · {g.cable.cable_type}{" "}
                     {g.cable.customer_label ? `· ${g.cable.customer_label}` : ""}
+                    <CoreCountChips cores={g.cores} />
                   </th>
                 </tr>
                 <tr>
@@ -430,6 +461,7 @@ function BoxDocumentation({ enclosureId, onChanged }) {
                   <th colSpan={3}>
                     {g.cable.code} · {g.cable.cable_type}{" "}
                     {g.cable.customer_label ? `· ${g.cable.customer_label}` : ""}
+                    <CoreCountChips cores={g.cores} />
                   </th>
                 </tr>
                 <tr>
@@ -1002,7 +1034,7 @@ function BoxDocumentation({ enclosureId, onChanged }) {
 // ---------------------------------------------------------------------------
 // CableDetail — shown when a cable is selected
 // ---------------------------------------------------------------------------
-function CableDetail({ cable, onSplitPointChange, onChanged }) {
+function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
   const [full, setFull] = useState(null);
   const [trace, setTrace] = useState(null);
   const [insertForm, setInsertForm] = useState(null);
@@ -1160,13 +1192,26 @@ function CableDetail({ cable, onSplitPointChange, onChanged }) {
 
   return (
     <div>
-      <p className="section-title">
-        {full.code} — {full.cable_type}
-      </p>
-      <p className="empty-state">
-        {full.core_count} cores{" "}
-        {full.customer_label ? `· label ${full.customer_label}` : ""}
-      </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+        <div>
+          <p className="section-title" style={{ margin: 0 }}>
+            {full.code} — {full.cable_type}
+          </p>
+          <p className="empty-state">
+            {full.core_count} cores{" "}
+            {full.customer_label ? `· label ${full.customer_label}` : ""}
+          </p>
+        </div>
+        {onDeleteCable && (
+          <button
+            className="btn btn-danger"
+            onClick={() => onDeleteCable(full.id)}
+            style={{ padding: "4px 12px", fontSize: 12, flexShrink: 0 }}
+          >
+            Delete cable
+          </button>
+        )}
+      </div>
 
       <div className="summary-grid" style={{ marginBottom: 12 }}>
         {Object.entries(coreSummary).map(([status, count]) => (
@@ -1577,6 +1622,8 @@ export default function RightPanel({
   customers,
   onCreateCustomer,
   onChanged,
+  onDeleteEnclosure,
+  onDeleteCable,
   onSplitPointChange,
 }) {
   return (
@@ -1589,6 +1636,7 @@ export default function RightPanel({
         <BoxDocumentation
           enclosureId={selectedEnclosure.id}
           onChanged={onChanged}
+          onDeleteEnclosure={onDeleteEnclosure}
         />
       )}
 
@@ -1597,6 +1645,7 @@ export default function RightPanel({
           cable={selectedCable}
           onSplitPointChange={onSplitPointChange}
           onChanged={onChanged}
+          onDeleteCable={onDeleteCable}
         />
       )}
 
