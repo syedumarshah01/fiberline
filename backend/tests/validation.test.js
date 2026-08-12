@@ -177,6 +177,22 @@ describe('validateCableData middleware', () => {
     assert.equal(nextCalled, true);
   });
 
+  test('REGRESSION: route_points: [] (box→box with no duct bends) is accepted', () => {
+    // Drawing a cable straight between two boxes sends zero waypoints — this
+    // used to 400 with "route_points must be an array of at least 2 coordinates".
+    const { nextCalled } = run(validateCableData, {
+      ...endpoints, cable_type: 'distribution', route_points: [],
+    });
+    assert.equal(nextCalled, true);
+  });
+
+  test('400s on a single waypoint (a route fragment makes no sense)', () => {
+    const { res } = run(validateCableData, {
+      ...endpoints, route_points: [[71.5, 34.0]],
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
   test('400s without from_enclosure_id', () => {
     const { res, nextCalled } = run(validateCableData, { cable_type: 'drop' });
     assert.equal(nextCalled, false);

@@ -187,6 +187,8 @@ router.delete('/:id', async (req, res, next) => {
           spliced_cores: cores.filter((c) => c.status === 'spliced').length,
           available_cores: availableCores.length,
           terminated_cores: cores.filter((c) => c.status === 'terminated').length,
+          reserved_cores: cores.filter((c) => c.status === 'reserved').length,
+          damaged_cores: cores.filter((c) => c.status === 'damaged').length,
         },
       });
     } catch (err) {
