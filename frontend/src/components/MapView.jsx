@@ -10,7 +10,7 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
-import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM, ENCLOSURE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 /** Color used to spotlight a cable (e.g. while hovering one of its fibers in
  *  the splice form). Deliberately not one of the cable-type colors. */
@@ -222,7 +222,13 @@ export default function MapView({
                         ? 3
                         : 2),
               dashArray: hasSplicedCores && !isHighlighted ? (isSelected ? "2 2" : "10 6") : "none",
-              className: hasSplicedCores ? "cable-line-active" : "",
+              // Marching-ants: both spliced classes animate stroke-dashoffset;
+              // drop cables march faster so the customer leg reads as the
+              // "last hop" (see styles.css).
+              className: [
+                hasSplicedCores ? "cable-line-active" : "",
+                cable.cable_type === "drop" ? "cable-line-drop" : "",
+              ].filter(Boolean).join(" "),
               opacity: isSelected || isHighlighted ? 1 : 0.85,
             }}
             eventHandlers={onCableClick ? {
@@ -263,13 +269,30 @@ export default function MapView({
 
       {enclosures.map((enc) => {
         if (enc.lat == null || enc.lng == null) return null;
+        const isSelected = enc.id === selectedEnclosureId;
+        // Labels stay off until deep zoom so dense boxes don't blanket the
+        // map; below that zoom they appear on hover, and the selected box is
+        // always labeled.
+        const labelAlwaysOn = zoom >= ENCLOSURE_LABEL_MIN_ZOOM || isSelected;
         return (
           <Marker
             key={enc.id}
             position={[enc.lat, enc.lng]}
-            icon={enclosureIcon(capacityByEnclosure?.[enc.id], enc.id === selectedEnclosureId)}
+            icon={enclosureIcon(capacityByEnclosure?.[enc.id], isSelected)}
             eventHandlers={{ click: () => onEnclosureClick(enc) }}
-          />
+          >
+            {enc.code ? (
+              <Tooltip
+                permanent={labelAlwaysOn}
+                direction="top"
+                offset={[0, -11]}
+                className="cable-map-label enc-map-label"
+                opacity={1}
+              >
+                {enc.code}
+              </Tooltip>
+            ) : null}
+          </Marker>
         );
       })}
 

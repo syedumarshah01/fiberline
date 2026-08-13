@@ -53,7 +53,9 @@ const INVALID_COORDS_MSG =
  * { lat, lng } point objects (the frontend sends route_points as objects).
  * An EMPTY array is valid for optional fields — e.g. the draw-cable form sends
  * route_points: [] when the user adds no duct bends, meaning "straight line
- * between the two boxes".
+ * between the two boxes". route_points holds BENDS ONLY (the two endpoints
+ * come from the boxes), so a single point — one bend — is legal. Full-path
+ * fields with < 2 points are still rejected downstream in the route handler.
  */
 function validateCoordArray(arr, fieldName, { require } = {}) {
   if (arr === undefined || arr === null) {
@@ -64,9 +66,6 @@ function validateCoordArray(arr, fieldName, { require } = {}) {
   }
   if (require && arr.length < 2) {
     return `${fieldName} must be an array of at least 2 coordinates`;
-  }
-  if (arr.length === 1) {
-    return `${fieldName} must contain at least 2 coordinates when provided`;
   }
   for (let i = 0; i < arr.length; i++) {
     const point = arr[i];
@@ -211,13 +210,29 @@ function validateSpliceData(req, res, next) {
 
 function validateSplitterData(req, res, next) {
   // Contract used by POST /api/splitters and the frontend splitter form.
-  const { enclosure_id, input_core_id, split_count, loss_db, splice_type } = req.body;
+  // The input is EITHER a fiber core (input_core_id) OR a free port of another
+  // splitter in the same box (input_port: { splitter_id, port_number }) for
+  // cascaded distribution splitters.
+  const { enclosure_id, input_core_id, input_port, split_count, loss_db, splice_type, notes } = req.body;
 
   if (enclosure_id === undefined || enclosure_id === null || enclosure_id === '') {
     return res.status(400).json({ error: 'enclosure_id is required' });
   }
-  if (input_core_id === undefined || input_core_id === null || input_core_id === '') {
-    return res.status(400).json({ error: 'input_core_id is required' });
+  const hasCoreInput = input_core_id !== undefined && input_core_id !== null && input_core_id !== '';
+  const hasPortInput = input_port !== undefined && input_port !== null && input_port !== '';
+  if (!hasCoreInput && !hasPortInput) {
+    return res.status(400).json({ error: 'input_core_id or input_port is required' });
+  }
+  if (hasCoreInput && hasPortInput) {
+    return res.status(400).json({ error: 'provide either input_core_id or input_port, not both' });
+  }
+  if (hasPortInput) {
+    if (typeof input_port !== 'object') {
+      return res.status(400).json({ error: 'input_port must be { splitter_id, port_number }' });
+    }
+    if (!input_port.splitter_id || !isValidNumber(input_port.port_number, 1, Infinity)) {
+      return res.status(400).json({ error: 'input_port must be { splitter_id, port_number }' });
+    }
   }
   if (split_count !== undefined && ![2, 4, 8].includes(Number(split_count))) {
     return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
@@ -227,6 +242,9 @@ function validateSplitterData(req, res, next) {
   }
   if (loss_db !== undefined && loss_db !== null && loss_db !== '' && !isValidNumber(loss_db, 0, 40)) {
     return res.status(400).json({ error: 'loss_db must be a number between 0 and 40' });
+  }
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return res.status(400).json({ error: 'notes must be a string' });
   }
   next();
 }

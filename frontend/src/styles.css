@@ -337,12 +337,20 @@ code, .mono { font-family: var(--font-mono); }
   filter: drop-shadow(0 0 2px rgba(255, 107, 53, 0.3));
 }
 
-/* animated "live" cable line: subtle traveling dash to suggest light in fiber */
+/* animated "live" cable line: marching dashes suggest light traveling the
+   fiber. NOTE: the offset must carry a unit (-24 was dropped by the CSS
+   parser, which is why the lines looked frozen) and be an exact multiple of
+   the dash period, or the loop visibly jumps. Cables use "10 6" (period 16);
+   a selected cable uses "2 2" (period 4) — -16px is a multiple of both. */
 @keyframes pulse-dash {
-  to { stroke-dashoffset: -24; }
+  to { stroke-dashoffset: -16px; }
 }
 .cable-line-active {
-  animation: pulse-dash 1.6s linear infinite;
+  animation: pulse-dash 1.1s linear infinite;
+}
+/* Drop legs (the customer hop) march faster. */
+.cable-line-active.cable-line-drop {
+  animation-duration: 0.6s;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -659,3 +667,56 @@ code, .mono { font-family: var(--font-mono); }
 }
 .vdoc-legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .vdoc-legend-port { position: static; }
+
+/* ---------- Box (enclosure) labels on the map ---------- */
+/* Leaflet: same pill style as cable labels; permanent flag is set per-marker
+   (deep zoom / selected), otherwise it appears on hover. */
+.leaflet-tooltip.enc-map-label:before { display: none; }
+
+/* Mapbox: label span inside the DOM marker; shown at deep zoom (container
+   class toggled by the zoom handler), on hover, or for the selected box. */
+.enc-dot-marker { position: relative; overflow: visible; pointer-events: auto; }
+.enc-dot-label {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 3px);
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(16, 20, 28, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #f4f6fa;
+  pointer-events: none;
+}
+.light-theme .enc-dot-label {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(0, 0, 0, 0.2);
+  color: #1c2a33;
+}
+.enc-labels-on .enc-dot-label,
+.enc-dot-marker:hover .enc-dot-label,
+.enc-dot-marker.is-selected .enc-dot-label { display: block; }
+
+/* ---------- Visual documentation extras ---------- */
+/* "⇠ upstream box · what this fiber connects to there" line under IN rows */
+.vdoc-upstream {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-faint);
+  padding: 0 2px 3px 26px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vdoc-corewrap:last-child .vdoc-upstream { padding-bottom: 1px; }
+/* Label next to a cascade wire ("port 2" of the parent splitter) */
+.vdoc-wirelabel {
+  fill: var(--violet);
+  font: 600 9px var(--font-mono, monospace);
+}
+.vdoc-wire-cascade { stroke-width: 2.2; }

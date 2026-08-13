@@ -1,7 +1,60 @@
 const express = require('express');
 const db = require('../db');
 const { validateSplitterData } = require('../middleware/validation');
+const {
+  defaultSplitterName,
+  splitterInputNote,
+  splitterOutputNote,
+  splitterUnassignNote,
+  portIsOccupied,
+} = require('../utils/splitters');
 const router = express.Router();
+
+// Columns every port listing exposes — including a possible cascaded child
+// splitter (a splitter fed from this port instead of a fiber core).
+const PORT_SELECT = [
+  'splitter_ports.id as port_id',
+  'splitter_ports.port_number',
+  'splitter_ports.status as port_status',
+  'splitter_ports.notes as port_notes',
+  'splitter_ports.output_core_id',
+  'splitter_ports.output_splitter_id',
+  'fiber_cores.id as core_id',
+  'fiber_cores.core_number',
+  'fiber_cores.status as core_status',
+  'cables.code as cable_code',
+  'cables.cable_type',
+  'child.name as child_splitter_name',
+  'child.split_count as child_split_count',
+  'child.enclosure_id as child_splitter_enclosure_id',
+];
+
+function portsFor(splitterId) {
+  return db('splitter_ports')
+    .where({ splitter_id: splitterId })
+    .leftJoin('fiber_cores', 'fiber_cores.id', 'splitter_ports.output_core_id')
+    .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
+    .leftJoin('splitters as child', 'child.id', 'splitter_ports.output_splitter_id')
+    .select(...PORT_SELECT)
+    .orderBy('splitter_ports.port_number');
+}
+
+// Where does this splitter get its light from? Either an input fiber core, or
+// a port of an upstream splitter (cascade). Returns null for neither.
+async function parentInfo(splitterId) {
+  const row = await db('splitter_ports')
+    .where({ output_splitter_id: splitterId })
+    .join('splitters as parent', 'parent.id', 'splitter_ports.splitter_id')
+    .select(
+      'parent.id as splitter_id',
+      'parent.name as splitter_name',
+      'parent.split_count as splitter_split_count',
+      'parent.enclosure_id',
+      'splitter_ports.port_number',
+    )
+    .first();
+  return row || null;
+}
 
 // GET /api/splitters?enclosureId=xxx — all splitters in a given enclosure (with ports)
 router.get('/', async (req, res, next) => {
@@ -11,26 +64,21 @@ router.get('/', async (req, res, next) => {
     if (enclosureId) query.where({ enclosure_id: enclosureId });
     const splitters = await query.orderBy('created_at');
 
-    // Attach ports to each splitter
+    // Resolve input cores to cable code + core number for readable labels
+    const inputIds = splitters.map((s) => s.input_core_id).filter(Boolean);
+    const inputRows = inputIds.length
+      ? await db('fiber_cores')
+          .whereIn('fiber_cores.id', inputIds)
+          .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
+          .select('fiber_cores.id', 'fiber_cores.core_number', 'cables.code as cable_code')
+      : [];
+    const inputById = Object.fromEntries(inputRows.map((r) => [r.id, r]));
+
+    // Attach ports + cascade parent + input core info to each splitter
     for (const s of splitters) {
-      const ports = await db('splitter_ports')
-        .where({ splitter_id: s.id })
-        .leftJoin('fiber_cores', 'fiber_cores.id', 'splitter_ports.output_core_id')
-        .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
-        .select(
-          'splitter_ports.id as port_id',
-          'splitter_ports.port_number',
-          'splitter_ports.status as port_status',
-          'splitter_ports.notes as port_notes',
-          'splitter_ports.output_core_id',
-          'fiber_cores.id as core_id',
-          'fiber_cores.core_number',
-          'fiber_cores.status as core_status',
-          'cables.code as cable_code',
-          'cables.cable_type',
-        )
-        .orderBy('splitter_ports.port_number');
-      s.ports = ports;
+      s.ports = await portsFor(s.id);
+      s.parent = await parentInfo(s.id);
+      s.input_core = s.input_core_id ? inputById[s.input_core_id] || null : null;
     }
 
     res.json(splitters);
@@ -48,25 +96,10 @@ router.get('/:id', async (req, res, next) => {
     // LEFT JOINs (not inner): freshly created ports have output_core_id = NULL
     // and would silently vanish from the response otherwise — inconsistent with
     // the list endpoint above.
-    const ports = await db('splitter_ports')
-      .where({ splitter_id: req.params.id })
-      .leftJoin('fiber_cores', 'fiber_cores.id', 'splitter_ports.output_core_id')
-      .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
-      .select(
-        'splitter_ports.id as port_id',
-        'splitter_ports.port_number',
-        'splitter_ports.status as port_status',
-        'splitter_ports.notes',
-        'splitter_ports.output_core_id',
-        'fiber_cores.id as core_id',
-        'fiber_cores.core_number',
-        'fiber_cores.status as core_status',
-        'cables.code as cable_code',
-        'cables.cable_type',
-      )
-      .orderBy('splitter_ports.port_number');
+    const ports = await portsFor(req.params.id);
+    const parent = await parentInfo(req.params.id);
 
-    res.json({ ...splitter, ports });
+    res.json({ ...splitter, ports, parent });
   } catch (err) {
     next(err);
   }
@@ -74,9 +107,11 @@ router.get('/:id', async (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/splitters
-// Creates a 1:N splitter in an enclosure. Takes 1 input core and N output cores.
-// The input core must be 'available' or 'reserved'. Output cores must be
-// 'available'. On success the input flips to 'spliced' and outputs to 'spliced'.
+// Creates a 1:N splitter in an enclosure. The input is EITHER a fiber core
+// (input_core_id — must be 'available'/'reserved'/'spliced' for branching,
+// and flips to 'spliced') OR a free output port of another splitter in the
+// same box (input_port — cascaded distribution tree). Output ports start
+// empty; cores are assigned to them later as drops get spliced.
 // ---------------------------------------------------------------------------
 router.post('/', validateSplitterData, async (req, res, next) => {
   const trx = await db.transaction();
@@ -86,17 +121,12 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       name,
       split_count = 4, // 2, 4, or 8
       input_core_id,
-      output_core_ids, // Array of N core IDs
+      input_port, // { splitter_id, port_number } — cascade onto a free port
       splice_type = 'fusion',
       loss_db,
       technician,
       notes,
     } = req.body;
-
-    if (!enclosure_id || !input_core_id) {
-      await trx.rollback();
-      return res.status(400).json({ error: 'enclosure_id and input_core_id are required' });
-    }
 
     const validSplits = [2, 4, 8];
     if (!validSplits.includes(Number(split_count))) {
@@ -104,30 +134,74 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
     }
 
-// Lock input core
-    const inputCore = await trx('fiber_cores').where({ id: input_core_id }).forUpdate().first();
-    if (!inputCore) {
-      await trx.rollback();
-      return res.status(404).json({ error: 'Input core not found' });
-    }
-    // Allow spliced cores for branching (adding splitter to an already-spliced core)
-    if (!['available', 'reserved', 'spliced'].includes(inputCore.status)) {
-      await trx.rollback();
-      return res.status(409).json({ error: 'Input core is not available to splice', status: inputCore.status });
+    let inputCore = null;
+    let parentPort = null;
+    // Source description for auto-naming and human-readable notes
+    let inputSource = null;
+
+    if (input_port) {
+      // ---- Cascaded input: this splitter is fed by a port of another splitter
+      const parentSplitter = await trx('splitters').where({ id: input_port.splitter_id }).first();
+      if (!parentSplitter) {
+        await trx.rollback();
+        return res.status(404).json({ error: 'Parent splitter not found' });
+      }
+      if (parentSplitter.enclosure_id !== enclosure_id) {
+        await trx.rollback();
+        return res.status(400).json({
+          error: 'Cascaded splitter must be in the same box as the parent splitter',
+        });
+      }
+      parentPort = await trx('splitter_ports')
+        .where({ splitter_id: parentSplitter.id, port_number: input_port.port_number })
+        .first();
+      if (!parentPort) {
+        await trx.rollback();
+        return res.status(404).json({
+          error: `Port ${input_port.port_number} not found on the parent splitter`,
+        });
+      }
+      if (portIsOccupied(parentPort)) {
+        await trx.rollback();
+        return res.status(409).json({
+          error: `Port ${input_port.port_number} of the parent splitter is already in use`,
+        });
+      }
+      inputSource = {
+        kind: 'port',
+        parentName: parentSplitter.name,
+        parentSplitCount: parentSplitter.split_count,
+        portNumber: parentPort.port_number,
+      };
+    } else {
+      // ---- Fiber-core input
+      inputCore = await trx('fiber_cores').where({ id: input_core_id }).forUpdate().first();
+      if (!inputCore) {
+        await trx.rollback();
+        return res.status(404).json({ error: 'Input core not found' });
+      }
+      // Allow spliced cores for branching (adding splitter to an already-spliced core)
+      if (!['available', 'reserved', 'spliced'].includes(inputCore.status)) {
+        await trx.rollback();
+        return res.status(409).json({ error: 'Input core is not available to splice', status: inputCore.status });
+      }
+      const inputCable = await trx('cables').where({ id: inputCore.cable_id }).select('code').first();
+      inputSource = {
+        kind: 'core',
+        cableCode: inputCable?.code || 'cable',
+        coreNumber: inputCore.core_number,
+      };
     }
 
-    // Output cores are NOT assigned at splitter creation time.
-    // They will be assigned later when splicing the splitter ports to customer drops.
-    // For now, we just create the splitter and its empty ports.
-    const outputCores = [];
+    const splitterName = name || defaultSplitterName(split_count, inputSource);
 
     // Create the splitter (convert empty loss_db to null for numeric column)
     const [splitter] = await trx('splitters')
       .insert({
         enclosure_id,
-        name: name || `${input_core_id.slice(0, 6)}... ${split_count}-way splitter`,
+        name: splitterName,
         split_count,
-        input_core_id,
+        input_core_id: inputCore ? inputCore.id : null,
         splice_type,
         loss_db: loss_db ? Number(loss_db) : null,
         technician: technician || null,
@@ -135,7 +209,7 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       })
       .returning('*');
 
-    // Create N empty output ports (no cores assigned yet - they'll be assigned later)
+    // Create N empty output ports (cores get assigned later)
     const portRows = Array.from({ length: Number(split_count) }, (_, index) => ({
       splitter_id: splitter.id,
       output_core_id: null,
@@ -143,12 +217,19 @@ router.post('/', validateSplitterData, async (req, res, next) => {
     }));
     await trx('splitter_ports').insert(portRows);
 
-    // Mark input core as 'spliced' (it's connected to the splitter)
-    await trx('fiber_cores').where({ id: input_core_id }).update({
-      status: 'spliced',
-      notes: notes ? `Splitter input: ${notes}` : `Splitter input (${split_count}-way)`,
-      updated_at: trx.fn.now(),
-    });
+    if (parentPort) {
+      // Occupy the parent port with this new splitter
+      await trx('splitter_ports')
+        .where({ id: parentPort.id })
+        .update({ output_splitter_id: splitter.id, updated_at: trx.fn.now() });
+    } else if (inputCore) {
+      // Mark input core as 'spliced' (it's connected to the splitter)
+      await trx('fiber_cores').where({ id: inputCore.id }).update({
+        status: 'spliced',
+        notes: splitterInputNote(splitterName, split_count),
+        updated_at: trx.fn.now(),
+      });
+    }
 
     await trx.commit();
     res.status(201).json(splitter);
@@ -186,9 +267,11 @@ router.post('/:id/assign-port', async (req, res, next) => {
       return res.status(404).json({ error: `Port ${port_number} not found` });
     }
 
-    if (port.output_core_id) {
+    if (portIsOccupied(port)) {
       await trx.rollback();
-      return res.status(409).json({ error: `Port ${port_number} already has a core assigned` });
+      return res.status(409).json({
+        error: `Port ${port_number} is already in use${port.output_splitter_id ? ' by another splitter' : ''}`,
+      });
     }
 
     const core = await trx('fiber_cores').where({ id: core_id }).forUpdate().first();
@@ -207,7 +290,7 @@ router.post('/:id/assign-port', async (req, res, next) => {
     await trx('splitter_ports').where({ id: port.id }).update({ output_core_id: core_id });
     await trx('fiber_cores').where({ id: core_id }).update({
       status: 'spliced',
-      notes: `Splitter output port ${port_number}`,
+      notes: splitterOutputNote(splitter.name, splitter.split_count, Number(port_number)),
       updated_at: trx.fn.now(),
     });
 
@@ -240,9 +323,10 @@ router.delete('/:id/assign-port', async (req, res,next) => {
       return res.status(404).json({ error: 'Port has no core assigned' });
     }
 
+    const splitter = await trx('splitters').where({ id: req.params.id }).first();
     await trx('fiber_cores').where({ id: port.output_core_id }).update({
       status: 'available',
-      notes: 'Unassigned from splitter',
+      notes: splitterUnassignNote(splitter?.name, Number(port_number)),
       updated_at: trx.fn.now(),
     });
 
@@ -266,17 +350,42 @@ router.delete('/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Splitter not found' });
     }
 
+    // Cascading guard: refuse to delete while another splitter hangs off one
+    // of this splitter's ports — the child would silently lose its input.
+    const [childLink] = await trx('splitter_ports')
+      .where({ splitter_id: req.params.id })
+      .whereNotNull('output_splitter_id')
+      .count('id as count');
+    if (parseInt(childLink.count, 10) > 0) {
+      await trx.rollback();
+      return res.status(409).json({
+        error: 'Another splitter is attached to one of this splitter\'s ports — remove that splitter first',
+      });
+    }
+
     // Get all output ports (ignore empty ports — NULL core ids would end up in
     // the whereIn list otherwise)
     const ports = await trx('splitter_ports').where({ splitter_id: req.params.id });
     const outputCoreIds = ports.map((p) => p.output_core_id).filter(Boolean);
 
     // Return input core to available
-    await trx('fiber_cores').where({ id: splitter.input_core_id }).update({
-      status: 'available',
-      notes: 'Splitter removed',
-      updated_at: trx.fn.now(),
-    });
+    if (splitter.input_core_id) {
+      await trx('fiber_cores').where({ id: splitter.input_core_id }).update({
+        status: 'available',
+        notes: `Removed from splitter ${splitter.name}`,
+        updated_at: trx.fn.now(),
+      });
+    }
+
+    // If this splitter was sitting on a parent splitter's port, free that port
+    const parentPort = await trx('splitter_ports')
+      .where({ output_splitter_id: req.params.id })
+      .first();
+    if (parentPort) {
+      await trx('splitter_ports')
+        .where({ id: parentPort.id })
+        .update({ output_splitter_id: null, updated_at: trx.fn.now() });
+    }
 
     // Return output cores to available
     if (outputCoreIds.length) {
