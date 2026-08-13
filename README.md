@@ -41,6 +41,8 @@ npm run dev                # http://localhost:5173, proxies /api to :4000
 | #7 Bring a connection from another box | "No spare cores here" button in the box panel → BFS to nearest box with capacity + the path                                            |
 | #8 Customer location lookup            | "Locate customer" mode — click the map, see nearby boxes, capacity, and a suggested source box if none are free                        |
 
+Extras on top of the original list: cables show their name label on the map once zoomed in (≥ zoom 15, all three map providers); the new-splice form spotlights a fiber's cable on the map while you hover its entry (custom dropdown, all providers); splices accept a free-text note (shown in the records table, edit form, and wiring view); and the box wiring view is built around explicit numbered splice pairs (S1, S2, …) — each pair's two fiber ports share a color and tag, joined by a wire, with a plain-text splice map below that highlights the same pair on hover.
+
 ## What's still manual / next steps if you want to keep going
 
 - **Auth** — no login/roles yet; anyone with API access can write. Needed before this touches production data.

@@ -183,7 +183,7 @@ function validateCustomerData(req, res, next) {
 
 function validateSpliceData(req, res, next) {
   // Contract used by POST /api/splices and the frontend splice form.
-  const { enclosure_id, core_a_id, core_b_id, loss_db, splice_type } = req.body;
+  const { enclosure_id, core_a_id, core_b_id, loss_db, splice_type, notes } = req.body;
 
   if (enclosure_id === undefined || enclosure_id === null || enclosure_id === '') {
     return res.status(400).json({ error: 'enclosure_id is required' });
@@ -202,6 +202,9 @@ function validateSpliceData(req, res, next) {
   }
   if (loss_db !== undefined && loss_db !== null && loss_db !== '' && !isValidNumber(loss_db, 0, 10)) {
     return res.status(400).json({ error: 'loss_db must be a number between 0 and 10' });
+  }
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return res.status(400).json({ error: 'notes must be a string' });
   }
   next();
 }

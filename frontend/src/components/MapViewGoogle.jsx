@@ -1,11 +1,13 @@
-import React, { useMemo, useEffect, useCallback, useRef } from "react";
+import React, { useMemo, useEffect, useCallback, useRef, useState } from "react";
 import {
   GoogleMap,
   LoadScript,
   Marker,
   Polyline,
+  OverlayView,
   useJsApiLoader,
 } from "@react-google-maps/api";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 // Module-level flag to track if a cable was clicked
 let cableWasClicked = false;
@@ -15,6 +17,10 @@ const CABLE_COLORS = {
   distribution: "#f0b429",
   drop: "#3fd0c9",
 };
+
+// Spotlight color for a cable whose fiber is hovered in the splice form —
+// deliberately not one of the cable-type colors.
+const HIGHLIGHT_COLOR = "#ff6b35";
 
 const mapContainerStyle = {
   height: "100%",
@@ -34,6 +40,7 @@ export default function MapViewGoogle({
   selectedEnclosureId,
   selectedPoleId,
   selectedCableId,
+  highlightCableId,
   splitPointLngLat,
   userPosition,
   customerRoute,
@@ -45,6 +52,7 @@ export default function MapViewGoogle({
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "",
   });
+  const [zoom, setZoom] = useState(16);
 
   const center = useMemo(() => {
     if (poles.length && poles[0].lat != null && poles[0].lng != null) return { lat: poles[0].lat, lng: poles[0].lng };
@@ -113,6 +121,7 @@ export default function MapViewGoogle({
       options={mapOptions}
       onClick={handleMapClick}
       onLoad={(map) => { mapRef.current = map; }}
+      onZoomChanged={() => { if (mapRef.current) setZoom(mapRef.current.getZoom()); }}
     >
       {pendingCableRoute.length >= 2 && (
         <Polyline
@@ -143,23 +152,36 @@ export default function MapViewGoogle({
       {cables.map((cable) => {
         const hasSplicedCores = (cable.spliced_core_count || 0) > 0;
         const isSelected = cable.id === selectedCableId;
+        const isHighlighted = cable.id === highlightCableId;
+        const label = cableLabel(cable);
+        const mid = routeMidpointLngLat(cable.route);
         return (
+          <React.Fragment key={cable.id}>
           <Polyline
-            key={cable.id}
             path={cable.route ? cable.route.map(([lng, lat]) => ({ lat, lng })) : []}
             options={{
-              strokeColor: CABLE_COLORS[cable.cable_type] || "#8b96a8",
-              strokeWeight: isSelected
+              strokeColor: isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
+              strokeWeight: isSelected || isHighlighted
                 ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
                 : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-              strokeOpacity: isSelected ? 1 : 0.85,
-              strokeDashArray: hasSplicedCores ? (isSelected ? "2,2" : "10,6") : "none",
+              strokeOpacity: isSelected || isHighlighted ? 1 : 0.85,
+              strokeDashArray: hasSplicedCores && !isHighlighted ? (isSelected ? "2,2" : "10,6") : "none",
             }}
             onClick={onCableClick ? () => {
               cableWasClicked = true;
               onCableClick(cable);
             } : undefined}
           />
+          {label && mid && zoom >= CABLE_LABEL_MIN_ZOOM && (
+            <OverlayView
+              position={{ lat: mid[1], lng: mid[0] }}
+              mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+              getPixelPositionOffset={(w, h) => ({ x: -(w / 2), y: -(h / 2) })}
+            >
+              <div className="cable-map-label cable-map-label-g">{label}</div>
+            </OverlayView>
+          )}
+          </React.Fragment>
         );
       })}
 

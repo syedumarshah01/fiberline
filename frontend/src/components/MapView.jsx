@@ -1,13 +1,20 @@
-import React, { useMemo, useEffect, useRef, useCallback } from "react";
+import React, { useMemo, useEffect, useRef, useCallback, useState } from "react";
 import {
   MapContainer,
   TileLayer,
   Marker,
   Polyline,
   CircleMarker,
+  Tooltip,
   useMapEvents,
+  useMap,
 } from "react-leaflet";
 import L from "leaflet";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+
+/** Color used to spotlight a cable (e.g. while hovering one of its fibers in
+ *  the splice form). Deliberately not one of the cable-type colors. */
+export const HIGHLIGHT_COLOR = "#ff6b35";
 
 // Module-level flag to track if a cable was clicked (prevents map click from clearing selection)
 let cableWasClicked = false;
@@ -73,6 +80,21 @@ function MapFlyTo({ targetLatLng }) {
   return null;
 }
 
+/** Reports live zoom changes upward so cable labels can gate on zoom level. */
+function ZoomTracker({ onZoomChange }) {
+  const map = useMap();
+  useEffect(() => {
+    onZoomChange(map.getZoom());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map]);
+  useMapEvents({
+    zoomend() {
+      onZoomChange(map.getZoom());
+    },
+  });
+  return null;
+}
+
 const CABLE_COLORS = {
   feeder: "#8b7cf6",
   distribution: "#f0b429",
@@ -97,6 +119,7 @@ export default function MapView({
   selectedEnclosureId,
   selectedPoleId,
   selectedCableId,
+  highlightCableId,
   splitPointLngLat,
   userPosition,
   customerRoute,
@@ -105,6 +128,7 @@ export default function MapView({
   onEnclosureClick,
   onCableClick,
 }) {
+  const [zoom, setZoom] = useState(16);
   const flyToTarget = useMemo(() => {
     if (selectedPoleId) {
       const pole = poles.find((p) => p.id === selectedPoleId);
@@ -145,6 +169,7 @@ export default function MapView({
       />
       <ClickCatcher onMapClick={onMapClick} />
       <MapFlyTo targetLatLng={flyToTarget} />
+      <ZoomTracker onZoomChange={setZoom} />
 
       {pendingCableRoute.length >= 2 && (
         <Polyline
@@ -177,25 +202,28 @@ export default function MapView({
         const isSpliceLive = cable.cable_type !== "drop";
         const hasSplicedCores = (cable.spliced_core_count || 0) > 0;
         const isSelected = cable.id === selectedCableId;
+        const isHighlighted = cable.id === highlightCableId;
+        const label = cableLabel(cable);
+        const mid = routeMidpointLngLat(cable.route);
         return (
+          <React.Fragment key={cable.id}>
           <Polyline
-            key={cable.id}
             positions={
               cable.route ? cable.route.map(([lng, lat]) => [lat, lng]) : []
             }
             pathOptions={{
-              color: CABLE_COLORS[cable.cable_type] || "#8b96a8",
+              color: isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
               weight:
-                isSelected
+                isSelected || isHighlighted
                   ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
                   : (cable.cable_type === "feeder"
                       ? 4
                       : cable.cable_type === "distribution"
                         ? 3
                         : 2),
-              dashArray: hasSplicedCores ? (isSelected ? "2 2" : "10 6") : "none",
+              dashArray: hasSplicedCores && !isHighlighted ? (isSelected ? "2 2" : "10 6") : "none",
               className: hasSplicedCores ? "cable-line-active" : "",
-              opacity: isSelected ? 1 : 0.85,
+              opacity: isSelected || isHighlighted ? 1 : 0.85,
             }}
             eventHandlers={onCableClick ? {
               click: () => {
@@ -203,7 +231,21 @@ export default function MapView({
                 onCableClick(cable);
               },
             } : undefined}
-          />
+          >
+            {label && mid && zoom >= CABLE_LABEL_MIN_ZOOM && (
+              <Tooltip
+                permanent
+                direction="center"
+                className="cable-map-label"
+                position={[mid[1], mid[0]]}
+                interactive={false}
+                opacity={1}
+              >
+                {label}
+              </Tooltip>
+            )}
+          </Polyline>
+          </React.Fragment>
         );
       })}
 

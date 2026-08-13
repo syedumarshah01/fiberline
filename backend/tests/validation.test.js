@@ -274,6 +274,25 @@ describe('validateSpliceData middleware', () => {
     });
     assert.equal(res.statusCode, 400);
   });
+
+  test('accepts a string note and null (field is optional)', () => {
+    const withNote = run(validateSpliceData, {
+      enclosure_id: 'box-1', core_a_id: 'core-1', core_b_id: 'core-2', notes: 'tray replaced',
+    });
+    assert.equal(withNote.nextCalled, true);
+    const withNull = run(validateSpliceData, {
+      enclosure_id: 'box-1', core_a_id: 'core-1', core_b_id: 'core-2', notes: null,
+    });
+    assert.equal(withNull.nextCalled, true);
+  });
+
+  test('400s when notes is not a string', () => {
+    const { res } = run(validateSpliceData, {
+      enclosure_id: 'box-1', core_a_id: 'core-1', core_b_id: 'core-2', notes: 42,
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.payload.error, /notes/);
+  });
 });
 
 describe('validateSplitterData middleware', () => {

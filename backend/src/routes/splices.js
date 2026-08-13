@@ -142,6 +142,10 @@ router.patch('/:id', async (req, res, next) => {
     // The edit form submits loss_db as '' when blank — Postgres rejects an empty
     // string for a numeric column (500). Normalize to null.
     if (updates.loss_db === '') updates.loss_db = null;
+    if (updates.notes !== undefined && updates.notes !== null && typeof updates.notes !== 'string') {
+      await trx.rollback();
+      return res.status(400).json({ error: "notes must be a string" });
+    }
     if (updates.splice_date === '') updates.splice_date = null;
     if (updates.tray_number === '') updates.tray_number = null;
     if (updates.tray_position === '') updates.tray_position = null;
