@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
+import CorePicker from "./CorePicker";
 
 function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
@@ -77,13 +78,13 @@ function getFiberColorName(coreNumber) {
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
-function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
+function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCable }) {
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [source, setSource] = useState(null);
   const [viewMode, setViewMode] = useState("text"); // "text" or "visual"
-  const [spliceForm, setSpliceForm] = useState({ coreA: "", coreB: "" });
+  const [spliceForm, setSpliceForm] = useState({ coreA: "", coreB: "", notes: "" });
   const [editingSplice, setEditingSplice] = useState(null);
   const [editSpliceForm, setEditSpliceForm] = useState({});
   const [showSplitterForm, setShowSplitterForm] = useState(false);
@@ -121,6 +122,9 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
     load();
     loadSplitters();
   }, [enclosureId]);
+
+  // Any cable spotlight from this form must not outlive the panel itself.
+  useEffect(() => () => onHoverCable?.(null), [onHoverCable]);
 
   if (loading) return <p className="loading-row">Loading box documentation…</p>;
   if (error) return <p className="error-row">{error}</p>;
@@ -189,6 +193,36 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
     (c) => !splitterInputCoreIds.includes(c.id) && !splitterOutputCoreIds.includes(c.id)
   );
 
+  // Options for the splice-form pickers. Each core option carries its cable_id
+  // so hovering it can spotlight that cable on the map (splitter ports have no
+  // cable — hovering them clears the spotlight).
+  const coreOption = (c) => ({
+    value: c.id,
+    label: `${c.cable_code} #${c.core_number} (${getFiberColorName(c.core_number)})`,
+    coreNumber: c.core_number,
+    cableId: c.cable_id,
+  });
+  const portOption = (p) => ({
+    value: p.id,
+    label: `${p.cable_code} ${p.core_number}`,
+    cableId: null,
+  });
+  const coreAPickerGroups = [
+    { label: "Available IN cores", options: availableInCoresForBranching.map(coreOption) },
+    { label: "Spliced IN cores (for branching)", options: splicedCoresForBranching.map(coreOption) },
+    { label: "Splitter ports", options: splitterPorts.map(portOption) },
+  ];
+  const coreBPickerGroups = [
+    {
+      label: "Available OUT cores",
+      options: availableOutCoresForBranching
+        .filter((c) => c.id !== spliceForm.coreA)
+        .map(coreOption),
+    },
+    // Only offer splitter ports for core B when core A is NOT a splitter port
+    ...(spliceForm.coreA?.startsWith("port-") ? [] : [{ label: "Splitter ports", options: splitterPorts.map(portOption) }]),
+  ];
+
   async function handleSplice(e) {
     e.preventDefault();
     if (!spliceForm.coreA || !spliceForm.coreB) return;
@@ -221,10 +255,11 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
           core_a_id: coreA,
           core_b_id: coreB,
           technician: "field-tech",
+          notes: spliceForm.notes?.trim() ? spliceForm.notes.trim() : null,
         });
       }
       // Reset form and refresh data
-      setSpliceForm({ coreA: "", coreB: "" });
+      setSpliceForm({ coreA: "", coreB: "", notes: "" });
       // Refresh both doc and splitters to get updated core statuses
       await load();
       await loadSplitters();
@@ -497,6 +532,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
               <th>In (from)</th>
               <th>Out (to)</th>
               <th>Type</th>
+              <th>Note</th>
               <th></th>
             </tr>
           </thead>
@@ -510,6 +546,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
                   {s.cable_b_code} #{s.core_b_number}
                 </td>
                 <td>{s.splice_type}</td>
+                <td style={{ maxWidth: 140 }}>{s.notes || "—"}</td>
                 <td>
                   <button
                     className="btn"
@@ -724,69 +761,40 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure }) {
         <form onSubmit={handleSplice} style={{ marginBottom: 16 }}>
           <div className="field">
             <label>Core in (from upstream)</label>
-            <select
+            <CorePicker
               value={spliceForm.coreA}
-              onChange={(e) =>
-                setSpliceForm((f) => ({ ...f, coreA: e.target.value, coreB: "" }))
+              onChange={(v) =>
+                setSpliceForm((f) => ({ ...f, coreA: v, coreB: "" }))
               }
-            >
-              <option value="">Select…</option>
-              <optgroup label="Available IN cores">
-                {availableInCoresForBranching.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.cable_code} #{c.core_number} ({getFiberColorName(c.core_number)})
-                  </option>
-                ))}
-              </optgroup>
-              {splicedCoresForBranching.length > 0 && (
-                <optgroup label="Spliced IN cores (for branching)">
-                  {splicedCoresForBranching.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.cable_code} #{c.core_number} ({getFiberColorName(c.core_number)})
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {splitterPorts.length > 0 && (
-                <optgroup label="Splitter ports">
-                  {splitterPorts.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.cable_code} {p.core_number}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
+              groups={coreAPickerGroups}
+              placeholder="Select…"
+              onHoverCable={onHoverCable}
+            />
+            <p className="field-hint">Hover a fiber to spotlight its cable on the map.</p>
           </div>
           <div className="field">
             <label>Core out (to downstream)</label>
-            <select
+            <CorePicker
               value={spliceForm.coreB}
-              onChange={(e) =>
-                setSpliceForm((f) => ({ ...f, coreB: e.target.value }))
+              onChange={(v) =>
+                setSpliceForm((f) => ({ ...f, coreB: v }))
               }
-            >
-              <option value="">Select…</option>
-              <optgroup label="Available OUT cores">
-                {availableOutCoresForBranching
-                  .filter((c) => c.id !== spliceForm.coreA)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.cable_code} #{c.core_number} ({getFiberColorName(c.core_number)})
-                    </option>
-                  ))}
-              </optgroup>
-              {/* Only show splitter ports if coreA is NOT a splitter port */}
-              {!spliceForm.coreA?.startsWith("port-") && splitterPorts.length > 0 && (
-                <optgroup label="Splitter ports">
-                  {splitterPorts.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.cable_code} {p.core_number}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
+              groups={coreBPickerGroups}
+              placeholder="Select…"
+              onHoverCable={onHoverCable}
+            />
+          </div>
+          <div className="field">
+            <label>Note (optional)</label>
+            <textarea
+              className="splice-notes-input"
+              rows={2}
+              placeholder="e.g. new tray installed, pigtail replaced…"
+              value={spliceForm.notes}
+              onChange={(e) =>
+                setSpliceForm((f) => ({ ...f, notes: e.target.value }))
+              }
+            />
           </div>
           <button className="btn btn-primary btn-block" type="submit">
             Record splice
@@ -1603,6 +1611,7 @@ export default function RightPanel({
   onDeleteEnclosure,
   onDeleteCable,
   onSplitPointChange,
+  onHoverCable,
 }) {
   return (
     <>
@@ -1615,6 +1624,7 @@ export default function RightPanel({
           enclosureId={selectedEnclosure.id}
           onChanged={onChanged}
           onDeleteEnclosure={onDeleteEnclosure}
+          onHoverCable={onHoverCable}
         />
       )}
 

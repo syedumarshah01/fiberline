@@ -362,6 +362,7 @@ export function DrawCableForm({
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [cableType, setCableType] = useState("distribution");
+  const [coreCount, setCoreCount] = useState(24);
   const [customerId, setCustomerId] = useState("");
 
   const isDrop = cableType === "drop";

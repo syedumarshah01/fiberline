@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 // Module-level flag to track if a cable was clicked (prevents map click from clearing selection)
 let cableWasClicked = false;
@@ -10,6 +11,10 @@ const CABLE_COLORS = {
   distribution: "#f0b429",
   drop: "#3fd0c9",
 };
+
+// Spotlight color for a cable whose fiber is hovered in the splice form —
+// deliberately not one of the cable-type colors.
+const HIGHLIGHT_COLOR = "#ff6b35";
 
 const defaultCenter = [71.5788, 34.0083]; // Peshawar [lng, lat]
 
@@ -32,6 +37,7 @@ export default function MapViewMapbox({
   selectedEnclosureId,
   selectedPoleId,
   selectedCableId,
+  highlightCableId,
   splitPointLngLat,
   userPosition,
   customerRoute,
@@ -48,7 +54,7 @@ export default function MapViewMapbox({
   const markersRef = useRef([]);
   const dataRef = useRef({});
   // Keep dataRef in sync so stable map callbacks always see fresh data/handlers.
-  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
+  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
 
   const clearDynamicContent = useCallback(() => {
     if (!map.current) return;
@@ -65,6 +71,7 @@ export default function MapViewMapbox({
       style.layers.forEach((layer) => {
         if (
           layer.id.startsWith("cable-line-") ||
+          layer.id.startsWith("cable-label-") ||
           layer.id === "pending-route-line" ||
           layer.id === "customer-route-line"
         ) {
@@ -76,6 +83,7 @@ export default function MapViewMapbox({
       Object.keys(style.sources).forEach((sourceId) => {
         if (
           sourceId.startsWith("cable-") ||
+          sourceId.startsWith("cable-label-src-") ||
           sourceId === "pending-route" ||
           sourceId === "customer-route"
         ) {
@@ -124,6 +132,7 @@ export default function MapViewMapbox({
       if (!cable.route || cable.route.length < 2) return;
 
       const isSelected = cable.id === d.selectedCableId;
+      const isHighlighted = cable.id === d.highlightCableId;
       const sourceId = `cable-${cable.id}`;
 
       map.current.addSource(sourceId, {
@@ -139,14 +148,14 @@ export default function MapViewMapbox({
       });
 
       const paint = {
-        "line-color": CABLE_COLORS[cable.cable_type] || "#8b96a8",
-        "line-width": isSelected
+        "line-color": isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
+        "line-width": isSelected || isHighlighted
           ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
           : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-        "line-opacity": isSelected ? 1 : 0.85,
+        "line-opacity": isSelected || isHighlighted ? 1 : 0.85,
       };
       // An empty dash array is invalid — only set it when spliced cores exist.
-      if ((cable.spliced_core_count || 0) > 0) {
+      if ((cable.spliced_core_count || 0) > 0 && !isHighlighted) {
         paint["line-dasharray"] = isSelected ? [2, 2] : [10, 6];
       }
 
@@ -156,6 +165,40 @@ export default function MapViewMapbox({
         source: sourceId,
         paint,
       });
+
+      // Cable name label at the route midpoint, shown once zoomed in enough
+      // that labels don't blanket the city.
+      const label = cableLabel(cable);
+      const mid = routeMidpointLngLat(cable.route);
+      if (label && mid) {
+        const labelSrcId = `cable-label-src-${cable.id}`;
+        map.current.addSource(labelSrcId, {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            properties: { label },
+            geometry: { type: "Point", coordinates: mid },
+          },
+        });
+        map.current.addLayer({
+          id: `cable-label-${cable.id}`,
+          type: "symbol",
+          source: labelSrcId,
+          minzoom: CABLE_LABEL_MIN_ZOOM,
+          layout: {
+            "text-field": ["get", "label"],
+            "text-size": 11,
+            "text-font": ["Open Sans Semibold", "Arial Unicode MS Bold"],
+            "text-allow-overlap": false,
+            "text-ignore-placement": false,
+          },
+          paint: {
+            "text-color": "#f4f6fa",
+            "text-halo-color": "#10141c",
+            "text-halo-width": 1.5,
+          },
+        });
+      }
     });
 
     // Poles
@@ -339,7 +382,7 @@ export default function MapViewMapbox({
   // previously updateMap only ran on the initial style load).
   useEffect(() => {
     updateMap();
-  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, splitPointLngLat, userPosition, customerRoute, updateMap]);
+  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, splitPointLngLat, userPosition, customerRoute, updateMap]);
 
   // Fly to selected enclosure or pole
   useEffect(() => {

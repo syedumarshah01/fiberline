@@ -196,7 +196,7 @@ code, .mono { font-family: var(--font-mono); }
   color: var(--text-muted);
   margin-bottom: 4px;
 }
-.field input, .field select { width: 100%; }
+.field input, .field select, .field textarea { width: 100%; }
 
 .btn {
   border-radius: var(--radius);
@@ -377,3 +377,285 @@ code, .mono { font-family: var(--font-mono); }
 .chip-terminated { color: var(--violet); border-color: rgba(139,124,246,0.4); }
 .chip-reserved { color: var(--text-muted); }
 .chip-damaged { color: var(--red); border-color: rgba(239,83,80,0.4); }
+
+/* ---------- Cable name labels on the map ---------- */
+/* Leaflet renders this inside its tooltip wrapper; Google uses the overlay div. */
+.cable-map-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* Leaflet tooltip chrome reset */
+.leaflet-tooltip.cable-map-label {
+  background: rgba(16, 20, 28, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: none;
+  color: #f4f6fa;
+}
+.light-theme .leaflet-tooltip.cable-map-label {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  color: #1c2a33;
+}
+.leaflet-tooltip.cable-map-label:before { display: none; }
+/* Google OverlayView wrapper */
+.cable-map-label-g {
+  background: rgba(16, 20, 28, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #f4f6fa;
+}
+.light-theme .cable-map-label-g {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(0, 0, 0, 0.2);
+  color: #1c2a33;
+}
+
+/* ---------- CorePicker (splice form dropdown with cable hover) ---------- */
+.core-picker { position: relative; }
+.core-picker-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  font-size: 13px;
+  text-align: left;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+}
+.core-picker-btn.placeholder { color: var(--text-faint); }
+.core-picker-btn.open { border-color: var(--teal); }
+.core-picker-btn-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.core-picker-caret { color: var(--text-faint); font-size: 10px; }
+.core-picker-list {
+  position: fixed;
+  z-index: 2000;
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+}
+.core-picker-group-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  padding: 6px 8px 2px;
+}
+.core-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+}
+.core-picker-option:hover { background: rgba(255, 107, 53, 0.14); }
+.core-picker-option.selected { background: rgba(63, 208, 201, 0.12); }
+.core-picker-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tiny square in the standard fiber color code */
+.fiber-chip {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  flex: none;
+}
+
+.splice-notes-input {
+  resize: vertical;
+  min-height: 40px;
+}
+
+/* ---------- Visual documentation (redesigned wiring view) ---------- */
+.vdoc-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.vdoc-howto {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+.vdoc-diagram { position: relative; }
+.vdoc-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.vdoc-col-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+.vdoc-lane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  min-width: 86px;
+}
+.vdoc-boxchip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.vdoc-boxchip-code { font-family: var(--font-mono); font-size: 12px; font-weight: 600; }
+.vdoc-boxchip-type { font-size: 10px; color: var(--text-muted); }
+.vdoc-spnode {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--violet);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.vdoc-spnode-name { color: var(--text-muted); margin-left: 4px; }
+.vdoc-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  margin-bottom: 10px;
+}
+.vdoc-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+}
+.vdoc-card-code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--teal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vdoc-card-count { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.vdoc-card-sub { font-size: 10px; color: var(--text-faint); margin: 0 0 6px; }
+.vdoc-card-empty { font-size: 11px; color: var(--text-faint); padding: 2px 0 4px; }
+.vdoc-core {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 2px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+}
+.vdoc-core.hot { background: rgba(255, 255, 255, 0.06); }
+.vdoc-core-num { font-size: 11px; color: var(--text-muted); min-width: 24px; }
+.vdoc-core-status { font-size: 9px; padding: 0 5px; }
+.vdoc-core .vdoc-edge:last-child { margin-left: auto; }
+.vdoc-edge { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.vdoc-port {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  flex: none;
+}
+.vdoc-core.hot .vdoc-port { box-shadow: 0 0 0 2px var(--teal); }
+.vdoc-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: #10141a;
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+.vdoc-empty { font-size: 11px; color: var(--text-faint); padding: 6px 0; }
+.vdoc-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.vdoc-wire {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.85;
+  pointer-events: visibleStroke;
+  cursor: pointer;
+}
+.vdoc-wire.hot { stroke-width: 3.5; opacity: 1; }
+.vdoc-wire-splitter { stroke-width: 1.6; opacity: 0.8; }
+.vdoc-splicemap { display: flex; flex-direction: column; gap: 4px; }
+.vdoc-splicerow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: default;
+}
+.vdoc-splicerow.hot { border-color: var(--teal); background: rgba(63, 208, 201, 0.07); }
+.vdoc-end { display: inline-flex; align-items: center; gap: 5px; }
+.vdoc-arrow { color: var(--text-faint); }
+.vdoc-meta { color: var(--text-faint); font-size: 10.5px; }
+.vdoc-splicenote {
+  flex-basis: 100%;
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-left: 30px;
+}
+.vdoc-splitterrow .vdoc-meta { flex-basis: 100%; padding-left: 30px; }
+.vdoc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.vdoc-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.vdoc-legend-port { position: static; }

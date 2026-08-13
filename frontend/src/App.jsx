@@ -57,6 +57,8 @@ export default function App() {
   const [selectedPole, setSelectedPole] = useState(null);
   const [selectedEnclosure, setSelectedEnclosure] = useState(null);
   const [selectedCable, setSelectedCable] = useState(null);
+  // Cable spotlighted because one of its fibers is hovered in the splice form
+  const [highlightCableId, setHighlightCableId] = useState(null);
   const [splitPointLngLat, setSplitPointLngLat] = useState(null);
   const [splitRatio, setSplitRatio] = useState(null);
   
@@ -484,6 +486,7 @@ export default function App() {
               selectedEnclosureId={selectedEnclosure?.id}
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
+              highlightCableId={highlightCableId}
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
@@ -510,6 +513,7 @@ export default function App() {
                 selectedEnclosureId={selectedEnclosure?.id}
                 selectedPoleId={selectedPole?.id}
                 selectedCableId={selectedCable?.id}
+                highlightCableId={highlightCableId}
                 splitPointLngLat={splitPointLngLat}
                 userPosition={userPosition}
                 customerRoute={customerRoute}
@@ -536,6 +540,7 @@ export default function App() {
               selectedEnclosureId={selectedEnclosure?.id}
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
+              highlightCableId={highlightCableId}
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
@@ -572,6 +577,7 @@ export default function App() {
             onDeleteEnclosure={handleDeleteEnclosure}
             onDeleteCable={handleDeleteCable}
             onSplitPointChange={handleSplitPointChange}
+            onHoverCable={setHighlightCableId}
           />
           </ErrorBoundary>
         </div>
