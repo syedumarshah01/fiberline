@@ -133,6 +133,107 @@ router.delete('/:id', async (req, res, next) => {
         [enclosureId]
       );
 
+      // ---------------------------------------------------------------------
+      // Far-end wiring for IN cables: for each fiber arriving at this box,
+      // what is its other end connected to in the UPSTREAM box — spliced to
+      // which core of which cable, fed from which splitter port, or feeding
+      // which splitter. This answers "where does this fiber come from?"
+      // without opening the other box.
+      // ---------------------------------------------------------------------
+      const inCableIds = cables.filter((c) => c.to_enclosure_id === enclosureId).map((c) => c.id);
+      const inCores = cores.filter((c) => inCableIds.includes(c.cable_id));
+      const farByCoreId = {};
+      if (inCores.length) {
+        const cableById = Object.fromEntries(cables.map((c) => [c.id, c]));
+        const farEnclosureIds = [
+          ...new Set(inCableIds.map((id) => cableById[id].from_enclosure_id).filter(Boolean)),
+        ];
+        const inCoreIds = inCores.map((c) => c.id);
+
+        const farBoxes = farEnclosureIds.length
+          ? await db('enclosures').whereIn('id', farEnclosureIds).select('id', 'code')
+          : [];
+        const farBoxCode = Object.fromEntries(farBoxes.map((b) => [b.id, b.code]));
+
+        // Splices in the upstream boxes that involve one of our arriving cores
+        const farSplices = farEnclosureIds.length
+          ? await db('splices')
+              .whereIn('enclosure_id', farEnclosureIds)
+              .where(function () {
+                this.whereIn('core_a_id', inCoreIds).orWhereIn('core_b_id', inCoreIds);
+              })
+              .select('id', 'enclosure_id', 'core_a_id', 'core_b_id')
+          : [];
+        // Resolve splice partner cores to "CABLE-CODE #core"
+        const partnerIds = [
+          ...new Set(
+            farSplices
+              .flatMap((s) => [s.core_a_id, s.core_b_id])
+              .filter((id) => !inCoreIds.includes(id)),
+          ),
+        ];
+        const partnerCores = partnerIds.length
+          ? await db('fiber_cores')
+              .whereIn('fiber_cores.id', partnerIds)
+              .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
+              .select('fiber_cores.id', 'fiber_cores.core_number', 'cables.code as cable_code')
+          : [];
+        const partnerById = Object.fromEntries(
+          partnerCores.map((c) => [c.id, `${c.cable_code || 'cable'} #${c.core_number}`]),
+        );
+
+        // Splitter ports in the upstream boxes feeding our arriving cores
+        const farPorts = farEnclosureIds.length
+          ? await db('splitter_ports')
+              .join('splitters', 'splitters.id', 'splitter_ports.splitter_id')
+              .whereIn('splitters.enclosure_id', farEnclosureIds)
+              .whereIn('splitter_ports.output_core_id', inCoreIds)
+              .select(
+                'splitter_ports.output_core_id',
+                'splitter_ports.port_number',
+                'splitters.name as splitter_name',
+                'splitters.split_count',
+                'splitters.enclosure_id',
+              )
+          : [];
+        const farPortByCore = Object.fromEntries(farPorts.map((p) => [p.output_core_id, p]));
+
+        // Splitters in the upstream boxes whose INPUT is one of our arriving cores
+        const farInputs = farEnclosureIds.length
+          ? await db('splitters')
+              .whereIn('enclosure_id', farEnclosureIds)
+              .whereIn('input_core_id', inCoreIds)
+              .select('input_core_id', 'name', 'split_count', 'enclosure_id')
+          : [];
+        const farInputByCore = Object.fromEntries(farInputs.map((s) => [s.input_core_id, s]));
+
+        for (const core of inCores) {
+          const cable = cableById[core.cable_id];
+          const farId = cable?.from_enclosure_id;
+          const boxCode = farBoxCode[farId] || null;
+          const splice = farSplices.find(
+            (s) => s.enclosure_id === farId && (s.core_a_id === core.id || s.core_b_id === core.id),
+          );
+          const port = farPortByCore[core.id];
+          const input = farInputByCore[core.id];
+
+          let connection = 'free';
+          let label = 'not connected there';
+          if (splice) {
+            const partnerId = splice.core_a_id === core.id ? splice.core_b_id : splice.core_a_id;
+            connection = 'splice';
+            label = `spliced to ${partnerById[partnerId] || 'another fiber'}`;
+          } else if (port) {
+            connection = 'splitter_port';
+            label = `port ${port.port_number} of ${port.splitter_name || `1:${port.split_count} splitter`}`;
+          } else if (input) {
+            connection = 'splitter_input';
+            label = `input of ${input.name || `1:${input.split_count} splitter`}`;
+          }
+          farByCoreId[core.id] = { enclosure_code: boxCode, connection, label };
+        }
+      }
+
       // Build cores by cable with direction info (IN vs OUT)
       const coresByCable = {};
       for (const cable of cables) {
@@ -141,7 +242,9 @@ router.delete('/:id', async (req, res, next) => {
         coresByCable[cable.id] = {
           cable,
           direction: isIncoming ? 'in' : isOutgoing ? 'out' : 'unknown',
-          cores: cores.filter((c) => c.cable_id === cable.id),
+          cores: cores
+            .filter((c) => c.cable_id === cable.id)
+            .map((c) => (farByCoreId[c.id] ? { ...c, far_endpoint: farByCoreId[c.id] } : c)),
         };
       }
 
@@ -157,20 +260,46 @@ router.delete('/:id', async (req, res, next) => {
             .whereIn('splitter_id', splitterIds)
             .leftJoin('fiber_cores', 'fiber_cores.id', 'splitter_ports.output_core_id')
             .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
+            .leftJoin('splitters as child', 'child.id', 'splitter_ports.output_splitter_id')
             .select(
               'splitter_ports.splitter_id',
               'splitter_ports.port_number',
               'splitter_ports.status as port_status',
+              'splitter_ports.output_core_id',
+              'splitter_ports.output_splitter_id',
               'fiber_cores.id as core_id',
               'fiber_cores.core_number',
               'fiber_cores.status as core_status',
               'cables.code as cable_code',
+              'child.name as child_splitter_name',
+              'child.split_count as child_split_count',
             )
             .orderBy(['splitter_ports.splitter_id', 'splitter_ports.port_number'])
         : [];
 
+      // Cascade parents: which upstream splitter port feeds each splitter here
+      const parentRows = splitterIds.length
+        ? await db('splitter_ports')
+            .whereIn('output_splitter_id', splitterIds)
+            .join('splitters as parent', 'parent.id', 'splitter_ports.splitter_id')
+            .select(
+              'splitter_ports.output_splitter_id',
+              'splitter_ports.port_number',
+              'parent.id as parent_id',
+              'parent.name as parent_name',
+              'parent.split_count as parent_split_count',
+            )
+        : [];
+      const parentByChild = Object.fromEntries(
+        parentRows.map((r) => [
+          r.output_splitter_id,
+          { splitter_id: r.parent_id, name: r.parent_name, split_count: r.parent_split_count, port_number: r.port_number },
+        ]),
+      );
+
       const splittersWithPorts = splitters.map((s) => ({
         ...s,
+        parent: parentByChild[s.id] || null,
         ports: splitterPorts.filter((p) => p.splitter_id === s.id),
       }));
 

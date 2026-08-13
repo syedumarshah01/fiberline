@@ -159,9 +159,10 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   const splicedCores = allCores.filter((c) => c.status === "spliced").sort((a, b) => a.core_number - b.core_number);
 
   // Build list of splitter output ports that are empty (available for splicing)
+  // — a port is NOT empty when a child splitter is cascaded onto it either.
   const splitterPorts = splitters.flatMap((s) =>
     (s.ports || [])
-      .filter((p) => !p.output_core_id)
+      .filter((p) => !p.output_core_id && !p.output_splitter_id)
       .map((p) => ({
         id: `port-${s.id}-${p.port_number}`,
         splitter_id: s.id,
@@ -191,6 +192,14 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   );
   const availableOutCoresForBranching = availableOutCores.filter(
     (c) => !splitterInputCoreIds.includes(c.id) && !splitterOutputCoreIds.includes(c.id)
+  );
+
+  // Free ports across all splitters here — valid inputs for a CASCADED splitter
+  // (a splitter fed from another splitter's output port).
+  const freePortsForCascade = splitters.flatMap((s) =>
+    (s.ports || [])
+      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .map((p) => ({ splitter: s, port_number: p.port_number })),
   );
 
   // Options for the splice-form pickers. Each core option carries its cable_id
@@ -284,16 +293,24 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   async function handleCreateSplitter(e) {
     e.preventDefault();
     if (!splitterForm.input_core_id) {
-      alert("Please select an input core (IN)");
+      alert("Please select what feeds this splitter — a fiber or a free splitter port");
       return;
     }
     setCreatingSplitter(true);
     try {
-      await api.createSplitter({
+      const payload = {
         enclosure_id: enclosureId,
         ...splitterForm,
         output_core_ids: splitterForm.output_core_ids,
-      });
+      };
+      // A cascaded input (another splitter's free port) is sent as input_port —
+      // the backend treats input_core_id and input_port as mutually exclusive.
+      if (payload.input_core_id.startsWith("inputport:")) {
+        const [, parentId, portNumber] = payload.input_core_id.split(":");
+        payload.input_port = { splitter_id: parentId, port_number: Number(portNumber) };
+        delete payload.input_core_id;
+      }
+      await api.createSplitter(payload);
       setShowSplitterForm(false);
       setSplitterForm({
         name: "",
@@ -827,8 +844,13 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             >
               <div style={{ fontWeight: 600 }}>{s.name}</div>
               <div className="sub">
-                {s.split_count}-way · input: core #{s.core_number || s.input_core_id?.slice(0, 8)} ·{" "}
-                {s.splice_type}
+                1:{s.split_count} · fed from{" "}
+                {s.parent
+                  ? `${s.parent.name || `1:${s.parent.split_count} splitter`} — port ${s.parent.port_number}`
+                  : s.input_core
+                    ? `${s.input_core.cable_code} fiber #${s.input_core.core_number}`
+                    : "—"}
+                {" "}· {s.splice_type}
               </div>
               {s.ports?.length ? (
                 <table className="doc-table" style={{ marginTop: 8 }}>
@@ -845,10 +867,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                     {s.ports.map((p) => (
                       <tr key={p.port_id}>
                         <td>{p.port_number}</td>
-                        <td>{p.core_number ? `#${p.core_number}` : "—"}</td>
-                        <td>{p.cable_code || "—"}</td>
+                        <td>{p.core_number ? `#${p.core_number}` : p.output_splitter_id ? "🔀" : "—"}</td>
+                        <td>{p.cable_code || (p.output_splitter_id ? `→ ${p.child_splitter_name || "splitter"}` : "—")}</td>
                         <td>
-                          {p.output_core_id ? <Pill status={p.core_status} /> : <span style={{ color: "var(--text-faint)", fontSize: 11 }}>empty</span>}
+                          {p.output_core_id ? (
+                            <Pill status={p.core_status} />
+                          ) : p.output_splitter_id ? (
+                            <span className="pill pill-reserved">cascaded</span>
+                          ) : (
+                            <span style={{ color: "var(--text-faint)", fontSize: 11 }}>empty</span>
+                          )}
                         </td>
                         <td>
                           {p.output_core_id ? (
@@ -932,14 +960,14 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             </select>
           </div>
           <div className="field">
-            <label>Input core (IN) — select the fiber coming into the splitter</label>
+            <label>Fed from (IN) — a fiber, or a free port of another splitter</label>
             <select
               value={splitterForm.input_core_id}
               onChange={(e) =>
                 setSplitterForm((f) => ({ ...f, input_core_id: e.target.value }))
               }
             >
-              <option value="">Select input core…</option>
+              <option value="">Select input…</option>
               <optgroup label="Available cores">
                 {availableInCoresForBranching.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -956,11 +984,23 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   ))}
                 </optgroup>
               )}
+              {freePortsForCascade.length > 0 && (
+                <optgroup label="Splitter ports (cascade a splitter onto one)">
+                  {freePortsForCascade.map((p) => (
+                    <option
+                      key={`inputport:${p.splitter.id}:${p.port_number}`}
+                      value={`inputport:${p.splitter.id}:${p.port_number}`}
+                    >
+                      {p.splitter.name || `1:${p.splitter.split_count} splitter`} · port {p.port_number}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
           <div style={{ padding: 10, background: "rgba(63,208,201,0.1)", border: "1px solid rgba(63,208,201,0.3)", borderRadius: "var(--radius)", marginBottom: 12 }}>
             <p style={{ fontSize: 12, color: "var(--teal)", margin: 0 }}>
-              ℹ️ After creation, {splitterForm.split_count} empty output ports will appear in the splitters list below. You can assign available cores to these ports later, and splice them to customer drop cables when needed.
+              ℹ️ After creation, {splitterForm.split_count} empty output ports will appear in the splitters list below. Assign fiber cores to them when splicing customer drops — or feed another splitter from a free port (cascade) using the "Fed from" field above.
             </p>
           </div>
           <div className="field">

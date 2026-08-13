@@ -362,10 +362,26 @@ export function DrawCableForm({
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [cableType, setCableType] = useState("distribution");
-  const [coreCount, setCoreCount] = useState(24);
+  const [coreCount, setCoreCount] = useState(12);
   const [customerId, setCustomerId] = useState("");
 
   const isDrop = cableType === "drop";
+  // Defaults follow the destination: a cable to a customer box (one placed at
+  // a customer location — no pole) or straight to a customer record is a
+  // single-fiber drop; infrastructure-to-infrastructure starts at 12 cores.
+  // Runs only when the destination changes, so manual edits afterwards stick.
+  useEffect(() => {
+    const customerDestination =
+      !!customerId || Boolean(toEnclosure && toEnclosure.pole_id == null);
+    if (customerDestination) {
+      setCableType("drop");
+      setCoreCount(1);
+    } else {
+      setCableType("distribution");
+      setCoreCount(12);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toEnclosure, customerId]);
   // For drop cables, customer is optional - can be set later
   const destinationReady = isDrop ? true : !!toEnclosure;
   const { codeOptions, nameOptions } = useTwoOptionSuggestions({

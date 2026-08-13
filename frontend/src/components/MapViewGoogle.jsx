@@ -7,7 +7,7 @@ import {
   OverlayView,
   useJsApiLoader,
 } from "@react-google-maps/api";
-import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM, ENCLOSURE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 // Module-level flag to track if a cable was clicked
 let cableWasClicked = false;
@@ -207,6 +207,7 @@ export default function MapViewGoogle({
       {enclosures.map((enc) => {
         if (enc.lat == null || enc.lng == null) return null;
         const availableCores = capacityByEnclosure?.[enc.id];
+        const isSelected = enc.id === selectedEnclosureId;
         const cls =
           availableCores === undefined
             ? ""
@@ -214,19 +215,30 @@ export default function MapViewGoogle({
               ? "has-capacity"
               : "full";
         return (
+          <React.Fragment key={enc.id}>
           <Marker
-            key={enc.id}
             position={{ lat: enc.lat, lng: enc.lng }}
+            title={enc.code || undefined}
             icon={{
               path: window.google.maps.SymbolPath.CIRCLE,
-              scale: enc.id === selectedEnclosureId ? 10 : 7,
-              fillColor: enc.id === selectedEnclosureId ? "#ff6b35" : cls === "has-capacity" ? "#4caf50" : "#e53935",
+              scale: isSelected ? 10 : 7,
+              fillColor: isSelected ? "#ff6b35" : cls === "has-capacity" ? "#4caf50" : "#e53935",
               fillOpacity: 1,
               strokeColor: "#fff",
               strokeWeight: 1,
             }}
             onClick={() => onEnclosureClick(enc)}
           />
+          {enc.code && (zoom >= ENCLOSURE_LABEL_MIN_ZOOM || isSelected) && (
+            <OverlayView
+              position={{ lat: enc.lat, lng: enc.lng }}
+              mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+              getPixelPositionOffset={() => ({ x: 11, y: -9 })}
+            >
+              <div className="cable-map-label cable-map-label-g">{enc.code}</div>
+            </OverlayView>
+          )}
+          </React.Fragment>
         );
       })}
 

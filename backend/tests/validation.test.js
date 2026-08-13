@@ -186,11 +186,18 @@ describe('validateCableData middleware', () => {
     assert.equal(nextCalled, true);
   });
 
-  test('400s on a single waypoint (a route fragment makes no sense)', () => {
-    const { res } = run(validateCableData, {
-      ...endpoints, route_points: [[71.5, 34.0]],
+  test('a single waypoint (one duct bend) is accepted', () => {
+    // route_points holds bends ONLY — the two endpoints come from the boxes.
+    // One bend is a perfectly good drawn route; this used to 400 with
+    // "route_points must contain at least 2 coordinates when provided".
+    const { nextCalled } = run(validateCableData, {
+      ...endpoints, cable_type: 'distribution', route_points: [{ lat: 34.0, lng: 71.5 }],
     });
-    assert.equal(res.statusCode, 400);
+    assert.equal(nextCalled, true);
+    const alsoOk = run(validateCableData, {
+      ...endpoints, cable_type: 'distribution', route_points: [[71.5, 34.0]],
+    });
+    assert.equal(alsoOk.nextCalled, true);
   });
 
   test('400s without from_enclosure_id', () => {
@@ -305,10 +312,36 @@ describe('validateSplitterData middleware', () => {
     assert.equal(nextCalled, true);
   });
 
-  test('400s on missing input core', () => {
+  test('400s when neither a core nor a port input is given', () => {
     const { res } = run(validateSplitterData, { enclosure_id: 'box-1', split_count: 4 });
     assert.equal(res.statusCode, 400);
-    assert.match(res.payload.error, /input_core_id/);
+    assert.match(res.payload.error, /input_core_id or input_port/);
+  });
+
+  test('cascaded input (another splitter\'s port) is accepted', () => {
+    const { nextCalled } = run(validateSplitterData, {
+      enclosure_id: 'box-1',
+      input_port: { splitter_id: 'sp-1', port_number: 2 },
+      split_count: 2,
+    });
+    assert.equal(nextCalled, true);
+  });
+
+  test('400s when both core and port inputs are given', () => {
+    const { res } = run(validateSplitterData, {
+      enclosure_id: 'box-1',
+      input_core_id: 'core-1',
+      input_port: { splitter_id: 'sp-1', port_number: 1 },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.payload.error, /not both/);
+  });
+
+  test('400s on a malformed input_port', () => {
+    const { res } = run(validateSplitterData, {
+      enclosure_id: 'box-1', input_port: { splitter_id: 'sp-1' },
+    });
+    assert.equal(res.statusCode, 400);
   });
 
   test('400s on unsupported split_count', () => {

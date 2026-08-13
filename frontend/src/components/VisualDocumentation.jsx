@@ -43,7 +43,10 @@ function bezier(a, b, bendA, bendB) {
 
 /** One fiber core row inside a cable card. `portRef` anchors wires. The port
  *  dot sits on the card edge facing the center lane (right edge for IN cables,
- *  left for OUT), together with the splice-pair tag when spliced. */
+ *  left for OUT), together with the splice-pair tag when spliced.
+ *  IN rows get a second line: what this fiber's far end is connected to in
+ *  the upstream box (the core it's spliced to there, or the splitter port it
+ *  hangs off), so a fiber's origin is traceable without opening that box. */
 function CoreRow({ core, side, pair, portRef, hot }) {
   const dot = (
     <span className="vdoc-port" ref={portRef} style={pair ? { borderColor: pair.color } : undefined} />
@@ -53,16 +56,24 @@ function CoreRow({ core, side, pair, portRef, hot }) {
       {pair.tag}
     </span>
   ) : null;
+  const far = side === "in" ? core.far_endpoint : null;
   return (
-    <div className={"vdoc-core" + (hot ? " hot" : "")}>
-      {side === "out" && (
-        <span className="vdoc-edge">{dot}{tag}</span>
-      )}
-      <span className="vdoc-core-num">#{core.core_number}</span>
-      <span className="fiber-chip" style={{ backgroundColor: fiberColor(core.core_number) }} title="fiber color code" />
-      <span className={`pill pill-${core.status} vdoc-core-status`}>{core.status}</span>
-      {side === "in" && (
-        <span className="vdoc-edge">{tag}{dot}</span>
+    <div className="vdoc-corewrap">
+      <div className={"vdoc-core" + (hot ? " hot" : "")}>
+        {side === "out" && (
+          <span className="vdoc-edge">{dot}{tag}</span>
+        )}
+        <span className="vdoc-core-num">#{core.core_number}</span>
+        <span className="fiber-chip" style={{ backgroundColor: fiberColor(core.core_number) }} title="fiber color code" />
+        <span className={`pill pill-${core.status} vdoc-core-status`}>{core.status}</span>
+        {side === "in" && (
+          <span className="vdoc-edge">{tag}{dot}</span>
+        )}
+      </div>
+      {far && far.enclosure_code && (
+        <div className="vdoc-upstream" title={`Far end of this fiber, in box ${far.enclosure_code}`}>
+          ⇠ {far.enclosure_code} · {far.label}
+        </div>
       )}
     </div>
   );
@@ -200,6 +211,21 @@ export default function VisualDocumentation({ doc, onBack, onChanged }) {
         bendB: 0,
       });
     }
+    // Cascaded input: fed from a port of another splitter in this box
+    if (node && sp.parent) {
+      const parentNode = positions[`sp-${sp.parent.splitter_id}`];
+      if (parentNode) {
+        splitterWires.push({
+          key: `cascade-${sp.parent.splitter_id}-${sp.parent.port_number}`,
+          a: parentNode,
+          b: node,
+          bendA: 0,
+          bendB: 0,
+          cascade: true,
+          label: `port ${sp.parent.port_number}`,
+        });
+      }
+    }
     (sp.ports || []).forEach((p) => {
       const out = p.core_id ? positions[p.core_id] : null;
       if (node && out) {
@@ -299,12 +325,22 @@ export default function VisualDocumentation({ doc, onBack, onChanged }) {
         {/* Wire overlay */}
         <svg className="vdoc-wires" aria-hidden="true">
           {splitterWires.map((w) => (
-            <path
-              key={w.key}
-              d={bezier(w.a, w.b, w.bendA, w.bendB)}
-              className="vdoc-wire vdoc-wire-splitter"
-              style={{ stroke: SPLITTER_COLOR }}
-            />
+            <g key={w.key}>
+              <path
+                d={bezier(w.a, w.b, w.bendA, w.bendB)}
+                className={"vdoc-wire vdoc-wire-splitter" + (w.cascade ? " vdoc-wire-cascade" : "")}
+                style={{ stroke: SPLITTER_COLOR }}
+              />
+              {w.label && (
+                <text
+                  x={(w.a.x + w.b.x) / 2 + 6}
+                  y={(w.a.y + w.b.y) / 2 - 4}
+                  className="vdoc-wirelabel"
+                >
+                  {w.label}
+                </text>
+              )}
+            </g>
           ))}
           {spliceWires.map((w) => (
             <path
@@ -384,7 +420,12 @@ export default function VisualDocumentation({ doc, onBack, onChanged }) {
                   <span className="vdoc-tag" style={{ backgroundColor: SPLITTER_COLOR }}>◆</span>
                   <span className="vdoc-end">
                     {sp.name || `1:${sp.split_count} splitter`} — in:{" "}
-                    {input ? (
+                    {sp.parent ? (
+                      <>
+                        port {sp.parent.port_number} of{" "}
+                        <strong>{sp.parent.name || `1:${sp.parent.split_count} splitter`}</strong> (cascade)
+                      </>
+                    ) : input ? (
                       <>
                         <span className="fiber-chip" style={{ backgroundColor: fiberColor(input.core_number) }} />
                         {input.cable_code} <strong>#{input.core_number}</strong>
@@ -395,7 +436,11 @@ export default function VisualDocumentation({ doc, onBack, onChanged }) {
                   </span>
                   <span className="vdoc-meta">
                     {(sp.ports || []).map((p) =>
-                      p.core_id ? `P${p.port_number}→${p.cable_code || "?"}#${p.core_number}` : `P${p.port_number}→empty`,
+                      p.core_id
+                        ? `P${p.port_number}→${p.cable_code || "?"}#${p.core_number}`
+                        : p.output_splitter_id
+                          ? `P${p.port_number}→🔀 ${p.child_splitter_name || "splitter"}`
+                          : `P${p.port_number}→empty`,
                     ).join(" · ") || "no ports"}
                   </span>
                 </div>
