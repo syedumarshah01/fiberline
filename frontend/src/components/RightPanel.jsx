@@ -228,6 +228,14 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
         .filter((c) => c.id !== spliceForm.coreA)
         .map(coreOption),
     },
+    // Throwing power in reverse (feeding upstream fiber from here) is a
+    // normal field move — offer the free IN cores as splice targets too.
+    {
+      label: "Available IN cores (reverse feed)",
+      options: availableInCoresForBranching
+        .filter((c) => c.id !== spliceForm.coreA)
+        .map(coreOption),
+    },
     // Only offer splitter ports for core B when core A is NOT a splitter port
     ...(spliceForm.coreA?.startsWith("port-") ? [] : [{ label: "Splitter ports", options: splitterPorts.map(portOption) }]),
   ];
@@ -790,7 +798,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             <p className="field-hint">Hover a fiber to spotlight its cable on the map.</p>
           </div>
           <div className="field">
-            <label>Core out (to downstream)</label>
+            <label>Core out (downstream, or an IN core to reverse-feed)</label>
             <CorePicker
               value={spliceForm.coreB}
               onChange={(v) =>
@@ -1218,7 +1226,7 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       alert(
         `Done! New pole and enclosure "${result.enclosure.code}" placed.\n` +
         `Upstream: ${Math.round(result.split_info.upstream_length_m)}m → Box → Downstream: ${Math.round(result.split_info.downstream_length_m)}m\n` +
-        `${result.summary.available_cores} cores available for splicing to customer drops.`
+        `${result.summary.auto_spliced_pairs} fiber pairs were through-spliced in the joint — unsplice any of them inside the box when you need to redirect a fiber.`
       );
     } catch (err) {
       alert(err.message);

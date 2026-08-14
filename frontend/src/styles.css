@@ -386,6 +386,19 @@ code, .mono { font-family: var(--font-mono); }
 .chip-reserved { color: var(--text-muted); }
 .chip-damaged { color: var(--red); border-color: rgba(239,83,80,0.4); }
 
+/* ---------- Topbar label-opacity slider ---------- */
+.label-opacity-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  color: var(--text-muted);
+}
+.label-opacity-control input[type="range"] {
+  width: 70px;
+  accent-color: var(--teal);
+}
+
 /* ---------- Cable name labels on the map ---------- */
 /* Leaflet renders this inside its tooltip wrapper; Google uses the overlay div. */
 .cable-map-label {
@@ -398,6 +411,23 @@ code, .mono { font-family: var(--font-mono); }
   white-space: nowrap;
   pointer-events: none;
 }
+/* The user's opacity slider drives every DOM label (Leaflet tooltips, Mapbox
+   marker labels, Google overlays). Leaflet writes an inline opacity on
+   tooltips, so it needs !important here. Mapbox canvas cable labels get the
+   value via the text-opacity paint property instead. */
+.leaflet-tooltip.cable-map-label,
+.leaflet-tooltip.enc-map-label {
+  opacity: var(--map-label-opacity, 1) !important;
+}
+.enc-dot-label, .cable-map-label-g {
+  opacity: var(--map-label-opacity, 1);
+}
+/* Clickable label contents (click = open the cable/box detail) */
+.map-label-btn { cursor: pointer; }
+.leaflet-tooltip.cable-map-label-link,
+.leaflet-tooltip.enc-map-label { pointer-events: auto; }
+.cable-map-label-g.map-label-btn { pointer-events: auto; }
+.map-label-btn:hover { text-decoration: underline; }
 /* Leaflet tooltip chrome reset */
 .leaflet-tooltip.cable-map-label {
   background: rgba(16, 20, 28, 0.82);

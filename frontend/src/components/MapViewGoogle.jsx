@@ -41,6 +41,7 @@ export default function MapViewGoogle({
   selectedPoleId,
   selectedCableId,
   highlightCableId,
+  locateNonce,
   splitPointLngLat,
   userPosition,
   customerRoute,
@@ -75,11 +76,8 @@ export default function MapViewGoogle({
         if (mid && mid[1] != null && mid[0] != null) return { lat: mid[1], lng: mid[0] };
       }
     }
-    if (userPosition && userPosition.lat != null && userPosition.lng != null) {
-      return { lat: userPosition.lat, lng: userPosition.lng };
-    }
     return null;
-  }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables, userPosition]);
+  }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables]);
 
   const mapOptions = {
     mapTypeId: "roadmap",
@@ -110,6 +108,16 @@ export default function MapViewGoogle({
       mapRef.current.setZoom(Math.max(mapRef.current.getZoom(), 16));
     }
   }, [flyToTarget]);
+
+  // Fly to the user's location ONLY on an explicit "locate me" click
+  // (locateNonce bumps) — never uninvited.
+  useEffect(() => {
+    if (mapRef.current && locateNonce > 0 && userPosition && userPosition.lat != null && userPosition.lng != null) {
+      mapRef.current.panTo({ lat: userPosition.lat, lng: userPosition.lng });
+      mapRef.current.setZoom(Math.max(mapRef.current.getZoom(), 16));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locateNonce]);
 
   if (!isLoaded) return <div>Loading map...</div>;
 
@@ -178,7 +186,18 @@ export default function MapViewGoogle({
               mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
               getPixelPositionOffset={(w, h) => ({ x: -(w / 2), y: -(h / 2) })}
             >
-              <div className="cable-map-label cable-map-label-g">{label}</div>
+              <div
+                className="cable-map-label cable-map-label-g map-label-btn"
+                title="Click to open this cable"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  cableWasClicked = true;
+                  onCableClick?.(cable);
+                  setTimeout(() => { cableWasClicked = false; }, 0);
+                }}
+              >
+                {label}
+              </div>
             </OverlayView>
           )}
           </React.Fragment>

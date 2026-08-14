@@ -38,6 +38,8 @@ export default function MapViewMapbox({
   selectedPoleId,
   selectedCableId,
   highlightCableId,
+  locateNonce,
+  labelOpacity,
   splitPointLngLat,
   userPosition,
   customerRoute,
@@ -54,7 +56,7 @@ export default function MapViewMapbox({
   const markersRef = useRef([]);
   const dataRef = useRef({});
   // Keep dataRef in sync so stable map callbacks always see fresh data/handlers.
-  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
+  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, labelOpacity, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
 
   const clearDynamicContent = useCallback(() => {
     if (!map.current) return;
@@ -176,7 +178,8 @@ export default function MapViewMapbox({
           type: "geojson",
           data: {
             type: "Feature",
-            properties: { label },
+            // cableId so a click on the label behaves like a click on the line
+            properties: { label, cableId: cable.id },
             geometry: { type: "Point", coordinates: mid },
           },
         });
@@ -196,6 +199,7 @@ export default function MapViewMapbox({
             "text-color": "#f4f6fa",
             "text-halo-color": "#10141c",
             "text-halo-width": 1.5,
+            "text-opacity": d.labelOpacity ?? 1,
           },
         });
       }
@@ -365,9 +369,10 @@ export default function MapViewMapbox({
       const d = dataRef.current;
 
       if (!cableWasClicked) {
+        // A click on a cable's name label counts as a click on the cable.
         const cableLayerIds = (map.current.getStyle()?.layers || [])
           .map((l) => l.id)
-          .filter((id) => id.startsWith("cable-line-"));
+          .filter((id) => id.startsWith("cable-line-") || id.startsWith("cable-label-"));
 
         if (cableLayerIds.length) {
           const hits = map.current.queryRenderedFeatures(e.point, { layers: cableLayerIds });
@@ -402,7 +407,7 @@ export default function MapViewMapbox({
   // previously updateMap only ran on the initial style load).
   useEffect(() => {
     updateMap();
-  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, splitPointLngLat, userPosition, customerRoute, updateMap]);
+  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, labelOpacity, splitPointLngLat, userPosition, customerRoute, updateMap]);
 
   // Fly to selected enclosure or pole
   useEffect(() => {
@@ -421,14 +426,26 @@ export default function MapViewMapbox({
         const mid = cable.route[Math.floor(cable.route.length / 2)];
         if (mid && mid[0] != null && mid[1] != null) target = [mid[0], mid[1]];
       }
-    } else if (userPosition && userPosition.lat != null && userPosition.lng != null) {
-      target = [userPosition.lng, userPosition.lat];
     }
 
     if (target) {
       map.current.flyTo({ center: target, zoom: Math.max(map.current.getZoom(), 16), duration: 800 });
     }
-  }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables, userPosition]);
+  }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables]);
+
+  // Fly to the user's location ONLY when they explicitly clicked "locate me"
+  // (locateNonce bumps). The map must never drift there on its own.
+  useEffect(() => {
+    if (!map.current || !mapLoaded.current) return;
+    if (locateNonce > 0 && userPosition && userPosition.lat != null && userPosition.lng != null) {
+      map.current.flyTo({
+        center: [userPosition.lng, userPosition.lat],
+        zoom: Math.max(map.current.getZoom(), 16),
+        duration: 800,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locateNonce]);
 
   return (
     <div

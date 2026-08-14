@@ -11,14 +11,22 @@ const { validateCableData } = require("../middleware/validation");
 const router = express.Router();
 
 // GET /api/cables — includes route as [ [lng,lat], [lng,lat] ] for map drawing
-// Also includes spliced_core_count to determine if cable should show moving dashes
+// Also includes spliced_core_count to determine if cable should show moving
+// dashes. A core counts as "wired" when its status is 'spliced' OR when it's
+// assigned to a splitter output port (the port-assignment path marks the core
+// 'spliced' too, but the EXISTS guard makes the dashing independent of status
+// bookkeeping quirks — port-assigned cores always dash the cable).
 router.get("/", async (req, res, next) => {
   try {
     const rows = await db.raw(`
       SELECT c.id, c.code, c.name, c.cable_type, c.core_count, c.status,
              c.from_enclosure_id, c.to_enclosure_id, c.customer_id, c.customer_label,
              c.length_m,
-             (SELECT COUNT(*) FROM fiber_cores fc WHERE fc.cable_id = c.id AND fc.status = 'spliced') AS spliced_core_count,
+             (SELECT COUNT(*) FROM fiber_cores fc
+              WHERE fc.cable_id = c.id AND (
+                fc.status = 'spliced'
+                OR EXISTS (SELECT 1 FROM splitter_ports sp WHERE sp.output_core_id = fc.id)
+              )) AS spliced_core_count,
              ST_AsGeoJSON(c.route::geometry) AS route_geojson
       FROM cables c
       ORDER BY c.created_at DESC
@@ -360,9 +368,15 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       .orderBy("core_number")
       .forUpdate();
 
-    // Separate cores into "available" (will be spliced) and "non-available" (pass-through)
-    const availableCores = originalCores.filter((c) => c.status === "available");
-    const passThroughCores = originalCores.filter((c) => c.status !== "available");
+    // Separate cores into spliceable (available/reserved/spliced — the latter
+    // already lit somewhere else, chaining here) and strictly pass-through
+    // (terminated/damaged — you can't splice a dead fiber).
+    const spliceableCores = originalCores.filter((c) =>
+      ["available", "reserved", "spliced"].includes(c.status),
+    );
+    const passThroughCores = originalCores.filter(
+      (c) => !["available", "reserved", "spliced"].includes(c.status),
+    );
 
     // Create the new pole at the split point
     const [pole] = await trx("poles")
@@ -443,28 +457,54 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       .orderBy("core_number")
       .forUpdate();
 
-    // For pass-through cores: copy the original core's status to the downstream core
-    // so continuity is preserved without creating a splice record for them.
-    for (const ptCore of passThroughCores) {
-      const matchingDownstream = downstreamCores.find(
-        (dc) => dc.core_number === ptCore.core_number
+    // Through-splice EVERY matching core pair across the new joint (IN core #n
+    // ↔ OUT core #n) so the box is end-to-end lit the moment it's created.
+    // Any pair can be unspliced later inside the joint to redirect the fiber.
+    // Only terminated/damaged cores are kept as pure pass-through (status
+    // copied downstream, no splice record — you can't splice a dead fiber).
+    let autoSplicedPairs = 0;
+    for (const upCore of originalCores) {
+      const downCore = downstreamCores.find(
+        (dc) => dc.core_number === upCore.core_number
       );
-      if (matchingDownstream) {
+      if (!downCore) continue;
+
+      if (!["available", "reserved", "spliced"].includes(upCore.status)) {
         await trx("fiber_cores")
-          .where({ id: matchingDownstream.id })
+          .where({ id: downCore.id })
           .update({
-            status: ptCore.status,
-            notes: ptCore.notes
-              ? `Pass-through from ${cable.code} core #${ptCore.core_number}: ${ptCore.notes}`
-              : `Pass-through from ${cable.code} core #${ptCore.core_number}`,
+            status: upCore.status,
+            notes: upCore.notes
+              ? `Pass-through from ${cable.code} core #${upCore.core_number}: ${upCore.notes}`
+              : `Pass-through from ${cable.code} core #${upCore.core_number}`,
             updated_at: trx.fn.now(),
           });
+        continue;
       }
+
+      await trx("splices").insert({
+        enclosure_id: enclosure.id,
+        core_a_id: upCore.id,
+        core_b_id: downCore.id,
+        splice_type: "fusion",
+        splice_date: new Date(),
+        notes:
+          "Straight-through joint, created automatically when this box was inserted — unsplice it to redirect the fiber",
+      });
+      if (upCore.status !== "spliced") {
+        await trx("fiber_cores")
+          .where({ id: upCore.id })
+          .update({ status: "spliced", updated_at: trx.fn.now() });
+      }
+      await trx("fiber_cores")
+        .where({ id: downCore.id })
+        .update({
+          status: "spliced",
+          notes: `Through-spliced to ${cable.code} fiber #${upCore.core_number}`,
+          updated_at: trx.fn.now(),
+        });
+      autoSplicedPairs++;
     }
-    
-    // Note: We do NOT create splices for available cores here.
-    // The cores in the new enclosure remain "available" for splicing to customer drops.
-    // The downstream cable cores are also "available" to match.
 
     await trx.commit();
     res.status(201).json({
@@ -486,7 +526,8 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       downstream_cable: downstreamCable,
       summary: {
         total_cores: originalCores.length,
-        available_cores: availableCores.length,
+        auto_spliced_pairs: autoSplicedPairs,
+        spliceable_cores: spliceableCores.length,
         pass_through_cores: passThroughCores.length,
       },
     });

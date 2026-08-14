@@ -7,7 +7,7 @@ import RightPanel from "./components/RightPanel.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
 import { LoadScript } from "@react-google-maps/api";
-import { LocateFixed, Sun, Moon } from "lucide-react";
+import { LocateFixed, Sun, Moon, Type } from "lucide-react";
 
 const MODES = [
   { key: "view", label: "View" },
@@ -66,6 +66,15 @@ export default function App() {
   const [userPosition, setUserPosition] = useState(null);
   const [locationError, setLocationError] = useState(null);
   const [isTracking, setIsTracking] = useState(false);
+  // Bumped ONLY by an explicit "locate me" click — the maps fly to the user
+  // position on a bump, and never spontaneously.
+  const [locateNonce, setLocateNonce] = useState(0);
+
+  // Map label (cable code / box code) opacity, adjustable from the topbar
+  const [labelOpacity, setLabelOpacity] = useState(() => {
+    const saved = parseFloat(localStorage.getItem("fiberline-label-opacity"));
+    return Number.isFinite(saved) ? Math.min(1, Math.max(0.2, saved)) : 1;
+  });
   
   // Customer route (for locate-customer mode)
   const [customerRoute, setCustomerRoute] = useState(null);
@@ -103,6 +112,13 @@ export default function App() {
     localStorage.setItem("fiberline-theme", theme);
     document.body.className = theme === "light" ? "light-theme" : "dark-theme";
   }, [theme]);
+
+  // Persist label opacity + expose it as a CSS var for the DOM labels
+  // (Leaflet tooltips, Mapbox marker labels, Google overlays).
+  useEffect(() => {
+    localStorage.setItem("fiberline-label-opacity", String(labelOpacity));
+    document.documentElement.style.setProperty("--map-label-opacity", String(labelOpacity));
+  }, [labelOpacity]);
 
   function handleThemeToggle() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
@@ -310,6 +326,8 @@ export default function App() {
           lng: position.coords.longitude,
         });
         setLocationError(null);
+        // The ONLY place the map is allowed to fly to the user's location
+        setLocateNonce((n) => n + 1);
       },
       (error) => {
         setLocationError(error.message || "Unable to get your location");
@@ -432,6 +450,20 @@ export default function App() {
         >
           {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
         </button>
+        <label
+          className="label-opacity-control"
+          title={`Map label opacity: ${Math.round(labelOpacity * 100)}%`}
+        >
+          <Type size={13} />
+          <input
+            type="range"
+            min="0.2"
+            max="1"
+            step="0.05"
+            value={labelOpacity}
+            onChange={(e) => setLabelOpacity(Number(e.target.value))}
+          />
+        </label>
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>
 
@@ -487,6 +519,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              locateNonce={locateNonce}
+              labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
@@ -514,6 +548,8 @@ export default function App() {
                 selectedPoleId={selectedPole?.id}
                 selectedCableId={selectedCable?.id}
                 highlightCableId={highlightCableId}
+                locateNonce={locateNonce}
+                labelOpacity={labelOpacity}
                 splitPointLngLat={splitPointLngLat}
                 userPosition={userPosition}
                 customerRoute={customerRoute}
@@ -541,6 +577,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              locateNonce={locateNonce}
+              labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
