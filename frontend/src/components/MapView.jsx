@@ -68,7 +68,7 @@ function ClickCatcher({ onMapClick }) {
   return null;
 }
 
-function MapFlyTo({ targetLatLng }) {
+function MapFlyTo({ targetLatLng, locateLatLng }) {
   const map = useMapEvents({});
   useEffect(() => {
     if (targetLatLng && map) {
@@ -77,6 +77,13 @@ function MapFlyTo({ targetLatLng }) {
       });
     }
   }, [targetLatLng, map]);
+  // Only the explicit "locate me" click is allowed to move the map to the
+  // user's position — never as a side effect of selection changes.
+  useEffect(() => {
+    if (locateLatLng && map) {
+      map.flyTo(locateLatLng, Math.max(map.getZoom(), 16), { duration: 0.8 });
+    }
+  }, [locateLatLng, map]);
   return null;
 }
 
@@ -122,6 +129,7 @@ export default function MapView({
   highlightCableId,
   splitPointLngLat,
   userPosition,
+  locateNonce,
   customerRoute,
   onMapClick,
   onPoleClick,
@@ -146,11 +154,17 @@ export default function MapView({
         if (mid && mid[1] != null && mid[0] != null) return [mid[1], mid[0]];
       }
     }
-    if (userPosition && userPosition.lat != null && userPosition.lng != null) {
+    return null;
+  }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables]);
+
+  // Set ONLY when the user clicks "locate me" (locateNonce bumps) — the map
+  // flies there exactly once, never as a fallback when selections change.
+  const locateLatLng = useMemo(() => {
+    if (locateNonce > 0 && userPosition && userPosition.lat != null && userPosition.lng != null) {
       return [userPosition.lat, userPosition.lng];
     }
     return null;
-  }, [selectedPoleId, selectedEnclosureId, selectedCableId, poles, enclosures, cables, userPosition]);
+  }, [locateNonce, userPosition]);
 
   const center = useMemo(() => {
     if (poles.length && poles[0].lat != null && poles[0].lng != null) return [poles[0].lat, poles[0].lng];
@@ -168,7 +182,7 @@ export default function MapView({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <ClickCatcher onMapClick={onMapClick} />
-      <MapFlyTo targetLatLng={flyToTarget} />
+      <MapFlyTo targetLatLng={flyToTarget} locateLatLng={locateLatLng} />
       <ZoomTracker onZoomChange={setZoom} />
 
       {pendingCableRoute.length >= 2 && (
@@ -242,12 +256,21 @@ export default function MapView({
               <Tooltip
                 permanent
                 direction="center"
-                className="cable-map-label"
+                className="cable-map-label cable-map-label-link"
                 position={[mid[1], mid[0]]}
-                interactive={false}
-                opacity={1}
+                interactive
               >
-                {label}
+                <span
+                  className="map-label-btn"
+                  title="Click to open this cable"
+                  onClick={() => {
+                    cableWasClicked = true;
+                    onCableClick?.(cable);
+                    setTimeout(() => { cableWasClicked = false; }, 0);
+                  }}
+                >
+                  {label}
+                </span>
               </Tooltip>
             )}
           </Polyline>
@@ -287,9 +310,19 @@ export default function MapView({
                 direction="top"
                 offset={[0, -11]}
                 className="cable-map-label enc-map-label"
-                opacity={1}
+                interactive
               >
-                {enc.code}
+                <span
+                  className="map-label-btn"
+                  title="Click to open this box"
+                  onClick={() => {
+                    cableWasClicked = true;
+                    onEnclosureClick?.(enc);
+                    setTimeout(() => { cableWasClicked = false; }, 0);
+                  }}
+                >
+                  {enc.code}
+                </span>
               </Tooltip>
             ) : null}
           </Marker>
