@@ -108,6 +108,8 @@ export const api = {
     request("/enclosures", { method: "POST", body: JSON.stringify(data) }),
   getBoxDocumentation: (id) => request(`/enclosures/${id}/documentation`),
   getVisualization: (id) => request(`/enclosures/${id}/visualization`),
+  updateEnclosure: (id, data) =>
+    request(`/enclosures/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteEnclosure: (id) => request(`/enclosures/${id}`, { method: "DELETE" }),
 
   // Cables
@@ -115,6 +117,8 @@ export const api = {
   getCable: (id) => request(`/cables/${id}`),
   createCable: (data) =>
     request("/cables", { method: "POST", body: JSON.stringify(data) }),
+  updateCable: (id, data) =>
+    request(`/cables/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteCable: (id) => request(`/cables/${id}`, { method: "DELETE" }),
   previewCableRoute: (data) =>
     request("/cables/route-preview", {
@@ -146,6 +150,8 @@ export const api = {
   getSplitter: (id) => request(`/splitters/${id}`),
   createSplitter: (data) =>
     request("/splitters", { method: "POST", body: JSON.stringify(data) }),
+  updateSplitter: (id, data) =>
+    request(`/splitters/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteSplitter: (id) => request(`/splitters/${id}`, { method: "DELETE" }),
   assignCoreToPort: (splitterId, portNumber, coreId) =>
     request(`/splitters/${splitterId}/assign-port`, {

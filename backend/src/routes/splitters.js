@@ -7,6 +7,7 @@ const {
   splitterOutputNote,
   splitterUnassignNote,
   portIsOccupied,
+  sanitizeSplitterPatch,
 } = require('../utils/splitters');
 const router = express.Router();
 
@@ -336,6 +337,28 @@ router.delete('/:id/assign-port', async (req, res,next) => {
     res.json({ message: 'Core unassigned from port', port_id: port.id });
   } catch (err) {
     await trx.rollback();
+    next(err);
+  }
+});
+
+// PATCH /api/splitters/:id — edit the stuff techs need to fix in the field:
+// the name, the notes, who spliced it and the measured loss. Port structure
+// (split_count / port assignments) is NOT editable here by design.
+router.patch('/:id', async (req, res, next) => {
+  try {
+    const splitter = await db('splitters').where({ id: req.params.id }).first();
+    if (!splitter) return res.status(404).json({ error: 'Splitter not found' });
+
+    const { updates, error } = sanitizeSplitterPatch(req.body || {});
+    if (error) return res.status(400).json({ error });
+
+    updates.updated_at = db.fn.now();
+    const [updated] = await db('splitters')
+      .where({ id: req.params.id })
+      .update(updates)
+      .returning('*');
+    res.json(updated);
+  } catch (err) {
     next(err);
   }
 });

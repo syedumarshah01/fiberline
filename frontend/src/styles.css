@@ -174,6 +174,10 @@ code, .mono { font-family: var(--font-mono); }
 .panel.right {
   border-right: none;
   border-left: 1px solid var(--border);
+  /* The panel is user-resizable (280–800px), so children adapt to the PANEL,
+     not the viewport — via the @container rules below. Width is always set
+     inline, so inline-size containment can't collapse anything. */
+  container-type: inline-size;
 }
 
 .map-container { position: relative; }
@@ -267,6 +271,15 @@ code, .mono { font-family: var(--font-mono); }
   padding: 7px 8px;
   border-bottom: 1px solid var(--border-soft);
   font-family: var(--font-mono);
+  overflow-wrap: anywhere; /* long notes/codes wrap instead of overflowing the panel */
+}
+
+/* Inline editor card used by the "edit box / cable / splitter" forms */
+.inline-edit-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
 }
 
 .summary-grid {
@@ -275,6 +288,9 @@ code, .mono { font-family: var(--font-mono); }
   gap: 8px;
   margin-bottom: 16px;
 }
+.summary-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.summary-grid.cols-3 .summary-card .n { font-size: 17px; }
+.summary-grid.cols-3 .summary-card .l { font-size: 10px; }
 .summary-card {
   background: var(--surface-raised);
   border: 1px solid var(--border);
@@ -538,6 +554,7 @@ code, .mono { font-family: var(--font-mono); }
   color: var(--text-muted);
   margin: 0 0 10px;
 }
+.vdoc { min-width: 0; }
 .vdoc-diagram { position: relative; }
 .vdoc-cols {
   display: grid;
@@ -559,7 +576,7 @@ code, .mono { font-family: var(--font-mono); }
   align-items: center;
   gap: 8px;
   padding: 0 2px;
-  min-width: 86px;
+  min-width: 72px;
 }
 .vdoc-boxchip {
   display: flex;
@@ -581,7 +598,8 @@ code, .mono { font-family: var(--font-mono); }
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 8px;
-  white-space: nowrap;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 .vdoc-spnode-name { color: var(--text-muted); margin-left: 4px; }
 .vdoc-card {
@@ -590,37 +608,39 @@ code, .mono { font-family: var(--font-mono); }
   border-radius: 7px;
   padding: 6px 8px;
   margin-bottom: 10px;
+  min-width: 0; /* never let a card force its column wider than the grid track */
 }
 .vdoc-card-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 6px;
+  min-width: 0;
 }
 .vdoc-card-code {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--teal);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere; /* long codes wrap instead of overflowing */
 }
-.vdoc-card-count { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
-.vdoc-card-sub { font-size: 10px; color: var(--text-faint); margin: 0 0 6px; }
+.vdoc-card-count { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); flex: none; }
+.vdoc-card-sub { font-size: 10px; color: var(--text-faint); margin: 0 0 6px; overflow-wrap: anywhere; }
 .vdoc-card-empty { font-size: 11px; color: var(--text-faint); padding: 2px 0 4px; }
 .vdoc-core {
   position: relative;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
-  padding: 2px 2px;
+  padding: 3px 2px;
   border-radius: 4px;
   font-family: var(--font-mono);
 }
 .vdoc-core.hot { background: rgba(255, 255, 255, 0.06); }
-.vdoc-core-num { font-size: 11px; color: var(--text-muted); min-width: 24px; }
-.vdoc-core-status { font-size: 9px; padding: 0 5px; }
+.vdoc-core-num { font-size: 12px; color: var(--text-muted); min-width: 24px; }
+.vdoc-core-status { font-size: 10px; padding: 1px 6px; }
 .vdoc-core .vdoc-edge:last-child { margin-left: auto; }
 .vdoc-edge { display: inline-flex; align-items: center; gap: 5px; flex: none; }
 .vdoc-port {
@@ -635,12 +655,12 @@ code, .mono { font-family: var(--font-mono); }
 .vdoc-core.hot .vdoc-port { box-shadow: 0 0 0 2px var(--teal); }
 .vdoc-tag {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: #10141a;
   border-radius: 3px;
   padding: 0 4px;
-  line-height: 14px;
+  line-height: 16px;
 }
 .vdoc-empty { font-size: 11px; color: var(--text-faint); padding: 6px 0; }
 .vdoc-wires {
@@ -674,9 +694,9 @@ code, .mono { font-family: var(--font-mono); }
   cursor: default;
 }
 .vdoc-splicerow.hot { border-color: var(--teal); background: rgba(63, 208, 201, 0.07); }
-.vdoc-end { display: inline-flex; align-items: center; gap: 5px; }
+.vdoc-end { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
 .vdoc-arrow { color: var(--text-faint); }
-.vdoc-meta { color: var(--text-faint); font-size: 10.5px; }
+.vdoc-meta { color: var(--text-faint); font-size: 10.5px; overflow-wrap: anywhere; }
 .vdoc-splicenote {
   flex-basis: 100%;
   font-family: var(--font-body);
@@ -728,7 +748,8 @@ code, .mono { font-family: var(--font-mono); }
   border-color: rgba(0, 0, 0, 0.2);
   color: #1c2a33;
 }
-.enc-labels-on .enc-dot-label,
+/* Box codes appear ONLY while the marker is hovered (or when the box is
+   selected) — never blanket the map with them. */
 .enc-dot-marker:hover .enc-dot-label,
 .enc-dot-marker.is-selected .enc-dot-label { display: block; }
 
@@ -739,9 +760,7 @@ code, .mono { font-family: var(--font-mono); }
   font-size: 9.5px;
   color: var(--text-faint);
   padding: 0 2px 3px 26px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .vdoc-corewrap:last-child .vdoc-upstream { padding-bottom: 1px; }
 /* Label next to a cascade wire ("port 2" of the parent splitter) */
@@ -750,3 +769,27 @@ code, .mono { font-family: var(--font-mono); }
   font: 600 9px var(--font-mono, monospace);
 }
 .vdoc-wire-cascade { stroke-width: 2.2; }
+
+/* ---------- Panel-width responsiveness (container = .panel.right) ---------- */
+/* The right panel resizes 280–800px; the wiring diagram must stay readable
+   across that whole range without horizontal overflow. Breakpoints refer to
+   the panel's own width, not the window. */
+@container (max-width: 390px) {
+  .vdoc-cols { gap: 6px; }
+  .vdoc-lane { min-width: 58px; padding: 0 1px; }
+  .vdoc-boxchip { padding: 5px 8px; }
+  .vdoc-boxchip-code { font-size: 11px; }
+  .vdoc-boxchip-type { font-size: 9px; }
+  .vdoc-spnode { font-size: 10px; padding: 3px 6px; }
+  .vdoc-card { padding: 5px 6px; }
+  .vdoc-col-title { font-size: 9px; letter-spacing: 0.05em; }
+  .summary-grid.cols-3 { grid-template-columns: 1fr 1fr; }
+}
+@container (max-width: 330px) {
+  .vdoc-lane { min-width: 46px; }
+  .vdoc-core { gap: 4px; }
+  .vdoc-core-num { font-size: 11.5px; min-width: 20px; }
+  .vdoc-legend { font-size: 10px; gap: 4px 10px; }
+  .vdoc-upstream { padding-left: 20px; }
+  .summary-grid, .summary-grid.cols-3 { grid-template-columns: 1fr; }
+}

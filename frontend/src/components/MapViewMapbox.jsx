@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM, ENCLOSURE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 // Module-level flag to track if a cable was clicked (prevents map click from clearing selection)
 let cableWasClicked = false;
@@ -233,8 +233,8 @@ export default function MapViewMapbox({
       if (enc.lat == null || enc.lng == null) return;
       const availableCores = d.capacityByEnclosure?.[enc.id];
       const el = document.createElement("div");
-      // enc-dot-marker: the label span inside is revealed by CSS — at deep
-      // zoom (container class), on hover, or when this box is selected.
+      // enc-dot-marker: the box-code label span inside is revealed by CSS,
+      // ONLY on hover or when this box is selected — never all at once.
       const isSelected = enc.id === d.selectedEnclosureId;
       el.className =
         "map-marker enc-dot-marker" + (isSelected ? " is-selected" : "");
@@ -343,17 +343,7 @@ export default function MapViewMapbox({
     });
     map.current.addControl(new mapboxgl.NavigationControl(), "top-right");
 
-    // Box labels: revealed via a container class so toggling them on zoom
-    // doesn't rebuild the map — CSS shows .enc-dot-label under
-    // .enc-labels-on, plus on hover/selection regardless of zoom.
-    const syncEncLabelZoom = () => {
-      const c = map.current.getContainer();
-      if (c) c.classList.toggle("enc-labels-on", map.current.getZoom() >= ENCLOSURE_LABEL_MIN_ZOOM);
-    };
-    map.current.on("zoom", syncEncLabelZoom);
-
     map.current.on("load", () => {
-      syncEncLabelZoom();
       mapLoaded.current = true;
       // center on data if we already have poles
       const d = dataRef.current;

@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { validateEnclosureData } = require('../middleware/validation');
+const { normalizeEditableCode } = require('../utils/codegen');
 const router = express.Router();
 
 // GET /api/enclosures — all boxes, with parent pole coordinates or direct location
@@ -59,7 +60,27 @@ router.patch('/:id', async (req, res, next) => {
     const fields = ['name', 'type', 'capacity', 'status', 'mounting', 'notes'];
     const updates = { updated_at: db.fn.now() };
     for (const f of fields) if (req.body[f] !== undefined) updates[f] = req.body[f];
-    await db('enclosures').where({ id: req.params.id }).update(updates);
+
+    // `code` (the box code shown on the map and in documentation) is editable,
+    // but must stay non-empty and unique — pre-check so the caller gets a
+    // clear 409 instead of an opaque unique-violation 500.
+    if (req.body.code !== undefined) {
+      const code = normalizeEditableCode(req.body.code);
+      if (!code) {
+        return res.status(400).json({ error: 'code must be a non-empty string' });
+      }
+      const clash = await db('enclosures')
+        .where({ code })
+        .whereNot({ id: req.params.id })
+        .first();
+      if (clash) {
+        return res.status(409).json({ error: `Another box already uses code ${code}` });
+      }
+      updates.code = code;
+    }
+
+    const changed = await db('enclosures').where({ id: req.params.id }).update(updates);
+    if (!changed) return res.status(404).json({ error: 'Enclosure not found' });
     res.json({ ok: true });
   } catch (err) {
     next(err);

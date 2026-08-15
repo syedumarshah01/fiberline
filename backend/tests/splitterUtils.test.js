@@ -11,6 +11,7 @@ const {
   splitterOutputNote,
   splitterUnassignNote,
   portIsOccupied,
+  sanitizeSplitterPatch,
 } = require('../src/utils/splitters');
 
 describe('defaultSplitterName', () => {
@@ -54,5 +55,50 @@ describe('portIsOccupied', () => {
     assert.equal(portIsOccupied({ output_splitter_id: 's1' }), true);
     assert.equal(portIsOccupied({}), false);
     assert.equal(portIsOccupied(null), false);
+  });
+});
+
+describe('sanitizeSplitterPatch', () => {
+  test('passes through editable fields', () => {
+    const { updates, error } = sanitizeSplitterPatch({ name: 'Tray A', notes: 'by the door', technician: 'Ali' });
+    assert.ifError(error);
+    assert.deepEqual(updates, { name: 'Tray A', notes: 'by the door', technician: 'Ali' });
+  });
+
+  test('split_count and other structural fields are NOT editable via PATCH', () => {
+    const { updates, error } = sanitizeSplitterPatch({ split_count: 8, enclosure_id: 'x', name: 'Tray A' });
+    assert.ifError(error);
+    assert.deepEqual(updates, { name: 'Tray A' });
+  });
+
+  test('empty patch is rejected', () => {
+    const { error } = sanitizeSplitterPatch({});
+    assert.equal(error, 'No valid fields to update');
+  });
+
+  test("blank loss_db/splice_date/technician/name clear the field instead of 500ing Postgres", () => {
+    const { updates, error } = sanitizeSplitterPatch({ loss_db: '', splice_date: '', technician: '', name: '' });
+    assert.ifError(error);
+    assert.deepEqual(updates, { loss_db: null, splice_date: null, technician: null, name: null });
+  });
+
+  test('loss_db must be numeric when present', () => {
+    const { error } = sanitizeSplitterPatch({ loss_db: 'lots' });
+    assert.match(error, /loss_db must be a number/);
+    const { updates } = sanitizeSplitterPatch({ loss_db: '0.32' });
+    assert.equal(updates.loss_db, 0.32);
+  });
+
+  test('splice_type is restricted to fusion/mechanical', () => {
+    const { error } = sanitizeSplitterPatch({ splice_type: 'duct-tape' });
+    assert.match(error, /splice_type/);
+    const { updates, error: ok } = sanitizeSplitterPatch({ splice_type: 'mechanical' });
+    assert.ifError(ok);
+    assert.equal(updates.splice_type, 'mechanical');
+  });
+
+  test('notes and name must be strings when set', () => {
+    assert.match(sanitizeSplitterPatch({ notes: 42 }).error, /notes must be a string/);
+    assert.match(sanitizeSplitterPatch({ name: 42 }).error, /name must be a string/);
   });
 });

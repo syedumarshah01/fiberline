@@ -10,7 +10,7 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
-import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM, ENCLOSURE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 /** Color used to spotlight a cable (e.g. while hovering one of its fibers in
  *  the splice form). Deliberately not one of the cable-type colors. */
@@ -293,10 +293,10 @@ export default function MapView({
       {enclosures.map((enc) => {
         if (enc.lat == null || enc.lng == null) return null;
         const isSelected = enc.id === selectedEnclosureId;
-        // Labels stay off until deep zoom so dense boxes don't blanket the
-        // map; below that zoom they appear on hover, and the selected box is
-        // always labeled.
-        const labelAlwaysOn = zoom >= ENCLOSURE_LABEL_MIN_ZOOM || isSelected;
+        // Box codes show ONLY while hovered (Leaflet opens non-permanent
+        // tooltips on mouseover) and permanently for the selected box — they
+        // never blanket the map regardless of zoom.
+        const labelPinned = isSelected;
         return (
           <Marker
             key={enc.id}
@@ -306,7 +306,7 @@ export default function MapView({
           >
             {enc.code ? (
               <Tooltip
-                permanent={labelAlwaysOn}
+                permanent={labelPinned}
                 direction="top"
                 offset={[0, -11]}
                 className="cable-map-label enc-map-label"
