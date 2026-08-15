@@ -50,10 +50,55 @@ function portIsOccupied(port) {
   return Boolean(port && (port.output_core_id || port.output_splitter_id));
 }
 
+// Fields a splitter PATCH may change. split_count is deliberately excluded —
+// the port rows are created to match it at creation time, so changing it
+// would silently orphan/invent ports.
+const SPLITTER_PATCH_FIELDS = ['name', 'splice_type', 'loss_db', 'technician', 'splice_date', 'notes'];
+
+/**
+ * Validate + normalize a splitter PATCH body. Mirrors the splice PATCH rules:
+ * blank strings mean "clear the field" for optional text/numeric columns, and
+ * enums are checked up front so Postgres never sees a value it would reject.
+ *
+ * Returns { updates } (may only contain keys the caller sent) or { error }.
+ */
+function sanitizeSplitterPatch(body) {
+  const updates = {};
+  for (const f of SPLITTER_PATCH_FIELDS) {
+    if (body[f] !== undefined) updates[f] = body[f];
+  }
+
+  if (updates.loss_db === '') updates.loss_db = null;
+  if (updates.loss_db !== undefined && updates.loss_db !== null && Number.isNaN(Number(updates.loss_db))) {
+    return { error: 'loss_db must be a number' };
+  }
+  if (updates.splice_date === '') updates.splice_date = null;
+  if (updates.technician === '') updates.technician = null;
+  if (updates.name === '') updates.name = null; // clearing falls back to the auto-name
+  if (updates.notes !== undefined && updates.notes !== null && typeof updates.notes !== 'string') {
+    return { error: 'notes must be a string' };
+  }
+  if (updates.name !== undefined && updates.name !== null && typeof updates.name !== 'string') {
+    return { error: 'name must be a string' };
+  }
+  if (updates.technician !== undefined && updates.technician !== null && typeof updates.technician !== 'string') {
+    return { error: 'technician must be a string' };
+  }
+  if (updates.splice_type !== undefined && !['fusion', 'mechanical'].includes(updates.splice_type)) {
+    return { error: "splice_type must be 'fusion' or 'mechanical'" };
+  }
+  if (Object.keys(updates).length === 0) {
+    return { error: 'No valid fields to update' };
+  }
+  if (updates.loss_db !== undefined && updates.loss_db !== null) updates.loss_db = Number(updates.loss_db);
+  return { updates };
+}
+
 module.exports = {
   defaultSplitterName,
   splitterInputNote,
   splitterOutputNote,
   splitterUnassignNote,
   portIsOccupied,
+  sanitizeSplitterPatch,
 };

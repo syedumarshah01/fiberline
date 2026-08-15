@@ -10,10 +10,9 @@
  *  a wall of overlapping text; at zoom ≥ 15 a neighbourhood is in view. */
 export const CABLE_LABEL_MIN_ZOOM = 15;
 
-/** Minimum zoom for box (enclosure) labels — deliberately higher than cables,
- *  since a city can hold hundreds of boxes. Below this zoom a box's label
- *  still appears on hover (and always for the selected box). */
-export const ENCLOSURE_LABEL_MIN_ZOOM = 17;
+/* Box (enclosure) labels have NO zoom threshold by design: a box code appears
+ * only while its marker is hovered, or always for the selected box. Dense
+ * neighbourhoods must never turn into a blanket of box codes. */
 
 /** Text to show on the map for a cable. */
 export function cableLabel(cable) {

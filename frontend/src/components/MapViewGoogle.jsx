@@ -7,7 +7,7 @@ import {
   OverlayView,
   useJsApiLoader,
 } from "@react-google-maps/api";
-import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM, ENCLOSURE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
 
 // Module-level flag to track if a cable was clicked
 let cableWasClicked = false;
@@ -54,6 +54,8 @@ export default function MapViewGoogle({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "",
   });
   const [zoom, setZoom] = useState(16);
+  // Which enclosure's code label is revealed by hover (selection reveals it too)
+  const [hoveredEnclosureId, setHoveredEnclosureId] = useState(null);
 
   const center = useMemo(() => {
     if (poles.length && poles[0].lat != null && poles[0].lng != null) return { lat: poles[0].lat, lng: poles[0].lng };
@@ -247,8 +249,14 @@ export default function MapViewGoogle({
               strokeWeight: 1,
             }}
             onClick={() => onEnclosureClick(enc)}
+            onMouseOver={() => setHoveredEnclosureId(enc.id)}
+            onMouseOut={() =>
+              setHoveredEnclosureId((h) => (h === enc.id ? null : h))
+            }
           />
-          {enc.code && (zoom >= ENCLOSURE_LABEL_MIN_ZOOM || isSelected) && (
+          {/* Box code reveals on hover only (or when selected) — never a
+              blanket of text over the map. */}
+          {enc.code && (hoveredEnclosureId === enc.id || isSelected) && (
             <OverlayView
               position={{ lat: enc.lat, lng: enc.lng }}
               mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}

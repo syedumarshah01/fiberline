@@ -1,6 +1,6 @@
 const express = require("express");
 const db = require("../db");
-const { nextCode } = require("../utils/codegen");
+const { nextCode, normalizeEditableCode } = require("../utils/codegen");
 const {
   coordinatesToWkt,
   fetchStreetRoute,
@@ -296,10 +296,12 @@ router.get("/:id/split-info", async (req, res, next) => {
 // Enhanced mid-span enclosure insertion:
 // 1. Accepts optional `split_ratio` (0-1) or `split_distance_m` to control
 //    where along the cable the new enclosure is placed. Defaults to midpoint.
-// 2. Handles mixed-status cores: available cores get spliced through to the
-//    downstream cable; already-spliced/terminated cores are "passed through"
-//    (they keep their status and are NOT re-spliced — the downstream cable
-//    gets matching cores with the same status so continuity is preserved).
+// 2. Handles mixed-status cores: only the cores that are LIVE across the span
+//    (status 'spliced' — spliced on to the next joint at the far end) get an
+//    automatic through-splice so that path never goes dark. Terminated,
+//    damaged and reserved cores are passed through (status copied downstream,
+//    no splice). Every other core simply remains available on both sides of
+//    the new joint, ready to be spliced by hand when needed.
 // ---------------------------------------------------------------------------
 router.post("/:id/insert-enclosure", async (req, res, next) => {
   const trx = await db.transaction();
@@ -368,14 +370,23 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       .orderBy("core_number")
       .forUpdate();
 
-    // Separate cores into spliceable (available/reserved/spliced — the latter
-    // already lit somewhere else, chaining here) and strictly pass-through
-    // (terminated/damaged — you can't splice a dead fiber).
-    const spliceableCores = originalCores.filter((c) =>
-      ["available", "reserved", "spliced"].includes(c.status),
+    // Classify the original cores for the cut:
+    //   live        — status 'spliced': a fiber currently carrying light
+    //                 between the previous joint and the next one. These (and
+    //                 ONLY these) get an automatic through-splice across the
+    //                 new joint, so the live path never goes dark.
+    //   passThrough — terminated / damaged / reserved: their status (and note)
+    //                 is copied onto the downstream core for documentation —
+    //                 no splice record (you can't splice a dead fiber, and a
+    //                 reservation shouldn't look like a splice).
+    //   available   — untouched: the new downstream core simply starts life
+    //                 available, exactly like before auto-splicing existed.
+    const liveCores = originalCores.filter((c) => c.status === "spliced");
+    const passThroughCores = originalCores.filter((c) =>
+      ["terminated", "damaged", "reserved"].includes(c.status),
     );
-    const passThroughCores = originalCores.filter(
-      (c) => !["available", "reserved", "spliced"].includes(c.status),
+    const plainAvailableCores = originalCores.filter(
+      (c) => c.status === "available",
     );
 
     // Create the new pole at the split point
@@ -457,11 +468,10 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       .orderBy("core_number")
       .forUpdate();
 
-    // Through-splice EVERY matching core pair across the new joint (IN core #n
-    // ↔ OUT core #n) so the box is end-to-end lit the moment it's created.
-    // Any pair can be unspliced later inside the joint to redirect the fiber.
-    // Only terminated/damaged cores are kept as pure pass-through (status
-    // copied downstream, no splice record — you can't splice a dead fiber).
+    // Through-splice ONLY the live cores (IN core #n ↔ matching OUT core #n)
+    // so a fiber that was lit between the previous and the next joint keeps
+    // working after the cut — typically a single pair. Everything else is
+    // left available for the tech to splice on demand, as before.
     let autoSplicedPairs = 0;
     for (const upCore of originalCores) {
       const downCore = downstreamCores.find(
@@ -469,7 +479,30 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       );
       if (!downCore) continue;
 
-      if (!["available", "reserved", "spliced"].includes(upCore.status)) {
+      if (upCore.status === "spliced") {
+        await trx("splices").insert({
+          enclosure_id: enclosure.id,
+          core_a_id: upCore.id,
+          core_b_id: downCore.id,
+          splice_type: "fusion",
+          splice_date: new Date(),
+          notes:
+            "Live fiber carried through automatically when this joint was inserted mid-span — unsplice it here to redirect the fiber",
+        });
+        await trx("fiber_cores")
+          .where({ id: downCore.id })
+          .update({
+            status: "spliced",
+            notes: `Through-spliced to ${cable.code} fiber #${upCore.core_number}`,
+            updated_at: trx.fn.now(),
+          });
+        autoSplicedPairs++;
+        continue;
+      }
+
+      if (upCore.status !== "available") {
+        // Pass-through: terminated / damaged / reserved — copy the status and
+        // context downstream, but create no splice record.
         await trx("fiber_cores")
           .where({ id: downCore.id })
           .update({
@@ -479,31 +512,8 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
               : `Pass-through from ${cable.code} core #${upCore.core_number}`,
             updated_at: trx.fn.now(),
           });
-        continue;
       }
-
-      await trx("splices").insert({
-        enclosure_id: enclosure.id,
-        core_a_id: upCore.id,
-        core_b_id: downCore.id,
-        splice_type: "fusion",
-        splice_date: new Date(),
-        notes:
-          "Straight-through joint, created automatically when this box was inserted — unsplice it to redirect the fiber",
-      });
-      if (upCore.status !== "spliced") {
-        await trx("fiber_cores")
-          .where({ id: upCore.id })
-          .update({ status: "spliced", updated_at: trx.fn.now() });
-      }
-      await trx("fiber_cores")
-        .where({ id: downCore.id })
-        .update({
-          status: "spliced",
-          notes: `Through-spliced to ${cable.code} fiber #${upCore.core_number}`,
-          updated_at: trx.fn.now(),
-        });
-      autoSplicedPairs++;
+      // Available cores: downstream twin is already available — leave it alone.
     }
 
     await trx.commit();
@@ -527,8 +537,9 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       summary: {
         total_cores: originalCores.length,
         auto_spliced_pairs: autoSplicedPairs,
-        spliceable_cores: spliceableCores.length,
+        live_cores: liveCores.length,
         pass_through_cores: passThroughCores.length,
+        left_available_cores: plainAvailableCores.length,
       },
     });
   } catch (err) {
@@ -665,7 +676,27 @@ router.patch("/:id", async (req, res, next) => {
     const updates = { updated_at: db.fn.now() };
     for (const f of fields)
       if (req.body[f] !== undefined) updates[f] = req.body[f];
-    await db("cables").where({ id: req.params.id }).update(updates);
+
+    // `code` is the identifier users see everywhere — it's editable, but must
+    // stay non-empty and unique (the column is UNIQUE; pre-check for a clear
+    // 409 instead of an opaque 23505).
+    if (req.body.code !== undefined) {
+      const code = normalizeEditableCode(req.body.code);
+      if (!code) {
+        return res.status(400).json({ error: "code must be a non-empty string" });
+      }
+      const clash = await db("cables")
+        .where({ code })
+        .whereNot({ id: req.params.id })
+        .first();
+      if (clash) {
+        return res.status(409).json({ error: `Another cable already uses code ${code}` });
+      }
+      updates.code = code;
+    }
+
+    const changed = await db("cables").where({ id: req.params.id }).update(updates);
+    if (!changed) return res.status(404).json({ error: "Cable not found" });
     res.json({ ok: true });
   } catch (err) {
     next(err);

@@ -100,6 +100,11 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   });
   const [splitters, setSplitters] = useState([]);
   const [creatingSplitter, setCreatingSplitter] = useState(false);
+  const [editingBox, setEditingBox] = useState(false);
+  const [boxForm, setBoxForm] = useState({ code: "", name: "" });
+  const [savingBox, setSavingBox] = useState(false);
+  const [editingSplitter, setEditingSplitter] = useState(null);
+  const [editSplitterForm, setEditSplitterForm] = useState({});
 
   const load = () => {
     setLoading(true);
@@ -119,6 +124,9 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
 
   useEffect(() => {
     setSource(null);
+    setEditingBox(false);
+    setEditingSplitter(null);
+    setEditingSplice(null);
     load();
     loadSplitters();
   }, [enclosureId]);
@@ -160,20 +168,23 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
 
   // Build list of splitter output ports that are empty (available for splicing)
   // — a port is NOT empty when a child splitter is cascaded onto it either.
-  const splitterPorts = splitters.flatMap((s) =>
-    (s.ports || [])
+  const splitterPorts = splitters.flatMap((s) => {
+    // Every port row names its splitter so two same-size splitters (e.g. two
+    // 1:4s — common once you cascade) are distinguishable in the dropdown.
+    const displayName = s.name || `1:${s.split_count} splitter`;
+    return (s.ports || [])
       .filter((p) => !p.output_core_id && !p.output_splitter_id)
       .map((p) => ({
         id: `port-${s.id}-${p.port_number}`,
         splitter_id: s.id,
         port_number: p.port_number,
-        splitter_name: s.name,
+        splitter_name: displayName,
         isSplitterPort: true,
-        cable_code: `Splitter ${s.split_count}-way`,
-        core_number: `Port ${p.port_number}`,
+        cable_code: displayName,
+        core_number: `port ${p.port_number}`,
         status: "available",
-      })),
-  );
+      }));
+  });
 
   // Get cores that are already used by splitters (input cores)
   const splitterInputCoreIds = splitters.map((s) => s.input_core_id).filter(Boolean);
@@ -213,7 +224,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   });
   const portOption = (p) => ({
     value: p.id,
-    label: `${p.cable_code} ${p.core_number}`,
+    label: `${p.splitter_name} · port ${p.port_number}`,
     cableId: null,
   });
   const coreAPickerGroups = [
@@ -340,6 +351,56 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
     }
   }
 
+  function startEditBox() {
+    setBoxForm({
+      code: doc.enclosure.code || "",
+      name: doc.enclosure.name || "",
+    });
+    setEditingBox(true);
+  }
+
+  async function handleSaveBox(e) {
+    e.preventDefault();
+    setSavingBox(true);
+    try {
+      await api.updateEnclosure(enclosureId, {
+        code: boxForm.code,
+        name: boxForm.name.trim() ? boxForm.name.trim() : null,
+      });
+      setEditingBox(false);
+      await load();
+      onChanged?.(); // refresh map labels + capacity chips
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSavingBox(false);
+    }
+  }
+
+  function startEditSplitter(s) {
+    setEditingSplitter(s.id);
+    setEditSplitterForm({
+      name: s.name || "",
+      splice_type: s.splice_type || "fusion",
+      loss_db: s.loss_db ?? "",
+      technician: s.technician || "",
+      notes: s.notes || "",
+    });
+  }
+
+  async function handleUpdateSplitter(splitterId) {
+    try {
+      await api.updateSplitter(splitterId, editSplitterForm);
+      setEditingSplitter(null);
+      setEditSplitterForm({});
+      await load();
+      await loadSplitters();
+      onChanged?.();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   async function handleDeleteSplitter(splitterId) {
     if (!confirm("Remove this splitter? All cores will return to available.")) return;
     try {
@@ -402,7 +463,26 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 6, flexWrap: "wrap" }}>
         <p className="section-title" style={{ margin: 0 }}>{doc.enclosure.code} — box documentation</p>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button
+            className="btn"
+            onClick={() => {
+              load();
+              loadSplitters();
+            }}
+            title="Reload this box's documentation"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            Refresh
+          </button>
+          <button
+            className="btn"
+            onClick={startEditBox}
+            title="Edit box code / name"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            Edit box
+          </button>
           <button className="btn" onClick={() => setViewMode("visual")} style={{ padding: "4px 12px", fontSize: 12 }}>
             Visual view
           </button>
@@ -417,6 +497,36 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
           )}
         </div>
       </div>
+
+      {/* Inline box editor — code is what shows on the map label */}
+      {editingBox && (
+        <form onSubmit={handleSaveBox} className="inline-edit-card" style={{ marginBottom: 12 }}>
+          <div className="field">
+            <label>Box code (shown on the map)</label>
+            <input
+              value={boxForm.code}
+              onChange={(e) => setBoxForm((f) => ({ ...f, code: e.target.value }))}
+              required
+            />
+          </div>
+          <div className="field">
+            <label>Box name (optional)</label>
+            <input
+              value={boxForm.name}
+              onChange={(e) => setBoxForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="e.g. junction behind Gulbahar market"
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" type="submit" disabled={savingBox}>
+              {savingBox ? "Saving…" : "Save box"}
+            </button>
+            <button className="btn" type="button" onClick={() => setEditingBox(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
 
       <div className="summary-grid">
         <div className="summary-card">
@@ -571,7 +681,13 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   {s.cable_b_code} #{s.core_b_number}
                 </td>
                 <td>{s.splice_type}</td>
-                <td style={{ maxWidth: 140 }}>{s.notes || "—"}</td>
+                <td
+                  style={{ maxWidth: 140, cursor: "pointer" }}
+                  title="Click to edit this splice (incl. its note)"
+                  onClick={() => startEditSplice(s)}
+                >
+                  {s.notes || "—"}
+                </td>
                 <td>
                   <button
                     className="btn"
@@ -860,6 +976,9 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                     : "—"}
                 {" "}· {s.splice_type}
               </div>
+              {s.notes ? (
+                <div className="sub" style={{ marginTop: 2 }}>📝 {s.notes}</div>
+              ) : null}
               {s.ports?.length ? (
                 <table className="doc-table" style={{ marginTop: 8 }}>
                   <thead>
@@ -917,13 +1036,103 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   No ports configured
                 </p>
               )}
-              <button
-                className="btn btn-danger"
-                style={{ marginTop: 8, padding: "4px 8px", fontSize: 11 }}
-                onClick={() => handleDeleteSplitter(s.id)}
-              >
-                Remove splitter
-              </button>
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn"
+                  style={{ padding: "4px 8px", fontSize: 11 }}
+                  onClick={() =>
+                    editingSplitter === s.id ? setEditingSplitter(null) : startEditSplitter(s)
+                  }
+                >
+                  {editingSplitter === s.id ? "Close editor" : "Edit name / notes"}
+                </button>
+                <button
+                  className="btn btn-danger"
+                  style={{ padding: "4px 8px", fontSize: 11 }}
+                  onClick={() => handleDeleteSplitter(s.id)}
+                >
+                  Remove splitter
+                </button>
+              </div>
+
+              {editingSplitter === s.id && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleUpdateSplitter(s.id);
+                  }}
+                  className="inline-edit-card"
+                  style={{ marginTop: 8 }}
+                >
+                  <div className="field">
+                    <label>Name</label>
+                    <input
+                      value={editSplitterForm.name}
+                      onChange={(e) =>
+                        setEditSplitterForm((f) => ({ ...f, name: e.target.value }))
+                      }
+                      placeholder={`1:${s.split_count} splitter`}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Splice type</label>
+                    <select
+                      value={editSplitterForm.splice_type}
+                      onChange={(e) =>
+                        setEditSplitterForm((f) => ({ ...f, splice_type: e.target.value }))
+                      }
+                    >
+                      <option value="fusion">Fusion</option>
+                      <option value="mechanical">Mechanical</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Loss (dB)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={editSplitterForm.loss_db}
+                      onChange={(e) =>
+                        setEditSplitterForm((f) => ({ ...f, loss_db: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Technician</label>
+                    <input
+                      value={editSplitterForm.technician}
+                      onChange={(e) =>
+                        setEditSplitterForm((f) => ({ ...f, technician: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Notes</label>
+                    <textarea
+                      value={editSplitterForm.notes}
+                      onChange={(e) =>
+                        setEditSplitterForm((f) => ({ ...f, notes: e.target.value }))
+                      }
+                      rows={2}
+                    />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="btn btn-primary" type="submit">
+                      Save splitter
+                    </button>
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => {
+                        setEditingSplitter(null);
+                        setEditSplitterForm({});
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           ))}
         </div>
@@ -1098,6 +1307,9 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
   const [splitRatio, setSplitRatio] = useState(0.5);
   const [splitLngLat, setSplitLngLat] = useState(null);
   const [inserting, setInserting] = useState(false);
+  const [editingCable, setEditingCable] = useState(false);
+  const [cableForm, setCableForm] = useState({ code: "", name: "", customer_label: "" });
+  const [savingCable, setSavingCable] = useState(false);
 
   useEffect(() => {
     setTrace(null);
@@ -1105,6 +1317,7 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
     setSplitInfo(null);
     setSplitRatio(0.5);
     setSplitLngLat(null);
+    setEditingCable(false);
     api.getCable(cable.id).then(setFull);
   }, [cable.id]);
 
@@ -1223,15 +1436,51 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       if (onSplitPointChange) onSplitPointChange(null, null);
       await api.getCable(cable.id).then(setFull);
       onChanged?.();
+      const n = result.summary.auto_spliced_pairs;
+      const spliceLine =
+        n > 0
+          ? `${n} live fiber pair${n === 1 ? "" : "s"} (in use between the previous and next joint) ` +
+            `${n === 1 ? "was" : "were"} through-spliced so service stays up. Every other core is ` +
+            `available in the new joint, ready to splice when needed.`
+          : `No fibers were in use across the cut point, so nothing was spliced automatically — ` +
+            `every core is available in the new joint, ready to splice when needed.`;
       alert(
         `Done! New pole and enclosure "${result.enclosure.code}" placed.\n` +
         `Upstream: ${Math.round(result.split_info.upstream_length_m)}m → Box → Downstream: ${Math.round(result.split_info.downstream_length_m)}m\n` +
-        `${result.summary.auto_spliced_pairs} fiber pairs were through-spliced in the joint — unsplice any of them inside the box when you need to redirect a fiber.`
+        spliceLine
       );
     } catch (err) {
       alert(err.message);
     } finally {
       setInserting(false);
+    }
+  }
+
+  function startEditCable() {
+    setCableForm({
+      code: full.code || "",
+      name: full.name || "",
+      customer_label: full.customer_label || "",
+    });
+    setEditingCable(true);
+  }
+
+  async function handleSaveCable(e) {
+    e.preventDefault();
+    setSavingCable(true);
+    try {
+      await api.updateCable(full.id, {
+        code: cableForm.code,
+        name: cableForm.name.trim() ? cableForm.name.trim() : null,
+        customer_label: cableForm.customer_label.trim() ? cableForm.customer_label.trim() : null,
+      });
+      setEditingCable(false);
+      await api.getCable(cable.id).then(setFull);
+      onChanged?.(); // refresh map labels
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSavingCable(false);
     }
   }
 
@@ -1255,16 +1504,63 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
             {full.customer_label ? `· label ${full.customer_label}` : ""}
           </p>
         </div>
-        {onDeleteCable && (
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           <button
-            className="btn btn-danger"
-            onClick={() => onDeleteCable(full.id)}
-            style={{ padding: "4px 12px", fontSize: 12, flexShrink: 0 }}
+            className="btn"
+            onClick={startEditCable}
+            title="Edit cable code / name / customer label"
+            style={{ padding: "4px 12px", fontSize: 12 }}
           >
-            Delete cable
+            Edit
           </button>
-        )}
+          {onDeleteCable && (
+            <button
+              className="btn btn-danger"
+              onClick={() => onDeleteCable(full.id)}
+              style={{ padding: "4px 12px", fontSize: 12 }}
+            >
+              Delete cable
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Inline cable editor — code is what shows on the map label */}
+      {editingCable && (
+        <form onSubmit={handleSaveCable} className="inline-edit-card" style={{ marginBottom: 12 }}>
+          <div className="field">
+            <label>Cable code (shown on the map)</label>
+            <input
+              value={cableForm.code}
+              onChange={(e) => setCableForm((f) => ({ ...f, code: e.target.value }))}
+              required
+            />
+          </div>
+          <div className="field">
+            <label>Cable name (optional)</label>
+            <input
+              value={cableForm.name}
+              onChange={(e) => setCableForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="e.g. Ring road feeder"
+            />
+          </div>
+          <div className="field">
+            <label>Customer label (optional)</label>
+            <input
+              value={cableForm.customer_label}
+              onChange={(e) => setCableForm((f) => ({ ...f, customer_label: e.target.value }))}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" type="submit" disabled={savingCable}>
+              {savingCable ? "Saving…" : "Save cable"}
+            </button>
+            <button className="btn" type="button" onClick={() => setEditingCable(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
 
       <div className="summary-grid" style={{ marginBottom: 12 }}>
         {Object.entries(coreSummary).map(([status, count]) => (
@@ -1359,18 +1655,26 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                 </div>
               </div>
 
-              {/* Core impact preview */}
+              {/* Core impact preview — only live fibers are through-spliced */}
               {splitInfo && (
-                <div className="summary-grid" style={{ marginBottom: 12 }}>
+                <div className="summary-grid cols-3" style={{ marginBottom: 12 }}>
                   <div className="summary-card">
                     <div className="n" style={{ color: "var(--teal)" }}>
+                      {splitInfo.core_summary?.spliced || 0}
+                    </div>
+                    <div className="l">Live — through-spliced</div>
+                  </div>
+                  <div className="summary-card">
+                    <div className="n">
                       {splitInfo.core_summary?.available || 0}
                     </div>
-                    <div className="l">Will splice</div>
+                    <div className="l">Left available</div>
                   </div>
                   <div className="summary-card">
                     <div className="n" style={{ color: "var(--amber)" }}>
-                      {full.core_count - (splitInfo.core_summary?.available || 0)}
+                      {(splitInfo.core_summary?.terminated || 0) +
+                        (splitInfo.core_summary?.damaged || 0) +
+                        (splitInfo.core_summary?.reserved || 0)}
                     </div>
                     <div className="l">Pass-through</div>
                   </div>

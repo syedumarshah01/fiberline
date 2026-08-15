@@ -5,7 +5,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM, ENCLOSURE_LABEL_MIN_ZOOM } from './geoLabels.js';
+import * as geoLabels from './geoLabels.js';
+import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from './geoLabels.js';
 
 describe('cableLabel', () => {
   it('returns the code when there is no name', () => {
@@ -61,11 +62,10 @@ describe('CABLE_LABEL_MIN_ZOOM', () => {
     assert.equal(typeof CABLE_LABEL_MIN_ZOOM, 'number');
     assert.ok(CABLE_LABEL_MIN_ZOOM > 10 && CABLE_LABEL_MIN_ZOOM <= 16);
   });
-});
 
-describe('ENCLOSURE_LABEL_MIN_ZOOM', () => {
-  it('is higher than the cable threshold so dense boxes do not clutter', () => {
-    assert.equal(typeof ENCLOSURE_LABEL_MIN_ZOOM, 'number');
-    assert.ok(ENCLOSURE_LABEL_MIN_ZOOM > CABLE_LABEL_MIN_ZOOM);
+  it('has no enclosure counterpart — box codes are hover/selection-only', () => {
+    // ENCLOSURE_LABEL_MIN_ZOOM was removed on purpose: box labels must never
+    // appear en masse at any zoom, only on hover/selection.
+    assert.equal(geoLabels.ENCLOSURE_LABEL_MIN_ZOOM, undefined);
   });
 });
