@@ -42,6 +42,21 @@ as it found it. Run `npm run migrate`; on a healthy database it changes nothing.
 
 (If you are in that state, `npm run db:schema` says so and points at `npm run migrate`.)
 
+### What "dark" means in a failure simulation
+
+A report paints what the failure actually darkened, not everything it is attached
+to (`src/utils/impactGraph.js`). The failed element and everything the light
+*below* it can no longer reach is dark; the span that feeds the failed element is
+not — it still carries light up to the break — and neither is a branch that only
+shares an upstream box. So failing a mid-span joint reddens the joint, the half
+below it and its customers, not the whole route back to the OLT. The exception is
+the headend's own box (`rootBoxIds`): that is where the light is injected, so
+failing it takes everything down.
+
+Direction comes from the headend root. Without one there is no upstream to
+reason about, so the walk goes both ways from the failure point and the report
+says it may include the feeding span and branches that are still lit.
+
 ### Mid-span links without the column (the inference fallback)
 
 `cables.continues_cable_id` is the recorded way to say "these two cable rows are one fiber".

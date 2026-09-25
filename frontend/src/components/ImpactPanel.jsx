@@ -19,7 +19,8 @@ function RootStatus({ impact, headends, onSetNetworkRoot }) {
       <p className="impact-root">
         Light is traced from <b>{headend?.code || "the network root"}</b>
         {headend?.root_enclosure_code ? ` at ${headend.root_enclosure_code}` : ""} —
-        everything below the failure is reported, every other branch is left alone.
+        everything below the failure is reported; the span that feeds it and every
+        other branch are left alone.
       </p>
     );
   }
@@ -28,8 +29,8 @@ function RootStatus({ impact, headends, onSetNetworkRoot }) {
     <div className="impact-root impact-root-missing">
       <p>
         <b>No network root.</b> Without a headend/OLT the graph has no upstream
-        direction, so the walk also climbs back through the network and reports
-        branches that still have light.
+        direction, so the walk climbs back through the network too: the report can
+        include the span that feeds the failure and branches that still have light.
       </p>
       {headends?.length > 0 && (
         <p>

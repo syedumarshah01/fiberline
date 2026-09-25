@@ -324,6 +324,9 @@ async function simulateFailure({
     boxIds,
     cableIds,
     rootCoreIds,
+    // Where the light is injected: failing the headend's own box kills the
+    // source, failing any other box is a cut (see utils/impactGraph.js).
+    rootBoxIds,
     maxCustomers,
   });
 

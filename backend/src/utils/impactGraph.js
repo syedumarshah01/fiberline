@@ -745,6 +745,9 @@ function analyzeImpact({
   boxIds = [],
   cableIds = [],
   rootCoreIds = [],
+  // The headend's own enclosure(s): the boxes the light is injected at. Failing
+  // one of those takes the source out; failing any other box is a cut.
+  rootBoxIds = [],
   maxNodes = DEFAULT_MAX_NODES,
   maxCustomers = DEFAULT_MAX_CUSTOMERS,
 } = {}) {
@@ -772,6 +775,49 @@ function analyzeImpact({
         .map((core) => core.id)
     : [];
 
+  // What light still reaches, now that the failed elements are out of the way.
+  //
+  // The failure surface is a *cut*: a joint inside a failed box cannot pass
+  // light, a fibre on a failed cable is gone, and if the headend's own box
+  // failed there is no light to begin with. Everything below the cut is dark —
+  // and the span that feeds the failed box is *not*: it still carries light up
+  // to the break. Painting it red made a mid-span simulation look as if the
+  // whole route had gone out, which is what this replaces.
+  const litKeys = new Set();
+  if (directed) {
+    const rootBoxSet = new Set(rootBoxIds.filter(Boolean));
+    const onFailedCable = (key) => {
+      if (keyKind(key) !== 'core') return false;
+      const core = index.coreById.get(keyId(key));
+      return Boolean(core) && failureCableIds.has(core.cable_id);
+    };
+    const queue = [];
+    for (const root of roots) {
+      const core = index.coreById.get(keyId(root));
+      const cable = core ? index.cableById.get(core.cable_id) : null;
+      // Only if *this failure* is at the headend's box: the light is injected
+      // there, so a failure anywhere else leaves the root fibre lit.
+      const sourceGone = Boolean(cable) && (
+        (failureBoxIds.has(cable.from_enclosure_id) && rootBoxSet.has(cable.from_enclosure_id)) ||
+        (failureBoxIds.has(cable.to_enclosure_id) && rootBoxSet.has(cable.to_enclosure_id))
+      );
+      if (sourceGone) continue;
+      litKeys.add(root);
+      queue.push(root);
+    }
+    while (queue.length) {
+      const key = queue.shift();
+      if (onFailedCable(key)) continue; // the light dies inside a cut cable
+      for (const edge of orientation.children.get(key) || []) {
+        if (litKeys.has(edge.node)) continue;
+        if (edge.via?.box_id && failureBoxIds.has(edge.via.box_id)) continue; // dead joint
+        if (onFailedCable(edge.node)) continue; // no light into a cut cable's fibre
+        litKeys.add(edge.node);
+        queue.push(edge.node);
+      }
+    }
+  }
+
   const surface = failureSurfaceSeeds(index, { failureBoxIds, failureCableIds });
   const rootedSeeds = directed
     ? surface.seedKeys.filter((seed) => orientation.reached.has(seed))
@@ -793,6 +839,15 @@ function analyzeImpact({
         unrootedFlood,
       ].filter(Boolean))
     : floodUndirected(index, surface.seedKeys, { maxNodes });
+
+  // Which nodes to report. Directed: only the ones light no longer reaches —
+  // the walk itself still covers the seed on the feeding side (it has to, to
+  // reach the far end of the cut), but a fibre that still has light is not part
+  // of the outage. Undirected (no root): everything the walk through the failure
+  // reaches, both ways, which is the documented over-approximation.
+  const reportKeys = directed
+    ? flood.keys.filter((key) => !litKeys.has(key))
+    : flood.keys;
 
   // A seed that cannot trace back to the root is only worth warning about when
   // it actually carries something: a spare core sitting in the failed cable
@@ -818,9 +873,10 @@ function analyzeImpact({
   }
   if (!directed) {
     warnings.push(
-      'No network root (headend/OLT) is configured, so direction could not be resolved. ' +
-        'Every customer reachable through the failure point is listed, including branches ' +
-        'that may still be lit — set a headend root on the OLT box for direction-aware results.',
+      'No network root (headend/OLT) is configured, so direction could not be resolved: the ' +
+        'report walks both ways from the failure point. It may include the span that feeds the ' +
+        'failure (which still has light on it) and branches that are still lit, and it may paint ' +
+        'them red — set a headend root on the OLT box for direction-aware results.',
     );
   } else {
     if (strayUnrootedSeeds.length) {
@@ -898,13 +954,18 @@ function analyzeImpact({
   const customersByKey = new Map();
   let customerOverflow = false;
 
-  for (const key of flood.keys) {
+  for (const key of reportKeys) {
     if (keyKind(key) === 'core') {
       const core = index.coreById.get(keyId(key));
       if (!core) continue;
-      affectedCoreIds.push(core.id);
+      // Spares carry no light, so they can neither go dark nor paint a cable:
+      // an unused strand on the cable that *feeds* a failed box is not an
+      // outage, and counting it painted the upstream span red.
+      if (inService(core)) affectedCoreIds.push(core.id);
       const cable = index.cableById.get(core.cable_id);
-      if (cable) addCable(cable.id, { is_failure: failureCableIds.has(cable.id) });
+      if (cable && (inService(core) || failureCableIds.has(cable.id))) {
+        addCable(cable.id, { is_failure: failureCableIds.has(cable.id) });
+      }
       // A box goes dark when a joint inside it is dead, so the boxes that host
       // traversed joints are painted — and only those. The box at the *live*
       // end of a cut cable is deliberately left alone: it still has light.

@@ -227,7 +227,18 @@ describe('simulateFailure', () => {
       ['BOX-B', 'BOX-C'],
     );
     assert.equal(result.affected.boxes.find((b) => b.code === 'BOX-B').is_failure, true);
-    assert.ok(result.affected.cables.some((c) => c.code === 'CBL-D1'));
+    // Red means "no light in it": the span that *feeds* BOX-B (CBL-D1) still has
+    // light on it up to the box, so it is not painted — the drops behind the box
+    // are. (Same rule the "cutting a cable keeps the box upstream of the cut
+    // lit" case below states from the other side.)
+    assert.ok(
+      !result.affected.cables.some((c) => c.code === 'CBL-D1'),
+      `CBL-D1 still has light: ${JSON.stringify(result.affected.cables.map((c) => c.code))}`,
+    );
+    assert.deepEqual(
+      result.affected.cables.map((c) => c.code).sort(),
+      ['CBL-DROP-1', 'CBL-DROP-2', 'CBL-DROP-3'],
+    );
 
     // Every affected customer carries the path light used to take.
     const cust1 = result.affected.customers.find((c) => c.customer_label === 'CUST-1');

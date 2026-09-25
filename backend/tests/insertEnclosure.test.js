@@ -440,9 +440,11 @@ describe('POST /api/cables/:id/insert-enclosure — the halves stay one fiber', 
 
     assert.equal(impact.affected.customer_count, 1);
     assert.deepEqual(impact.affected.boxes.map((b) => b.code).sort(), ['BOX-MID', 'BOX-NAP']);
-    // Both halves of the cut fiber land at the box, so both are dark — the load
-    // side (CBL-F1-B) and the span feeding it (CBL-F1).
-    assert.deepEqual(redCodes(impact), ['CBL-DROP-1', 'CBL-F1', 'CBL-F1-B']);
+    // The cut is at the box: the load side (CBL-F1-B) and the drop behind it go
+    // dark. The span feeding the box from the OLT (CBL-F1) still carries light
+    // up to the box, so it is *not* painted — the whole route going red was the
+    // reported bug.
+    assert.deepEqual(redCodes(impact), ['CBL-DROP-1', 'CBL-F1-B']);
     assert.ok(!impact.affected.boxes.some((b) => b.code === 'BOX-OLT'), 'the OLT is upstream');
   });
 });
