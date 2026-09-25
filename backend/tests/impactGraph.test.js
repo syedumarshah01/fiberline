@@ -675,6 +675,90 @@ describe('redundant feeds and partially-out cables', () => {
   });
 });
 
+describe('a fibre joined in the failed box is out, whatever its status column says', () => {
+  /**
+   * The state PATCH /api/fiber-cores/:id can leave behind, and imported data
+   * arrives in: the splice row stands, the core's status says 'available'.
+   *
+   *   [OLT] ─ CBL-F1 ─ [BOX-B] ─ splice ─ CBL-DROP-1 ─ CUST-1 (core 'available')
+   *                            └ splitter ─ CBL-DROP-2 ─ CUST-2 (port core 'available')
+   *
+   * The joint is real — it is in the database, and BOX-B is what holds it — so
+   * failing BOX-B takes both drops. Before this rule the panel reported CUST-1
+   * down while the map drew CBL-DROP-1 as though nothing had happened, which is
+   * the one thing the report must never do.
+   */
+  const staleStatus = () => ({
+    enclosures: [
+      { id: 'olt', code: 'BOX-OLT', type: 'cabinet' },
+      { id: 'b', code: 'BOX-B', type: 'nap' },
+    ],
+    cables: [
+      { id: 'f1', code: 'CBL-F1', cable_type: 'feeder', from_enclosure_id: 'olt', to_enclosure_id: 'b' },
+      { id: 'drop1', code: 'CBL-DROP-1', cable_type: 'drop', from_enclosure_id: 'b', customer_id: 'c1', customer_label: 'CUST-1' },
+      { id: 'drop2', code: 'CBL-DROP-2', cable_type: 'drop', from_enclosure_id: 'b', customer_id: 'c2', customer_label: 'CUST-2' },
+    ],
+    cores: [
+      { id: 'f1c1', cable_id: 'f1', core_number: 1, status: 'spliced' },
+      { id: 'f1c2', cable_id: 'f1', core_number: 2, status: 'spliced' },
+      // Joined, but the column says otherwise.
+      { id: 'drop1c1', cable_id: 'drop1', core_number: 1, status: 'available' },
+      { id: 'drop2c1', cable_id: 'drop2', core_number: 1, status: 'available' },
+      // A genuine spare on the feeder: nothing joins it, so it must stay quiet.
+      { id: 'f1c9', cable_id: 'f1', core_number: 9, status: 'available' },
+    ],
+    splices: [{ id: 's1', enclosure_id: 'b', core_a_id: 'f1c1', core_b_id: 'drop1c1' }],
+    splitters: [{ id: 'sp1', enclosure_id: 'b', name: 'Tray A', input_core_id: 'f1c2', split_count: 4 }],
+    ports: [{ id: 'p1', splitter_id: 'sp1', port_number: 1, output_core_id: 'drop2c1', output_splitter_id: null }],
+    customers: [
+      { id: 'c1', customer_code: 'CUST-1', name: 'Ada' },
+      { id: 'c2', customer_code: 'CUST-2', name: 'Grace' },
+    ],
+  });
+
+  const impact = () => analyzeImpact({
+    ...staleStatus(),
+    rootCoreIds: ['f1c1', 'f1c2'],
+    rootBoxIds: ['olt'],
+    boxIds: ['b'],
+  });
+  const cable = (result, id) => result.affected.cables.find((c) => c.id === id) || null;
+
+  test('the drop joined by a splice is painted red, and counted', () => {
+    const result = impact();
+    const drop1 = cable(result, 'drop1');
+    assert.ok(drop1, 'the cable carrying a joined fibre is in the payload');
+    assert.equal(drop1.partially_dark, false, 'it is out, not partly out');
+    assert.equal(drop1.cores_dark, 1);
+    assert.equal(drop1.cores_in_service, 1, 'a recorded joint is in service, whatever the column says');
+  });
+
+  test('the drop on the failed splitter is painted too', () => {
+    const result = impact();
+    assert.ok(cable(result, 'drop2'), 'a splitter port output core counts as joined');
+    assert.equal(cable(result, 'drop2').cores_dark, 1);
+  });
+
+  test('nothing is left where the panel says a customer is down and the map shows nothing', () => {
+    const result = impact();
+    assert.deepEqual(result.affected.customers.map((c) => c.customer_label).sort(), ['CUST-1', 'CUST-2']);
+    for (const customer of result.affected.customers) {
+      assert.ok(
+        customer.cable_id && cable(result, customer.cable_id),
+        `${customer.customer_label} is reported down, so its cable must be painted (got ${customer.cable_id})`,
+      );
+    }
+  });
+
+  test('the spare fibre on the feeding span still paints nothing', () => {
+    // The earlier fix stands: an unused strand must not turn the span that feeds
+    // a failed box red. f1c9 is available and joined to nothing.
+    const result = impact();
+    assert.equal(cable(result, 'f1'), null, 'the upstream span stays lit');
+    assert.ok(!result.affected.core_ids.includes('f1c9'));
+  });
+});
+
 describe('analyzeImpact — no root configured', () => {
   test('without a headend the analysis says so and over-reports', () => {
     const impact = analyzeImpact({ ...NET, boxIds: ['b'] });

@@ -126,6 +126,21 @@ function indexNetwork({
   const downEdges = new Map();
   const upEdges = new Map();
 
+  // Every core that a recorded joint names: both sides of a splice, a splitter's
+  // input, a splitter port's output. A joint is evidence the fibre is part of the
+  // plant — see inPlant().
+  const joinedCoreIds = new Set();
+  for (const splice of splices) {
+    if (splice.core_a_id) joinedCoreIds.add(splice.core_a_id);
+    if (splice.core_b_id) joinedCoreIds.add(splice.core_b_id);
+  }
+  for (const splitter of splitters) {
+    if (splitter.input_core_id) joinedCoreIds.add(splitter.input_core_id);
+  }
+  for (const port of ports) {
+    if (port.output_core_id) joinedCoreIds.add(port.output_core_id);
+  }
+
   for (const splice of splices) {
     const a = coreKey(splice.core_a_id);
     const b = coreKey(splice.core_b_id);
@@ -194,6 +209,7 @@ function indexNetwork({
     spliceEdges,
     downEdges,
     upEdges,
+    joinedCoreIds,
     // Mid-span splits (see continuationEdges, unlinkedSplitCandidates)
     coresByCable,
     continuationByChild,
@@ -765,12 +781,38 @@ function inService(core) {
 }
 
 /**
+ * Is this fibre part of the working plant, rather than a spare?
+ *
+ * Its own status is the first answer — 'spliced' and 'terminated' carry service —
+ * but it is not the only one. A fibre that a recorded joint names (either side of
+ * a splice, a splitter's input, a splitter port's output) is joined to something
+ * *in the database*, and a status column somebody edited by hand must not unhappen
+ * that. `PATCH /api/fiber-cores/:id` can set a core back to 'available' while its
+ * splice row still stands, and imported data arrives that way; the outage report
+ * has to believe the joint, because the box is what holds it.
+ *
+ * This is the rule behind "every fibre spliced into that box is out when the box
+ * is": the joint dies with the box, so the cable carrying the fibre is painted,
+ * whether or not the status agreed it was in service. It was exactly this gap
+ * that let the panel report a customer down while the map drew their drop cable
+ * as though nothing had happened.
+ *
+ * A spare — 'available', in no splice, on no splitter — is deliberately *not* in
+ * the plant: an unused strand must never paint the cable that feeds a failed box.
+ */
+function inPlant(index, core) {
+  if (!core) return false;
+  if (inService(core)) return true;
+  return index.joinedCoreIds.has(core.id);
+}
+
+/**
  * Does this core end inside a customer's own box? The app creates those as
  * `terminal` enclosures ("Add customer box" → CUST-BOX-…), so a lit core
  * landing in one is that customer's leg even if nobody labelled the drop.
  */
 function landsAtCustomerBox(index, core) {
-  if (!inService(core)) return false;
+  if (!inPlant(index, core)) return false;
   const cable = index.cableById.get(core.cable_id);
   if (!cable) return false;
   for (const boxId of [cable.from_enclosure_id, cable.to_enclosure_id]) {
@@ -800,7 +842,7 @@ function servedCustomer(index, core) {
   const label = cable?.customer_label ?? null;
   const isDrop = cable?.cable_type === 'drop';
   const terminated = core.status === 'terminated';
-  const inferred = !customerId && !label && ((isDrop && inService(core)) || landsAtCustomerBox(index, core));
+  const inferred = !customerId && !label && ((isDrop && inPlant(index, core)) || landsAtCustomerBox(index, core));
   if (!customerId && !label && !terminated && !inferred) return null;
 
   const known = customerId ? index.customerById.get(customerId) : null;
@@ -1057,7 +1099,7 @@ function analyzeImpact({
   // differently and what the panel counts separately.
   const inServiceByCable = new Map();
   for (const core of index.cores) {
-    if (core.cable_id && inService(core)) {
+    if (core.cable_id && inPlant(index, core)) {
       inServiceByCable.set(core.cable_id, (inServiceByCable.get(core.cable_id) || 0) + 1);
     }
   }
@@ -1070,14 +1112,14 @@ function analyzeImpact({
       // Spares carry no light, so they can neither go dark nor paint a cable:
       // an unused strand on the cable that *feeds* a failed box is not an
       // outage, and counting it painted the upstream span red.
-      if (inService(core)) {
+      if (inPlant(index, core)) {
         affectedCoreIds.push(core.id);
         if (core.cable_id) {
           darkCoresByCable.set(core.cable_id, (darkCoresByCable.get(core.cable_id) || 0) + 1);
         }
       }
       const cable = index.cableById.get(core.cable_id);
-      if (cable && (inService(core) || failureCableIds.has(cable.id))) {
+      if (cable && (inPlant(index, core) || failureCableIds.has(cable.id))) {
         addCable(cable.id, { is_failure: failureCableIds.has(cable.id) });
       }
       // A box goes dark when a joint inside it is dead, so the boxes that host

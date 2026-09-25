@@ -127,6 +127,20 @@ and warned about a missing column on every database that had one. The SQL now ca
 `asArray()` reads either shape. Both are covered by tests, including one that runs the un-cast query
 against a real Postgres and asserts the string it produces — the only way to catch this class of bug.
 
+### What paints a cable red
+
+A cable is painted red when a fibre on it goes dark — reachable from the headend before the
+failure, unreachable after — **and that fibre is part of the plant**. "Part of the plant" is
+`inPlant()` in `src/utils/impactGraph.js`: the core is `spliced`/`terminated`, *or* a recorded joint
+names it (either side of a splice, a splitter input, a splitter port's output). The second half of
+that rule matters because the status column is editable (`PATCH /api/fiber-cores/:id`) and imported
+data arrives stale: a fibre joined inside a box is joined, and when the box fails the joint goes with
+it. Without it, the report could list a customer as down while the map drew their drop cable as
+though nothing had happened — the two must agree.
+
+An `available` core that no joint names is deliberately *not* in the plant: an unused strand must
+never paint the span that feeds a failed box.
+
 Recorded links always win. With the column present the app never guesses: a `NULL` means
 "not a continuation". The fallback is only for a database that has no column at all, and
 when it finds links the outage report says so ("N mid-span cable links inferred from cable
