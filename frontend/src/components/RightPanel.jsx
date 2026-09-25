@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
+import ImpactPanel from "./ImpactPanel.jsx";
 import {
   OLT_TYPE_LABELS,
   formatDb,
@@ -2133,8 +2134,16 @@ export default function RightPanel({
   mode,
   selectedEnclosure,
   selectedCable,
+  selectedPole,
   customerPoint,
   customers,
+  impact,
+  impactLoading,
+  impactError,
+  headends,
+  onSimulateFailure,
+  onClearImpact,
+  onSetNetworkRoot,
   onCreateCustomer,
   onChanged,
   onDeleteEnclosure,
@@ -2142,9 +2151,41 @@ export default function RightPanel({
   onSplitPointChange,
   onHoverCable,
 }) {
+  // Whatever is selected can be taken out of the network: a box, a cable, or a
+  // pole (which takes down the boxes on it and the spans running through it).
+  const failureTarget = selectedEnclosure
+    ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
+    : selectedCable
+      ? { kind: "cable", id: selectedCable.id, label: selectedCable.code }
+      : selectedPole
+        ? { kind: "pole", id: selectedPole.id, label: selectedPole.code }
+        : null;
+
   return (
     <>
-      {mode === "view" && !selectedEnclosure && !selectedCable && (
+      {impact || impactLoading || impactError ? (
+        <ImpactPanel
+          impact={impact}
+          loading={impactLoading}
+          error={impactError}
+          headends={headends}
+          onClear={onClearImpact}
+          onSimulate={() => failureTarget && onSimulateFailure?.(failureTarget)}
+          onSetNetworkRoot={onSetNetworkRoot}
+        />
+      ) : (
+        failureTarget && (
+          <button
+            className="btn btn-block btn-danger impact-simulate"
+            onClick={() => onSimulateFailure?.(failureTarget)}
+            title="Take this element out of the network and see who goes dark"
+          >
+            Simulate failure of {failureTarget.label}
+          </button>
+        )
+      )}
+
+      {mode === "view" && !selectedEnclosure && !selectedCable && !failureTarget && (
         <p className="empty-state">Select a box or cable to see details.</p>
       )}
 

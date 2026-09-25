@@ -11,7 +11,8 @@ const fiberCoresRouter = require('./routes/fiberCores');
 const splittersRouter = require('./routes/splitters');
 const capacityRouter = require('./routes/capacity');
 const settingsRouter = require('./routes/settings');
-
+const impactRouter = require('./routes/impact');
+const headendsRouter = require('./routes/headends');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -27,7 +28,8 @@ app.use('/api/fiber-cores', fiberCoresRouter);
 app.use('/api/splitters', splittersRouter);
 app.use('/api/capacity', capacityRouter);
 app.use('/api/settings', settingsRouter);
-
+app.use('/api/impact', impactRouter);
+app.use('/api/headends', headendsRouter);
 // Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err);

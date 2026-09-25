@@ -860,3 +860,128 @@ code, .mono { font-family: var(--font-mono); }
   margin-bottom: 10px;
   overflow-wrap: anywhere;
 }
+
+/* ---------- Simulated failure (outage overlay) ---------- */
+/* Everything downstream of the simulated failure is painted red; the rest of
+   the network recedes (each map provider dims it inline, since Leaflet /
+   Google / Mapbox express opacity differently). */
+
+/* Leaflet dark box marker + the failed element at the centre of the outage */
+.enclosure-marker.dark {
+  background: var(--red);
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.25);
+}
+.enclosure-marker.failure-point {
+  box-shadow: 0 0 0 4px rgba(239, 83, 80, 0.5), 0 0 12px rgba(239, 83, 80, 0.85);
+}
+.pole-marker.failed-pole-marker {
+  width: 18px; height: 18px;
+  background: var(--red);
+  border: 3px solid var(--bg);
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.45);
+}
+
+/* "N customers are dark behind this box" badge, anchored to the marker */
+.enclosure-badge {
+  position: absolute;
+  top: -9px; right: -11px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--bg);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.leaflet-div-icon .enclosure-badge { position: absolute; }
+
+/* Mapbox box markers: dark boxes keep their label visible ("BOX-B · 3 dark") */
+.enc-dot-marker.is-dark .enc-dot-label,
+.enc-dot-marker.is-failure-point .enc-dot-label { display: block; }
+.enc-dot-marker.is-dark { box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.35); }
+.enc-dot-marker.is-failure-point { box-shadow: 0 0 0 4px rgba(239, 83, 80, 0.55); }
+
+/* Banner over the map while a simulation is displayed */
+.impact-banner {
+  position: absolute;
+  z-index: 1100; /* above Leaflet panes and map controls */
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.impact-banner-text {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The report in the right panel */
+.impact-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--red);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+.impact-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.impact-title {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+.impact-head .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
+.impact-root { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.impact-root b { color: var(--text); }
+.impact-root-missing {
+  padding: 8px 10px;
+  border: 1px solid rgba(240, 180, 41, 0.4);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.08);
+}
+.impact-root-missing p { margin: 0 0 8px; color: var(--amber); font-size: 11.5px; line-height: 1.5; }
+.impact-warning {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.08);
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.impact-error { color: var(--red); font-size: 12px; }
+.impact-customer {
+  margin-bottom: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+}
+.impact-customer summary { cursor: pointer; }
+.impact-customer .code { font-family: var(--font-mono); color: var(--red); }
+.impact-customer .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+.impact-option { cursor: default; }
+.impact-actions { display: flex; gap: 8px; margin-top: 12px; }
+.impact-simulate { margin-bottom: 16px; }

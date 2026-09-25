@@ -8,6 +8,12 @@ import {
   useJsApiLoader,
 } from "@react-google-maps/api";
 import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import {
+  impactCableStyle,
+  impactBoxState,
+  customersBehind,
+  FAILURE_COLOR,
+} from "../utils/impactOverlay.js";
 
 // Module-level flag to track if a cable was clicked
 let cableWasClicked = false;
@@ -41,6 +47,8 @@ export default function MapViewGoogle({
   selectedPoleId,
   selectedCableId,
   highlightCableId,
+  overlay,
+  impact,
   locateNonce,
   splitPointLngLat,
   userPosition,
@@ -54,6 +62,8 @@ export default function MapViewGoogle({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "",
   });
   const [zoom, setZoom] = useState(16);
+  const failurePoleId =
+    impact?.failure?.kind === "pole" ? impact.failure.id : null;
   // Which enclosure's code label is revealed by hover (selection reveals it too)
   const [hoveredEnclosureId, setHoveredEnclosureId] = useState(null);
 
@@ -163,6 +173,8 @@ export default function MapViewGoogle({
         const hasSplicedCores = (cable.spliced_core_count || 0) > 0;
         const isSelected = cable.id === selectedCableId;
         const isHighlighted = cable.id === highlightCableId;
+        const dark = impactCableStyle(cable.id, overlay);
+        const dimmed = overlay?.active && !dark;
         const label = cableLabel(cable);
         const mid = routeMidpointLngLat(cable.route);
         return (
@@ -170,12 +182,22 @@ export default function MapViewGoogle({
           <Polyline
             path={cable.route ? cable.route.map(([lng, lat]) => ({ lat, lng })) : []}
             options={{
-              strokeColor: isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
-              strokeWeight: isSelected || isHighlighted
-                ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
-                : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-              strokeOpacity: isSelected || isHighlighted ? 1 : 0.85,
-              strokeDashArray: hasSplicedCores && !isHighlighted ? (isSelected ? "2,2" : "10,6") : "none",
+              strokeColor: dark
+                ? dark.color
+                : isHighlighted
+                  ? HIGHLIGHT_COLOR
+                  : CABLE_COLORS[cable.cable_type] || "#8b96a8",
+              strokeWeight: dark
+                ? dark.weight
+                : isSelected || isHighlighted
+                  ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
+                  : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
+              strokeOpacity: dark ? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
+              strokeDashArray: dark
+                ? dark.dash.join(",")
+                : hasSplicedCores && !isHighlighted
+                  ? (isSelected ? "2,2" : "10,6")
+                  : "none",
             }}
             onClick={onCableClick ? () => {
               cableWasClicked = true;
@@ -208,17 +230,18 @@ export default function MapViewGoogle({
 
       {poles.map((pole) => {
         if (pole.lat == null || pole.lng == null) return null;
+        const isFailedPole = failurePoleId != null && pole.id === failurePoleId;
         return (
           <Marker
             key={pole.id}
             position={{ lat: pole.lat, lng: pole.lng }}
             icon={{
               path: window.google.maps.SymbolPath.CIRCLE,
-              scale: pole.id === selectedPoleId ? 8 : 5,
-              fillColor: pole.id === selectedPoleId ? "#ff6b35" : "#333",
+              scale: isFailedPole ? 10 : pole.id === selectedPoleId ? 8 : 5,
+              fillColor: isFailedPole ? FAILURE_COLOR : pole.id === selectedPoleId ? "#ff6b35" : "#333",
               fillOpacity: 1,
               strokeColor: "#fff",
-              strokeWeight: 1,
+              strokeWeight: isFailedPole ? 2 : 1,
             }}
             onClick={() => onPoleClick(pole)}
           />
@@ -229,6 +252,9 @@ export default function MapViewGoogle({
         if (enc.lat == null || enc.lng == null) return null;
         const availableCores = capacityByEnclosure?.[enc.id];
         const isSelected = enc.id === selectedEnclosureId;
+        const boxState = impactBoxState(enc.id, overlay);
+        const behind = boxState.dark ? customersBehind(enc.id, overlay) : 0;
+        const dimmed = overlay?.active && !boxState.dark;
         const cls =
           availableCores === undefined
             ? ""
@@ -239,14 +265,24 @@ export default function MapViewGoogle({
           <React.Fragment key={enc.id}>
           <Marker
             position={{ lat: enc.lat, lng: enc.lng }}
-            title={enc.code || undefined}
+            title={
+              behind > 0
+                ? `${enc.code || "Box"} — ${behind} customer${behind === 1 ? "" : "s"} dark`
+                : enc.code || undefined
+            }
             icon={{
               path: window.google.maps.SymbolPath.CIRCLE,
-              scale: isSelected ? 10 : 7,
-              fillColor: isSelected ? "#ff6b35" : cls === "has-capacity" ? "#4caf50" : "#e53935",
-              fillOpacity: 1,
-              strokeColor: "#fff",
-              strokeWeight: 1,
+              scale: boxState.failed ? 12 : isSelected ? 10 : boxState.dark ? 8 : 7,
+              fillColor: boxState.dark
+                ? FAILURE_COLOR
+                : isSelected
+                  ? "#ff6b35"
+                  : cls === "has-capacity"
+                    ? "#4caf50"
+                    : "#e53935",
+              fillOpacity: dimmed ? 0.4 : 1,
+              strokeColor: boxState.dark ? FAILURE_COLOR : "#fff",
+              strokeWeight: boxState.failed ? 3 : 1,
             }}
             onClick={() => onEnclosureClick(enc)}
             onMouseOver={() => setHoveredEnclosureId(enc.id)}
@@ -262,7 +298,10 @@ export default function MapViewGoogle({
               mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
               getPixelPositionOffset={() => ({ x: 11, y: -9 })}
             >
-              <div className="cable-map-label cable-map-label-g">{enc.code}</div>
+              <div className="cable-map-label cable-map-label-g">
+                {enc.code}
+                {behind > 0 ? ` · ${behind} dark` : ""}
+              </div>
             </OverlayView>
           )}
           </React.Fragment>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import MapView from "./components/MapView.jsx";
 import MapViewGoogle from "./components/MapViewGoogle.jsx";
 import MapViewMapbox from "./components/MapViewMapbox.jsx";
@@ -6,6 +6,7 @@ import LeftPanel from "./components/LeftPanel.jsx";
 import RightPanel from "./components/RightPanel.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
+import { impactOverlay, overlayHeadline, failureTitle } from "./utils/impactOverlay.js";
 import { LoadScript } from "@react-google-maps/api";
 import { LocateFixed, Sun, Moon, Type } from "lucide-react";
 
@@ -58,6 +59,14 @@ export default function App() {
   const [selectedEnclosure, setSelectedEnclosure] = useState(null);
   const [selectedCable, setSelectedCable] = useState(null);
   // Cable spotlighted because one of its fibers is hovered in the splice form
+  // Outage simulation: the result of /api/impact/simulate, the request that
+  // produced it (kept so it can be re-run after fixing the network root), and
+  // the network roots themselves.
+  const [impact, setImpact] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState(null);
+  const [failureTarget, setFailureTarget] = useState(null);
+  const [headends, setHeadends] = useState([]);
   const [highlightCableId, setHighlightCableId] = useState(null);
   const [splitPointLngLat, setSplitPointLngLat] = useState(null);
   const [splitRatio, setSplitRatio] = useState(null);
@@ -93,6 +102,13 @@ export default function App() {
     api.listEnclosures().then(setEnclosures).catch(console.error);
     api.listCables().then(setCables).catch(console.error);
     api.listCustomers().then(setCustomers).catch(console.error);
+    // Root list drives the "is this network rooted?" affordances. A database
+    // that has not run the headends migration answers 404 — treat that as
+    // "no roots yet" rather than an error.
+    api
+      .listHeadends()
+      .then(setHeadends)
+      .catch(() => setHeadends([]));
     api
       .capacityByEnclosure()
       .then((rows) =>
@@ -136,6 +152,56 @@ export default function App() {
   function handleModeChange(next) {
     setMode(next);
     resetPending();
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  function clearImpact() {
+    setImpact(null);
+    setImpactError(null);
+    setImpactLoading(false);
+  }
+
+  /**
+   * Take the selected element out of the network and report the fallout.
+   * `target` is { kind, id, label, radiusM } — a pole, box or cable.
+   */
+  async function handleSimulateFailure(target) {
+    if (!target) return;
+    setFailureTarget(target);
+    setImpactLoading(true);
+    setImpactError(null);
+    try {
+      const result = await api.simulateImpact(target.kind, target.id, {
+        radiusM: target.radiusM,
+      });
+      setImpact(result);
+    } catch (err) {
+      setImpact(null);
+      setImpactError(err.message);
+    } finally {
+      setImpactLoading(false);
+    }
+  }
+
+  function handleClearImpact() {
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  /**
+   * Root the segment at a box (the OLT/CO the feeder lands in) and immediately
+   * re-run the simulation that was blocked on it — the point of setting the
+   * root is to make that answer trustworthy.
+   */
+  async function handleSetNetworkRoot(boxId) {
+    try {
+      await api.createHeadend({ root_enclosure_id: boxId, site_type: "olt" });
+      reloadAll();
+      if (failureTarget) await handleSimulateFailure(failureTarget);
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   function handleMapClick(latlng) {
@@ -148,7 +214,9 @@ export default function App() {
         return { ...draft, routePoints: [...draft.routePoints, latlng] };
       });
     }
-    // In view mode, clicking on the map clears any selection
+    // In view mode, clicking on the map clears any selection — but a simulated
+    // outage stays on screen until it is cleared, so the user can pan around
+    // the dark area without losing the analysis.
     if (mode === "view") {
       setSelectedPole(null);
       setSelectedEnclosure(null);
@@ -159,7 +227,11 @@ export default function App() {
   }
 
   function handlePoleClick(pole) {
-    if (mode === "add-enclosure") setPendingEnclosurePole(pole);
+    if (mode === "add-enclosure") {
+      setPendingEnclosurePole(pole);
+      return;
+    }
+    if (mode === "view") handleSelectPole(pole);
   }
 
   function handleEnclosureClick(enc) {
@@ -172,6 +244,7 @@ export default function App() {
       });
       return;
     }
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedCable(null);
   }
@@ -195,6 +268,7 @@ export default function App() {
   }
 
   function handleSelectPole(pole) {
+    if (selectedPole?.id !== pole.id) clearImpact();
     setSelectedPole(pole);
     setSelectedEnclosure(null);
     setSelectedCable(null);
@@ -203,6 +277,7 @@ export default function App() {
   }
 
   function handleSelectEnclosure(enc) {
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedPole(null);
     setSelectedCable(null);
@@ -211,6 +286,7 @@ export default function App() {
   }
 
   function handleSelectCable(cable) {
+    if (selectedCable?.id !== cable.id) clearImpact();
     setSelectedCable(cable);
     setSelectedPole(null);
     setSelectedEnclosure(null);
@@ -338,6 +414,9 @@ export default function App() {
     
     setTimeout(() => setIsTracking(false), 1000);
   }
+
+  // What the map paints red — one derivation shared by all three providers.
+  const overlay = useMemo(() => impactOverlay(impact), [impact]);
 
   const pendingCableRoute = cableDraft.from
     ? [
@@ -519,6 +598,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
@@ -548,6 +629,8 @@ export default function App() {
                 selectedPoleId={selectedPole?.id}
                 selectedCableId={selectedCable?.id}
                 highlightCableId={highlightCableId}
+                overlay={overlay}
+                impact={impact}
                 locateNonce={locateNonce}
                 labelOpacity={labelOpacity}
                 splitPointLngLat={splitPointLngLat}
@@ -577,6 +660,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
@@ -589,6 +674,18 @@ export default function App() {
             />
           )}
           </ErrorBoundary>
+
+          {impact && (
+            <div className="impact-banner">
+              <span className="pill pill-damaged">Failure simulated</span>
+              <span className="impact-banner-text">
+                {failureTitle(impact)} — {overlayHeadline(impact)}
+              </span>
+              <button className="btn btn-danger" onClick={handleClearImpact}>
+                Clear
+              </button>
+            </div>
+          )}
         </div>
 
         <div
@@ -608,6 +705,14 @@ export default function App() {
             mode={mode}
             selectedEnclosure={selectedEnclosure}
             selectedCable={selectedCable}
+            selectedPole={selectedPole}
+            impact={impact}
+            impactLoading={impactLoading}
+            impactError={impactError}
+            headends={headends}
+            onSimulateFailure={handleSimulateFailure}
+            onClearImpact={handleClearImpact}
+            onSetNetworkRoot={handleSetNetworkRoot}
             customerPoint={customerPoint}
             customers={customers}
             onCreateCustomer={handleCreateCustomer}

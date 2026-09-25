@@ -192,6 +192,21 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Outage / impact analysis — "simulate failure" on a pole, box or cable
+  simulateImpact: (kind, id, options = {}) => {
+    const params = new URLSearchParams({ kind, id });
+    if (options.radiusM != null) params.set("radius_m", String(options.radiusM));
+    return request(`/impact/simulate?${params.toString()}`);
+  },
+
+  // Headends — the network root (OLT/CO) that gives every trace a direction
+  listHeadends: () => request("/headends"),
+  createHeadend: (data) =>
+    request("/headends", { method: "POST", body: JSON.stringify(data) }),
+  updateHeadend: (id, data) =>
+    request(`/headends/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteHeadend: (id) => request(`/headends/${id}`, { method: "DELETE" }),
+
   // Health check
   health: () => safeRequest("/health"),
 };
