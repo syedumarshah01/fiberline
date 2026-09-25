@@ -15,6 +15,7 @@ const impactRouter = require('./routes/impact');
 const headendsRouter = require('./routes/headends');
 const qrRouter = require('./routes/qr');
 const workOrdersRouter = require('./routes/workOrders');
+const serviceabilityRouter = require('./routes/serviceability');
 const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
 app.use(cors());
@@ -37,6 +38,7 @@ app.use('/api/headends', headendsRouter);
 // technician works through inside it.
 app.use('/api/qr', qrRouter);
 app.use('/api/work-orders', workOrdersRouter);
+app.use('/api/serviceability', serviceabilityRouter);
 // Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err);

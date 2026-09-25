@@ -86,8 +86,14 @@ export default function App() {
     return Number.isFinite(saved) ? Math.min(1, Math.max(0.2, saved)) : 1;
   });
   
-  // Customer route (for locate-customer mode)
+  // Locate-customer mode: the serviceability check is the answer to the whole
+  // question ("can we serve them, from which box, what will the drop cost"), so
+  // the panel and the map line are rendered from ONE call — the same numbers in
+  // both places, and no chance of the two disagreeing.
   const [customerRoute, setCustomerRoute] = useState(null);
+  const [serviceability, setServiceability] = useState(null);
+  const [serviceabilityLoading, setServiceabilityLoading] = useState(false);
+  const [serviceabilityError, setServiceabilityError] = useState(null);
   
   // Theme state
   const [theme, setTheme] = useState(() => {
@@ -324,6 +330,21 @@ export default function App() {
     syncLocation("pole", pole?.id);
   }
 
+  /**
+   * Bring a box the serviceability check picked onto the map: select it, so the
+   * existing fly-to/selection styling points the CSR at the right box.
+   */
+  function handleShowServiceabilityBox(boxId) {
+    const match = enclosures.find((enc) => String(enc.id) === String(boxId));
+    if (!match) {
+      // A box that is on the map but not in the loaded list (filtered out, or
+      // just added by somebody else) — refresh and let the next click find it.
+      reloadAll();
+      return;
+    }
+    handleSelectEnclosure(match);
+  }
+
   function handleSelectEnclosure(enc) {
     if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
@@ -500,33 +521,48 @@ export default function App() {
     };
   }, [isResizing]);
 
-  // Fetch customer route when customer point is set
+  // Run the serviceability check when a customer point is dropped: the answer,
+  // the box to serve from, the price, and the street route the map draws.
+  // Reloads when the network changes (a box added at the gate changes the
+  // answer), which is why `enclosures` is in the deps.
   useEffect(() => {
-    if (customerPoint && mode === "locate-customer") {
-      api.customerLookup(customerPoint.lat, customerPoint.lng)
-        .then((result) => {
-          if (result.recommended_box) {
-            return api.getCustomerRoute(
-              customerPoint.lat,
-              customerPoint.lng,
-              result.recommended_box.id
-            );
-          }
-          return null;
-        })
-        .then((route) => {
-          if (route) {
-            setCustomerRoute(route);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to fetch customer route:", err);
-          setCustomerRoute(null);
-        });
-    } else {
+    if (!customerPoint || mode !== "locate-customer") {
       setCustomerRoute(null);
+      setServiceability(null);
+      setServiceabilityError(null);
+      return undefined;
     }
-  }, [customerPoint, mode]);
+    let cancelled = false;
+    setServiceabilityLoading(true);
+    setServiceabilityError(null);
+    api
+      .checkServiceability({ lat: customerPoint.lat, lng: customerPoint.lng })
+      .then((result) => {
+        if (cancelled) return;
+        setServiceability(result);
+        setServiceabilityError(null);
+        // The maps already know how to draw `{ route, length_m }`.
+        setCustomerRoute(
+          result?.drop?.route?.length >= 2
+            ? { route: result.drop.route, length_m: result.distance?.run_m ?? result.drop.length_m }
+            : null
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("Serviceability check failed:", err);
+        setServiceability(null);
+        setServiceabilityError(err.message || "Serviceability check failed");
+        setCustomerRoute(null);
+      })
+      .finally(() => {
+        if (!cancelled) setServiceabilityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerPoint, mode, enclosures.length]);
 
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
@@ -771,6 +807,10 @@ export default function App() {
             onClearImpact={handleClearImpact}
             onSetNetworkRoot={handleSetNetworkRoot}
             customerPoint={customerPoint}
+            serviceability={serviceability}
+            serviceabilityLoading={serviceabilityLoading}
+            serviceabilityError={serviceabilityError}
+            onShowServiceabilityBox={handleShowServiceabilityBox}
             customers={customers}
             onCreateCustomer={handleCreateCustomer}
             onChanged={reloadAll}

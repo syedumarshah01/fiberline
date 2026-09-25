@@ -1200,3 +1200,91 @@ code, .mono { font-family: var(--font-mono); }
 
   @page { margin: 12mm; }
 }
+
+/* ---------------------------------------------------------------------------
+   Serviceability check (locate-customer mode)
+
+   This panel is read out loud to a customer by someone who is not looking at
+   the map, so the verdict and the price are the two things that have to be
+   findable in one glance. Everything else is a fact underneath them.
+--------------------------------------------------------------------------- */
+
+.serviceability {
+  border: 1px solid var(--line, #2b3242);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.serviceability-verdict {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  border-left: 4px solid transparent;
+}
+
+.serviceability-verdict-label { font-weight: 600; }
+
+/* The price sits beside the verdict because together they are the answer. */
+.serviceability-price { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.serviceability-verdict.tone-ok { background: rgba(63, 208, 201, 0.12); border-left-color: #3fd0c9; }
+.serviceability-verdict.tone-warn { background: rgba(240, 180, 41, 0.14); border-left-color: #f0b429; }
+.serviceability-verdict.tone-bad { background: rgba(239, 83, 80, 0.14); border-left-color: #ef5350; }
+
+.serviceability-headline {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.serviceability-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.serviceability-fact .l {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+
+.serviceability-fact .v { font-size: 13px; }
+.serviceability-fact .sub { font-size: 11px; opacity: 0.75; margin-top: 1px; }
+
+.serviceability-steps ol { margin: 4px 0 0 18px; padding: 0; font-size: 12px; line-height: 1.5; }
+.serviceability-steps li { margin-bottom: 3px; }
+
+.serviceability-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.serviceability-actions .btn { font-size: 11px; padding: 4px 8px; }
+
+.serviceability-alternatives { margin-top: 10px; font-size: 12px; }
+.serviceability-alternatives summary { cursor: pointer; opacity: 0.85; }
+.serviceability-alternatives ul { margin: 6px 0 0 16px; padding: 0; }
+.serviceability-alternatives li { margin-bottom: 3px; }
+
+.serviceability-resolved { margin-top: 8px; font-size: 11px; opacity: 0.7; }
+.serviceability-error { color: #ef5350; }
+
+/* A button that reads as a link: used where the action is "show me that box". */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--teal, #3fd0c9);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline dotted;
+}
+
+.linklike:hover { text-decoration: underline; }
+
+@media print {
+  .serviceability-actions { display: none !important; }
+}

@@ -7,7 +7,8 @@
  * Both are generated on demand from the box's own documentation — there is no
  * work-order table to keep in sync, so the sheet can never describe a box that no
  * longer exists or miss a splice somebody recorded five minutes ago.
- *   ?kind=splice|repair|survey   what sort of job (default: splice)
+ *   ?kind=splice|repair|survey|install   what sort of job (default: splice;
+ *                                         install = a new drop)
  *   ?by=<name>                   who is doing it, printed on the sheet
  */
 const express = require('express');
@@ -17,10 +18,10 @@ const { loadContinuationLinks } = require('../utils/continuationLinks');
 
 const router = express.Router();
 
-/** splice | repair | survey — anything else falls back to splice. */
+/** splice | repair | survey | install — anything else falls back to splice. */
 function jobKind(req) {
   const kind = String(req.query.kind || '').toLowerCase();
-  return ['splice', 'repair', 'survey'].includes(kind) ? kind : 'splice';
+  return ['splice', 'repair', 'survey', 'install'].includes(kind) ? kind : 'splice';
 }
 
 /**
@@ -57,17 +58,50 @@ async function throughJointsFor(enclosureId, { links = null } = {}) {
   }
 }
 
-async function buildSheet(req) {
+async function buildSheet(req, { install = null } = {}) {
   const enclosureId = req.params.boxId;
   const documentation = await loadBoxDocumentation({ enclosureId });
   if (!documentation) return null;
   const throughJoints = await throughJointsFor(enclosureId);
+  const kind = jobKind(req);
   return buildWorkOrder({
     documentation,
     throughJoints,
-    kind: jobKind(req),
+    kind,
+    install: kind === 'install' ? install : null,
     by: typeof req.query.by === 'string' && req.query.by.trim() ? req.query.by.trim() : null,
   });
+}
+
+/**
+ * What the serviceability check found, in the shape the sheet builder wants.
+ *
+ * This is how a quote becomes a work order: the check already decided the box,
+ * the port and the length, so the sheet prints those instead of asking the
+ * technician to re-derive them from the box documentation.
+ */
+async function installContextFromCheck(check) {
+  if (!check?.recommended_box) return null;
+  const box = check.recommended_box;
+  const port = (box.free_port_numbers || [])[0] ?? null;
+  const drop = check.quote?.drop_length_m ?? check.drop?.length_m ?? null;
+  return {
+    box_id: box.id,
+    box_code: box.code,
+    box_name: box.name ?? null,
+    distance_m: check.distance?.to_recommended_m ?? box.distance_m ?? null,
+    route_length_m: drop,
+    distance_source: check.drop?.source || null,
+    port_number: port,
+    splitter_name: box.splitter_name || null,
+    needs: check.connection?.needs || null,
+    needs_detail: check.connection?.detail || null,
+    materials: check.quote?.lines || [],
+    quote_total: check.quote?.total ?? null,
+    currency: check.quote?.currency ?? null,
+    verdict: check.verdict,
+    verdict_label: check.verdict_label,
+  };
 }
 
 router.get('/:boxId/text', async (req, res, next) => {
@@ -95,3 +129,4 @@ router.get('/:boxId', async (req, res, next) => {
 module.exports = router;
 module.exports.throughJointsFor = throughJointsFor;
 module.exports.buildSheet = buildSheet;
+module.exports.installContextFromCheck = installContextFromCheck;

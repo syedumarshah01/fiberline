@@ -15,6 +15,14 @@ import {
   splitterLabel,
 } from "../utils/lossView.js";
 import { cableLinkText } from "../utils/impactOverlay.js";
+import {
+  verdictView,
+  headline,
+  serviceabilityFacts,
+  highlightBoxId,
+  quoteClipboardText,
+  formatBand,
+} from "../utils/serviceabilityView.js";
 
 function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
@@ -2014,9 +2022,15 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 // ---------------------------------------------------------------------------
 // CustomerLookupPanel — shown in locate-customer mode
 // ---------------------------------------------------------------------------
-function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreateCustomer }) {
-  const [result, setResult] = useState(null);
-  const [route, setRoute] = useState(null);
+function CustomerLookupPanel({
+  customerPoint,
+  customers,
+  serviceability,
+  serviceabilityLoading,
+  serviceabilityError,
+  onShowServiceabilityBox,
+  onCreateCustomer,
+}) {
   const [form, setForm] = useState({
     customer_code: "",
     name: "",
@@ -2024,37 +2038,53 @@ function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreate
     email: "",
     address: "",
   });
+  const [copied, setCopied] = useState(false);
+
+  // A new customer's address is the address that was checked, so prefill it from
+  // the match the check resolved (the CSR has already typed it once).
+  useEffect(() => {
+    const matched = serviceability?.query?.address;
+    if (matched) setForm((f) => (f.address ? f : { ...f, address: matched }));
+  }, [serviceability?.query?.address]);
 
   useEffect(() => {
-    if (!customerPoint) {
-      setResult(null);
-      setRoute(null);
-      return;
-    }
-    api
-      .customerLookup(customerPoint.lat, customerPoint.lng)
-      .then((lookupResult) => {
-        setResult(lookupResult);
-        // If we have a recommended box, fetch the route
-        if (lookupResult.recommended_box) {
-          return api.getCustomerRoute(
-            customerPoint.lat,
-            customerPoint.lng,
-            lookupResult.recommended_box.id
-          );
-        }
-        return null;
-      })
-      .then((routeResult) => {
-        if (routeResult) {
-          setRoute(routeResult);
-        }
-      })
-      .catch(() => {
-        setResult(null);
-        setRoute(null);
-      });
+    setCopied(false);
   }, [customerPoint]);
+
+  const view = serviceability ? verdictView(serviceability.verdict) : null;
+  const facts = serviceability ? serviceabilityFacts(serviceability) : [];
+  const band = formatBand(serviceability?.quote?.band, serviceability?.quote?.currency);
+  const boxId = highlightBoxId(serviceability);
+
+  async function handleCopy() {
+    const text = quoteClipboardText(serviceability);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      // Clipboard blocked (http, or a denied permission): the printable sheet is
+      // the fallback, so say so rather than failing silently.
+      setCopied(false);
+      alert("Could not copy — use \"Printable quote\" instead.");
+    }
+  }
+
+  function openTextSheet() {
+    const url = api.serviceabilityTextUrl({
+      lat: customerPoint?.lat,
+      lng: customerPoint?.lng,
+    });
+    window.open(url, "_blank", "noopener");
+  }
+
+  function openInstallSheet() {
+    const url = api.serviceabilitySheetUrl({
+      lat: customerPoint?.lat,
+      lng: customerPoint?.lng,
+    });
+    window.open(url, "_blank", "noopener");
+  }
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -2080,38 +2110,123 @@ function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreate
 
   return (
     <div>
-      <p className="section-title">Customer lookup</p>
+      <p className="section-title">Serviceability check</p>
       {!customerPoint ? (
-        <p className="empty-state">Click the map at the customer's location.</p>
+        <p className="empty-state">
+          Click the map at the customer&rsquo;s location to answer &ldquo;can we serve
+          this address?&rdquo; — the box, the run and the drop cost.
+        </p>
       ) : (
         <>
-          {result && (
-            <div style={{ marginBottom: 16 }}>
-              <p className="empty-state">
-                Nearby boxes: {result.nearby_boxes.length}
-              </p>
-              {result.recommended_box && (
-                <p className="empty-state">
-                  Recommended: <b>{result.recommended_box.code}</b> (
-                  {result.recommended_box.available_cores} free,{" "}
-                  {Math.round(result.recommended_box.distance_m)}m away)
-                </p>
+          {serviceabilityLoading && !serviceability && (
+            <p className="empty-state">Checking the network…</p>
+          )}
+          {serviceabilityError && (
+            <p className="empty-state serviceability-error">{serviceabilityError}</p>
+          )}
+
+          {serviceability && (
+            <div className="serviceability" style={{ marginBottom: 16 }}>
+              <div className={`serviceability-verdict tone-${view.tone}`}>
+                <span className="serviceability-verdict-label">{view.label}</span>
+                {band && <span className="serviceability-price">{band}</span>}
+              </div>
+              <p className="serviceability-headline">{headline(serviceability)}</p>
+
+              <div className="serviceability-facts">
+                {facts.map((fact) => (
+                  <div key={fact.label} className="serviceability-fact">
+                    <div className="l">{fact.label}</div>
+                    <div className="v">{fact.value}</div>
+                    {fact.detail && <div className="sub">{fact.detail}</div>}
+                  </div>
+                ))}
+              </div>
+
+              {serviceability.next_steps?.length > 0 && (
+                <div className="serviceability-steps">
+                  <p className="section-title">Next steps</p>
+                  <ol>
+                    {serviceability.next_steps.map((step, index) => (
+                      <li key={index}>{step}</li>
+                    ))}
+                  </ol>
+                </div>
               )}
-              {result.suggested_source && (
-                <p className="empty-state">
-                  Suggested source: {result.suggested_source.source_enclosure_id.slice(0, 8)}… (
-                  {result.suggested_source.available_cores} free,{" "}
-                  {result.suggested_source.hops} hops)
-                </p>
+
+              {serviceability.warnings?.length > 0 && (
+                <div className="impact-warnings">
+                  {serviceability.warnings.map((warning, index) => (
+                    <p key={index} className="impact-warning">
+                      {warning}
+                    </p>
+                  ))}
+                </div>
               )}
-              {route && (
-                <p className="empty-state" style={{ marginTop: 8, color: "var(--teal)" }}>
-                  Route distance: {Math.round(route.length_m)}m along the street
+
+              <div className="serviceability-actions">
+                {boxId && (
+                  <button className="btn" type="button" onClick={() => onShowServiceabilityBox?.(boxId)}>
+                    Show {serviceability.recommended_box?.code || serviceability.nearest_box?.code} on map
+                  </button>
+                )}
+                <button className="btn" type="button" onClick={handleCopy}>
+                  {copied ? "Copied" : "Copy quote"}
+                </button>
+                <button className="btn" type="button" onClick={openTextSheet}>
+                  Printable quote
+                </button>
+                {serviceability.recommended_box && (
+                  <button className="btn" type="button" onClick={openInstallSheet}>
+                    Install sheet
+                  </button>
+                )}
+              </div>
+
+              {serviceability.alternatives?.length > 0 && (
+                <details className="serviceability-alternatives">
+                  <summary>
+                    {serviceability.alternatives.length} other box
+                    {serviceability.alternatives.length === 1 ? "" : "es"} nearby
+                  </summary>
+                  <ul>
+                    {serviceability.alternatives.map((box) => (
+                      <li key={box.id}>
+                        <button
+                          className="linklike"
+                          type="button"
+                          onClick={() => onShowServiceabilityBox?.(box.id)}
+                        >
+                          {box.code}
+                        </button>{" "}
+                        — {box.distance_m} m,{" "}
+                        {box.free_ports > 0
+                          ? `${box.free_ports} free port${box.free_ports === 1 ? "" : "s"}`
+                          : box.available_cores > 0
+                            ? `${box.available_cores} spare fibre${box.available_cores === 1 ? "" : "s"}`
+                            : "full"}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {serviceability.query && (
+                <p className="sub serviceability-resolved">
+                  {serviceability.query.source === "coordinates"
+                    ? "Checked at the point you clicked."
+                    : `Matched ${serviceability.query.label || serviceability.query.address} (${String(
+                        serviceability.query.source || "",
+                      ).replace(/_/g, " ")})${
+                        serviceability.query.confidence ? ` · ${serviceability.query.confidence} confidence` : ""
+                      }.`}
                 </p>
               )}
             </div>
           )}
+
           <form onSubmit={handleCreate} style={{ marginBottom: 16 }}>
+            <p className="section-title">Register the customer</p>
             <div className="field">
               <label>Customer code</label>
               <input
@@ -2176,6 +2291,10 @@ export default function RightPanel({
   selectedCable,
   selectedPole,
   customerPoint,
+  serviceability,
+  serviceabilityLoading,
+  serviceabilityError,
+  onShowServiceabilityBox,
   customers,
   impact,
   impactLoading,
@@ -2294,6 +2413,10 @@ export default function RightPanel({
         <CustomerLookupPanel
           customerPoint={customerPoint}
           customers={customers}
+          serviceability={serviceability}
+          serviceabilityLoading={serviceabilityLoading}
+          serviceabilityError={serviceabilityError}
+          onShowServiceabilityBox={onShowServiceabilityBox}
           onCreateCustomer={onCreateCustomer}
         />
       )}

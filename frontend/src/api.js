@@ -268,6 +268,43 @@ export const api = {
     request(`/headends/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteHeadend: (id) => request(`/headends/${id}`, { method: "DELETE" }),
 
+  // Serviceability — "can we serve this address, from which box, at what cost?"
+  // The sales/CSR question. One call answers it: pass an address, or the point
+  // from the map (lat/lng). `options.route === false` skips the street route.
+  checkServiceability: ({ address, lat, lng, radiusM, limit, route } = {}) => {
+    const params = new URLSearchParams();
+    if (address) params.set("address", address);
+    if (lat != null && lng != null) {
+      params.set("lat", String(lat));
+      params.set("lng", String(lng));
+    }
+    if (radiusM != null) params.set("radius_m", String(radiusM));
+    if (limit != null) params.set("limit", String(limit));
+    if (route === false) params.set("route", "0");
+    return request(`/serviceability/check?${params.toString()}`);
+  },
+
+  // The same answer as printable text (phone / CRM / WhatsApp) and as an install
+  // work order for the crew. URLs rather than fetches: they open in a tab.
+  serviceabilityTextUrl: ({ address, lat, lng } = {}) => {
+    const params = new URLSearchParams();
+    if (address) params.set("address", address);
+    if (lat != null && lng != null) {
+      params.set("lat", String(lat));
+      params.set("lng", String(lng));
+    }
+    return `/api/serviceability/check/text?${params.toString()}`;
+  },
+  serviceabilitySheetUrl: ({ address, lat, lng } = {}) => {
+    const params = new URLSearchParams();
+    if (address) params.set("address", address);
+    if (lat != null && lng != null) {
+      params.set("lat", String(lat));
+      params.set("lng", String(lng));
+    }
+    return `/api/serviceability/check/sheet/text?${params.toString()}`;
+  },
+
   // Health check
   health: () => safeRequest("/health"),
 };

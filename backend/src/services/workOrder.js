@@ -15,6 +15,8 @@
  * testable, and it keeps a single source of truth for what is in the box.
  */
 
+const { wrapLine } = require('../utils/textWrap');
+
 /** How many spare cores to name in the "pick a pair" line before counting the rest. */
 const SPARES_LISTED = 12;
 
@@ -22,18 +24,36 @@ const KIND_LABELS = {
   splice: 'Splice job',
   repair: 'Repair job',
   survey: 'Documentation survey',
+  // A new customer's drop: same box documentation, plus the hardware the install
+  // needs. Produced from a serviceability check (GET /api/serviceability/check)
+  // so the crew that quotes it is the crew that loads the van.
+  install: 'New drop installation',
 };
 
 /** Sleeve + tray counts that any splice job needs anyway. */
-function baseMaterials() {
+/**
+ * The materials a box job needs whatever the box says, plus — for a job whose
+ * kind is `install` (a new customer's drop) — the hardware that install adds.
+ * A worksheet for work that has not happened yet has to list what to load in
+ * the van, or the technician drives back.
+ */
+function baseMaterials(kind) {
   // Sleeves are not listed here: the rules count them per joint, and a second
   // "one per splice" line beside a counted one is how a materials list stops
   // being believed.
-  return [
+  const base = [
     { item: 'Trays / splice holders', quantity: null, detail: 'as the closure needs' },
     { item: 'Alcohol wipes, lint-free tissue', quantity: 1, detail: 'cleaning before every splice' },
     { item: 'OTDR / splice loss meter', quantity: 1, detail: 'readings go back into the box record' },
   ];
+  if (kind === 'install') {
+    // A new drop: the hardware the drop itself needs, so one trip does the job.
+    base.push(
+      { item: 'Drop cable (aerial)', quantity: null, detail: 'length from the serviceability check / as routed' },
+      { item: 'ONT / customer premises equipment', quantity: 1, detail: 'one per new customer — confirm with the install order' },
+    );
+  }
+  return base;
 }
 
 /** "CBL-F1 #3" — how a technician says a fibre out loud. */
@@ -255,6 +275,9 @@ function safe(read, fallback) {
  * @param {string} [args.by]           who is doing the job (printed on the sheet)
  * @param {Date|string} [args.generatedAt]
  * @param {object} [args.throughJoints] mid-span pairs meeting in this box
+ * @param {object} [args.install] what a serviceability check decided for a new
+ *   drop (box, port, length, price) — printed on an `install` sheet, purely
+ *   informational: the box documentation below it is still the source of truth
  */
 function buildWorkOrder({
   documentation,
@@ -262,6 +285,7 @@ function buildWorkOrder({
   by = null,
   generatedAt = new Date(),
   throughJoints = [],
+  install = null,
 } = {}) {
   if (!documentation?.enclosure) {
     throw new Error('buildWorkOrder needs box documentation — see loadBoxDocumentation()');
@@ -295,6 +319,17 @@ function buildWorkOrder({
       ];
     }
     for (const item of items) derived.push({ ...item, source: rule.name });
+  }
+
+  // A new drop: the plan the serviceability check produced goes at the top of the
+  // sheet, in the order the work happens (box → port → cable → splice → costs).
+  // It is informational — the steps below it still come from the box's own
+  // documentation — but it is what the crew was sent out to install.
+  const plan = jobKind === 'install' && install ? installPlan(install) : null;
+  if (plan) {
+    derived.unshift(
+      ...plan.items.map((item) => ({ ...item, source: 'install-plan', info: false })),
+    );
   }
 
   // Numbering is the technician's friend: stable, and the same order the rules
@@ -350,7 +385,8 @@ function buildWorkOrder({
     checklist,
     materials: [
       ...uniqueMaterials(derived.filter((item) => !item.info).map((item) => item.materials)),
-      ...baseMaterials(),
+      ...baseMaterials(kind),
+      ...(plan ? plan.materials : []),
     ],
     // The two collections the sheet prints tables from. The splitter list is not
     // copied in: the checklist already names every splitter task, and the counts
@@ -363,31 +399,107 @@ function buildWorkOrder({
       bad_splices: safe(() => flags.bad_splices, []) || [],
     },
     through_joints: throughJoints,
+    ...(plan ? { install_plan: plan.plan } : {}),
   };
 }
 
 /**
- * Fold a long line into several, so the sheet stays readable in a terminal, in a
- * chat window, and on a phone with a font big enough to read outdoors. Wrapping
- * happens here rather than in the data: the JSON keeps sentences intact.
+ * A new drop, as steps and materials, from what the serviceability check found.
+ *
+ * Only what the check actually decided is claimed here: no port number, no
+ * metres and no price if the caller did not pass them. A sheet that invents a
+ * port number sends a technician to the wrong tray.
  */
-function wrapLine(text, { width = 78, indent = '', hanging = null } = {}) {
-  const pad = hanging == null ? indent : hanging;
-  const words = String(text).split(/\s+/).filter(Boolean);
-  const lines = [];
-  let line = null;
-  for (const word of words) {
-    const prefix = lines.length === 0 ? indent : pad;
-    if (line == null) line = prefix + word;
-    else if (`${line} ${word}`.length <= width) line = `${line} ${word}`;
-    else {
-      lines.push(line);
-      line = pad + word;
-    }
+function installPlan(install = {}) {
+  const items = [];
+  const materials = [];
+  const box = install.box_code || 'the serving box';
+
+  items.push({
+    task: `Open ${box}${install.box_name ? ` (${install.box_name})` : ''} and work to the serviceability check's plan`,
+    detail:
+      `${install.verdict_label || 'Serviceability check'}${install.needs_detail ? ` — ${install.needs_detail}` : ''}`,
+  });
+
+  if (install.port_number != null) {
+    items.push({
+      task: `Assign splitter ${install.splitter_name ? `"${install.splitter_name}" ` : ''}port ${install.port_number} to the new drop`,
+      detail: 'the port is free now — confirm it is still free before cutting the drop',
+      materials: [{ item: 'Pigtail / drop cable', quantity: 1, detail: 'the drop being installed' }],
+    });
+  } else if (install.needs === 'splitter') {
+    items.push({
+      task: `Install a splitter in ${box} for the new drop`,
+      detail: 'the box has no free port yet — the check added a splitter to the price',
+      materials: [{ item: 'Splitter (as ordered)', quantity: 1, detail: 'for the new drop' }],
+    });
+  } else if (install.needs === 'capacity') {
+    items.push({
+      task: `Bring capacity into ${box} before the drop can be spliced`,
+      detail: 'the box has no free port and no spare fibre — survey it first',
+      warning: true,
+    });
   }
-  if (line != null) lines.push(line);
-  return lines.length ? lines : [indent.trimEnd()];
+
+  if (install.route_length_m) {
+    items.push({
+      task: `Run the drop: about ${install.route_length_m} m from ${box} to the address`,
+      detail:
+        install.distance_source === 'street_route'
+          ? 'measured along the street by the serviceability check — confirm on site'
+          : 'straight-line estimate — measure the actual route before cutting',
+      materials: [
+        { item: 'Drop cable (aerial)', quantity: null, detail: `≈ ${install.route_length_m} m + slack` },
+      ],
+    });
+  }
+
+  items.push({
+    task: 'Splice the drop onto the assigned port and record the loss',
+    detail: 'the reading goes into the box record — the sheet is regenerated from it',
+    materials: [{ item: 'Fusion splice sleeves', quantity: 1, detail: 'the new joint' }],
+  });
+
+  items.push({
+    task: 'Register the customer and attach the drop cable to their record',
+    detail: 'the locator, the QR tag and the outage report all read that link',
+  });
+
+  for (const line of install.materials || []) {
+    // The priced lines are the plan's own material estimate, with money on them
+    // so the sheet and the quote cannot disagree.
+    const quantity = line.unit === 'm' || line.unit === 'unit' ? line.quantity : null;
+    materials.push({
+      item: line.item,
+      quantity,
+      detail: `${line.detail}${install.currency && line.amount ? ` — ${install.currency} ${line.amount}` : ''}`,
+    });
+  }
+
+  const plan = {
+    box_id: install.box_id ?? null,
+    box_code: install.box_code ?? null,
+    box_name: install.box_name ?? null,
+    port_number: install.port_number ?? null,
+    splitter_name: install.splitter_name ?? null,
+    needs: install.needs ?? null,
+    distance_m: install.distance_m ?? null,
+    route_length_m: install.route_length_m ?? null,
+    distance_source: install.distance_source ?? null,
+    quote_total: install.quote_total ?? null,
+    currency: install.currency ?? null,
+    verdict: install.verdict ?? null,
+    verdict_label: install.verdict_label ?? null,
+    note: 'generated from a serviceability check — the box documentation below is the source of truth',
+  };
+  return { items, materials, plan };
 }
+
+// Fold a long line into several, so the sheet stays readable in a terminal, in a
+// chat window, and on a phone with a font big enough to read outdoors. Wrapping
+// happens at render time rather than in the data: the JSON keeps sentences
+// intact. Shared with the serviceability quote (utils/textWrap.js) — same 78
+// columns, same hanging indents, one implementation.
 
 /** Push a (possibly long) line, wrapped, with an indent for continuations. */
 function pushWrapped(lines, text, { width = 78, indent = '', hanging = null } = {}) {
@@ -416,7 +528,22 @@ function worksheetText(order) {
   if (s.free_splitter_ports) lines.push(`${s.free_splitter_ports} free splitter port(s)`);
   if (s.damaged_cores) lines.push(`${s.damaged_cores} damaged fibre(s)`);
   if (s.bad_splices) lines.push(`${s.bad_splices} splice(s) over the loss limit`);
-  lines.push('');
+  const plan = order.install_plan;
+  if (plan) {
+    lines.push('');
+    lines.push('INSTALL PLAN (from the serviceability check)');
+    lines.push(thin);
+    lines.push(`  ${plan.verdict_label || 'Assessment'} — ${plan.needs || 'connection'}`);
+    if (plan.box_code) lines.push(`  Serve from: ${plan.box_code}${plan.box_name ? ` (${plan.box_name})` : ''}, ${plan.distance_m ?? '?'} m`);
+    if (plan.route_length_m) {
+      lines.push(
+        `  Run: about ${plan.route_length_m} m${plan.distance_source === 'street_route' ? ' along the street' : ' (straight-line estimate)'}`,
+      );
+    }
+    if (plan.port_number != null) lines.push(`  Port to assign: ${plan.port_number}${plan.splitter_name ? ` (${plan.splitter_name})` : ''}`);
+    if (plan.quote_total != null) lines.push(`  Quoted: ${plan.currency || ''} ${plan.quote_total}`.trimEnd());
+    lines.push('');
+  }
   lines.push('CHECKLIST');
   lines.push(thin);
   for (const item of order.checklist) {
