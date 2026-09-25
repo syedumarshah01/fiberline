@@ -27,7 +27,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const MIGRATION_PATH = path.join(__dirname, '..', 'migrations', '20260101000014_cable_continuations.js');
+const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
+const MIGRATION_PATH = path.join(MIGRATIONS_DIR, '20260101000014_cable_continuations.js');
+const REPAIR_PATH = path.join(MIGRATIONS_DIR, '20260101000015_repair_cable_continuations.js');
 const SCHEMA = 'fiberline_migration_test';
 const URL = process.env.TEST_DATABASE_URL;
 
@@ -39,25 +41,212 @@ function stripComments(source) {
 }
 
 describe('the migration source', () => {
-  test('uses no aggregate that Postgres does not have for uuid', () => {
+  test('no migration aggregates a uuid id', () => {
+    // Every migration, not just this one: MIN/MAX exist for numbers and text,
+    // not for uuid, and that is what broke `npm run migrate` (MIN(p.id)).
     // Comments talk about the bug on purpose, so scan code only.
-    const source = stripComments(fs.readFileSync(MIGRATION_PATH, 'utf8'));
-    // min()/max() exist for numbers and text, not for uuid. COUNT(*) is fine.
-    const suspicious = source.match(/\b(min|max)\s*\([^)]*\)/gi) || [];
-    assert.deepEqual(
-      suspicious,
-      [],
-      `uuid ids cannot be aggregated — found ${suspicious.join(', ')}. ` +
-        'This is the exact bug that broke `npm run migrate` (MIN(p.id)).',
-    );
+    const offenders = [];
+    for (const file of fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.js'))) {
+      const source = stripComments(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+      for (const match of source.match(/\b(min|max)\s*\(\s*[\w.]*\bid\b\s*\)/gi) || []) {
+        offenders.push(`${file}: ${match}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `uuid ids cannot be aggregated — ${offenders.join('; ')}`);
   });
 
   test('guards the backfill so a heuristic failure cannot block the column', () => {
-    const source = fs.readFileSync(MIGRATION_PATH, 'utf8');
-    assert.match(source, /knex\.transaction\(/, 'the backfill runs in its own savepoint');
-    assert.match(source, /Could not link the mid-span splits/, 'and reports its failure loudly');
+    for (const [label, file] of [['14', MIGRATION_PATH], ['15', REPAIR_PATH]]) {
+      const source = fs.readFileSync(file, 'utf8');
+      assert.match(source, /knex\.transaction\(/, `${label}: the backfill runs in its own savepoint`);
+      assert.match(source, /Could not link the mid-span splits/, `${label}: and reports its failure`);
+    }
+  });
+
+  test('migrations 14 and 15 link on the same rule', () => {
+    const rule = (file) => {
+      const source = stripComments(fs.readFileSync(file, 'utf8'));
+      const update = source.match(/UPDATE cables AS child[\s\S]*?ST_DWithin\([\s\S]*?\)\s*\n\s*\)\s*\n\s*`/);
+      if (!update) throw new Error(`no backfill UPDATE found in ${path.basename(file)}`);
+      return update[0].replace(/\)\s*`$/, ')').replace(/\s+/g, ' ').trim();
+    };
+    assert.equal(
+      rule(REPAIR_PATH),
+      rule(MIGRATION_PATH),
+      'the repair migration must link on exactly the rule it repairs',
+    );
+  });
+
+  test('the repair migration verifies its own result', () => {
+    const source = stripComments(fs.readFileSync(REPAIR_PATH, 'utf8'));
+    assert.match(source, /is still missing after the repair migration ran/);
   });
 });
+
+// --- the repair migration, driven through knex's own migrate:latest ---------
+
+describe(
+  'migration 15 repairs a database whose ledger claims 14 already ran',
+  { skip: URL ? false : 'set TEST_DATABASE_URL to run these (see the file header)' },
+  () => {
+    const SCHEMA = 'fiberline_repair_test';
+    const MID = '22222222-2222-2222-2222-222222222222';
+    let knex;
+    let migrationsDir;
+
+    /** A scratch schema holding just enough of the app's schema. */
+    async function freshSchema() {
+      await knex.raw(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+      await knex.raw(`CREATE SCHEMA ${SCHEMA}`);
+      await knex.raw(`SET search_path = ${SCHEMA}, public`);
+      await knex.raw(`
+        CREATE DOMAIN geometry AS text;
+        CREATE DOMAIN geography AS text;
+        CREATE FUNCTION st_startpoint(geometry) RETURNS text AS $$ SELECT $1 $$ LANGUAGE sql;
+        CREATE FUNCTION st_dwithin(geography, geography, double precision) RETURNS boolean
+          AS $$ SELECT NOT ($1 LIKE '%far%' OR $2 LIKE '%far%') $$ LANGUAGE sql;
+        CREATE TABLE cables (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          code text UNIQUE NOT NULL,
+          cable_type text NOT NULL DEFAULT 'feeder',
+          core_count integer NOT NULL DEFAULT 12,
+          from_enclosure_id uuid,
+          to_enclosure_id uuid,
+          route text
+        );
+        CREATE TABLE knex_migrations (
+          id serial PRIMARY KEY,
+          name varchar(255),
+          batch integer,
+          migration_time timestamptz
+        );
+      `);
+    }
+
+    const migrate = () =>
+      knex.migrate.latest({
+        directory: migrationsDir,
+        tableName: 'knex_migrations',
+        schemaName: SCHEMA,
+      });
+
+    before(async () => {
+      const knexFactory = require('knex');
+      knex = knexFactory({
+        client: 'pg',
+        connection: URL,
+        pool: {
+          min: 1,
+          max: 1,
+          afterCreate: (conn, done) => conn.query(`SET search_path = ${SCHEMA}, public`, (err) => done(err, conn)),
+        },
+      });
+
+      // Only these two migrations, so the run is not asked to build the whole
+      // app schema (no PostGIS here). They are copies of the shipped files, so
+      // what runs is what ships.
+      migrationsDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fiberline-migrations-'));
+      for (const file of ['20260101000014_cable_continuations.js', '20260101000015_repair_cable_continuations.js']) {
+        fs.copyFileSync(path.join(MIGRATIONS_DIR, file), path.join(migrationsDir, file));
+      }
+    });
+
+    after(async () => {
+      if (!knex) return;
+      try {
+        await knex.raw(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+      } finally {
+        await knex.destroy();
+        if (migrationsDir) fs.rmSync(migrationsDir, { recursive: true, force: true });
+      }
+    });
+
+    test('applies 15 (14 is recorded, so it never runs again) and the column appears', async () => {
+      await freshSchema();
+
+      // The state the app reported: the ledger says 14 ran, the column is absent.
+      await knex('knex_migrations').insert({
+        name: '20260101000014_cable_continuations.js',
+        batch: 1,
+        migration_time: new Date(),
+      });
+      assert.equal(await knex.schema.hasColumn('cables', 'continues_cable_id'), false);
+
+      // A split the old code made: two halves, nothing linking them.
+      await knex('cables').insert([
+        { code: 'CBL-F1', to_enclosure_id: MID, route: 'upstream' },
+        { code: 'CBL-F1-B', from_enclosure_id: MID, route: 'upstream' },
+      ]);
+
+      const [, applied] = await migrate();
+      assert.deepEqual(
+        applied,
+        ['20260101000015_repair_cable_continuations.js'],
+        '14 is recorded, so only the repair migration may run',
+      );
+
+      assert.equal(await knex.schema.hasColumn('cables', 'continues_cable_id'), true, 'column added');
+
+      const indexes = (await knex.raw(`SELECT indexname FROM pg_indexes
+        WHERE schemaname = ? AND tablename = 'cables'`, [SCHEMA])).rows.map((r) => r.indexname);
+      assert.ok(indexes.includes('cables_continues_cable_idx'), 'index added');
+
+      const fk = (await knex.raw(`SELECT c.conname
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+        WHERE c.conrelid = ?::regclass AND c.contype = 'f' AND a.attname = 'continues_cable_id'`,
+        [`${SCHEMA}.cables`])).rows;
+      assert.equal(fk.length, 1, 'the foreign key is there');
+
+      const child = await knex('cables').where({ code: 'CBL-F1-B' }).first();
+      const parent = await knex('cables').where({ code: 'CBL-F1' }).first();
+      assert.equal(child.continues_cable_id, parent.id, 'and the split is linked');
+    });
+
+    test('is a no-op when the column is already there', async () => {
+      // Same schema, but 14 applied properly this time.
+      await freshSchema();
+      const migration14 = require(MIGRATION_PATH);
+      await migration14.up(knex);
+      await knex('cables').insert([
+        { code: 'CBL-F2', to_enclosure_id: MID, route: 'upstream' },
+        { code: 'CBL-F2-B', from_enclosure_id: MID, route: 'upstream' },
+      ]);
+      await knex('knex_migrations').insert([
+        { name: '20260101000014_cable_continuations.js', batch: 1, migration_time: new Date() },
+      ]);
+
+      const [, applied] = await migrate();
+      assert.deepEqual(applied, ['20260101000015_repair_cable_continuations.js']);
+
+      const child = await knex('cables').where({ code: 'CBL-F2-B' }).first();
+      const parent = await knex('cables').where({ code: 'CBL-F2' }).first();
+      assert.equal(child.continues_cable_id, parent.id, 'the pair is linked exactly once');
+
+      const [{ count }] = await knex('cables').where({ continues_cable_id: parent.id }).count();
+      assert.equal(Number(count), 1, 'no fan-out from running the rule twice');
+    });
+
+    test('on a fresh database both migrations run in order', async () => {
+      await freshSchema();
+      await knex('cables').insert([
+        { code: 'CBL-F3', to_enclosure_id: MID, route: 'upstream' },
+        { code: 'CBL-F3-B', from_enclosure_id: MID, route: 'upstream' },
+      ]);
+
+      const [, applied] = await migrate();
+      assert.deepEqual(applied, [
+        '20260101000014_cable_continuations.js',
+        '20260101000015_repair_cable_continuations.js',
+      ]);
+      assert.equal(await knex.schema.hasColumn('cables', 'continues_cable_id'), true);
+
+      const child = await knex('cables').where({ code: 'CBL-F3-B' }).first();
+      const parent = await knex('cables').where({ code: 'CBL-F3' }).first();
+      assert.equal(child.continues_cable_id, parent.id);
+    });
+  },
+);
 
 // --- database checks: opt-in via TEST_DATABASE_URL ---------------------------
 

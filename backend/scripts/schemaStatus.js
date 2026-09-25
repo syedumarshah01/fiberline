@@ -26,8 +26,24 @@ function migrationFiles(directory) {
   return fs
     .readdirSync(directory)
     .filter((name) => name.endsWith('.js'))
-    .map((name) => name.replace(/\.js$/, ''))
     .sort();
+}
+
+/**
+ * Migration names as knex records them. Its FsMigrations source returns
+ * `migration.file` — the name *with* the `.js` extension — so that is what the
+ * ledger holds. Comparing the two by exact string was a bug: every migration
+ * looked pending on a real database. Both sides are normalised instead, so a
+ * ledger holding either spelling still matches.
+ */
+function normalized(name) {
+  return String(name).replace(/\.js$/, '');
+}
+
+/** Files not yet applied, in file order. */
+function pendingMigrations(files, appliedNames) {
+  const applied = new Set(appliedNames.map(normalized));
+  return files.filter((file) => !applied.has(normalized(file)));
 }
 
 async function main() {
@@ -60,7 +76,7 @@ async function main() {
       ? (await knex('knex_migrations').select('name')).map((row) => row.name)
       : [];
     const files = migrationFiles(config.migrations?.directory);
-    const pending = files.filter((name) => !applied.includes(name));
+    const pending = pendingMigrations(files, applied);
 
     console.log(
       `  migrations: ${applied.length} applied` +
@@ -136,15 +152,26 @@ async function main() {
     } else {
       // The ledger says applied but the column is not there: the migration was
       // recorded without its effect landing (an interrupted run, a restored
-      // dump, or a hand-edited ledger).
-      const migrations = missing.map((m) => m.migration).join(', ');
+      // dump, or a hand-edited ledger). A recorded migration never runs again,
+      // so the fix is a repair migration — 15 exists for exactly this.
+      const repairFile = '20260101000015_repair_cable_continuations.js';
+      const repairPending = pendingMigrations([repairFile], applied).length === 1;
       console.log(
-        `\nThe migration ledger says these are applied, but the columns are missing.`,
+        '\nThe migration ledger says these are applied, but the columns are missing.',
       );
-      console.log(
-        `Re-apply the effect by hand, or reset the ledger row for ${migrations} and run ` +
-          '"npm run migrate" again.',
-      );
+      if (repairPending) {
+        console.log(
+          'Run "npm run migrate": the repair migration (20260101000015) is pending and' +
+            '\nfixes exactly this — a recorded migration never runs again, which is why' +
+            '\nre-running the original one changes nothing.',
+        );
+      } else {
+        const migrations = missing.map((m) => m.migration).join(', ');
+        console.log(
+          `Re-apply the effect by hand, or drop the column and run "npm run migrate" again ` +
+            `(${migrations}).`,
+        );
+      }
     }
     return 1;
   } catch (err) {
@@ -172,4 +199,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { migrationFiles };
+module.exports = { migrationFiles, pendingMigrations, normalized };

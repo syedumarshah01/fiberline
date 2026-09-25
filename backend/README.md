@@ -26,6 +26,22 @@ while `npm run migrate` insists everything is applied — because migrate went t
 different database (a stale `.env`, `NODE_ENV=production` with `DATABASE_URL`, another
 Postgres on another port). `db:schema` prints both sides of that comparison.
 
+### Migrations 14 and 15 (mid-span cable links)
+
+`20260101000014_cable_continuations.js` adds `cables.continues_cable_id` and backfills existing
+splits. Its first version failed on real databases (it aggregated a uuid — `MIN(p.id)`), which is
+why the backfill now runs in its own savepoint and why 14 is idempotent.
+
+`20260101000015_repair_cable_continuations.js` does the same work unconditionally, for the state
+where the ledger and the database disagree: a recorded migration never runs again, so a database
+that recorded 14 without its column could otherwise never be fixed by migrating. It adds the
+column if missing, creates the index, adds the foreign key if the column exists without one
+(clearing dangling references first so the constraint can be validated), runs the same backfill,
+and verifies the column exists afterwards — it cannot report success while leaving the database
+as it found it. Run `npm run migrate`; on a healthy database it changes nothing.
+
+(If you are in that state, `npm run db:schema` says so and points at `npm run migrate`.)
+
 The app does not fall over when the schema is behind. Each feature that needs a newer
 column checks for it first (`src/utils/schemaCapabilities.js`), drops it from its query
 when it is absent, and reports a warning naming the migration to run: the failure
