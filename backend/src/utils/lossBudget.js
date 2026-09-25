@@ -20,7 +20,13 @@ const DEFAULT_ATTENUATION_DB_PER_KM = 0.35;
 
 /** Assumed splice loss when no reading is recorded. Fusion splices are
  *  typically ≤ 0.1 dB; mechanical splices run about three times worse. */
-const DEFAULT_SPLICE_LOSS_DB = { fusion: 0.1, mechanical: 0.3 };
+const DEFAULT_SPLICE_LOSS_DB = {
+  fusion: 0.1,
+  mechanical: 0.3,
+  // A mid-span closure: the fiber is cut and fused again when the box is
+  // inserted (see cables.continues_cable_id), so it costs a fusion splice.
+  continuation: 0.1,
+};
 
 /** Assumed loss per connector (e.g. an ONT/ODF patch point) for hops that
  *  carry connector data — the current schema has none, but the budget knows

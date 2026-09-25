@@ -24,6 +24,20 @@ const SPLICES = [
   { id: 'S3', enclosure_id: 'box2', splice_type: 'mechanical', core_a_id: 'B', core_b_id: 'D', splice_date: '2026-01-03', created_at: '3' },
 ];
 
+// A closure inserted mid-span on cable c5: the cable was cut into c5 (upstream,
+// carrying core G) and c5-B (downstream, carrying core H), linked by
+// continues_cable_id. The fiber continues across the box with no splice row.
+// Deliberately a separate cable from the chain above, so the splice-walk tests
+// keep asserting exactly what they always did.
+const MID_CORES = {
+  G: { core_id: 'G', core_number: 1, core_status: 'spliced', cable_id: 'c5', cable_code: 'CBL-5', cable_type: 'distribution' },
+  H: { core_id: 'H', core_number: 1, core_status: 'spliced', cable_id: 'c5-B', cable_code: 'CBL-5-B', cable_type: 'distribution', continues_cable_id: 'c5' },
+};
+const MID_CABLES = {
+  c5: { id: 'c5', code: 'CBL-5', cable_type: 'distribution', continues_cable_id: null, from_enclosure_id: 'box-up' },
+  'c5-B': { id: 'c5-B', code: 'CBL-5-B', cable_type: 'distribution', continues_cable_id: 'c5', from_enclosure_id: 'box-mid' },
+};
+
 function fakeDb(table) {
   if (table === 'splices') {
     let coreId = null;
@@ -46,13 +60,42 @@ function fakeDb(table) {
     return builder;
   }
 
-  // 'fiber_cores as fc'
+  // Mid-span split lookups: db('cables').where({ continues_cable_id }) and
+  // db('fiber_cores').where({ cable_id, core_number }).
+  if (table === 'cables') {
+    const where = {};
+    const builder = {
+      where(arg) { Object.assign(where, arg); return builder; },
+      async first() {
+        if (!where.continues_cable_id) return null;
+        return Object.values(MID_CABLES).find(
+          (c) => c.continues_cable_id === where.continues_cable_id,
+        ) || null;
+      },
+    };
+    return builder;
+  }
+
+  // 'fiber_cores as fc' (and the plain fiber_cores lookup)
   let coreId = null;
+  const where = {};
   const builder = {
     join() { return builder; },
-    where(_col, val) { coreId = val; return builder; },
+    where(col, val) {
+      if (typeof col === 'object') Object.assign(where, col);
+      else if (String(col).startsWith('fc.')) coreId = val;
+      else where[col] = val;
+      return builder;
+    },
     select() { return builder; },
-    first() { return Promise.resolve(CORES[coreId] || null); },
+    async first() {
+      if (where.cable_id) {
+        return [...Object.values(CORES), ...Object.values(MID_CORES)].find(
+          (c) => c.cable_id === where.cable_id && c.core_number === where.core_number,
+        ) || null;
+      }
+      return CORES[coreId] || MID_CORES[coreId] || null;
+    },
   };
   return builder;
 }
@@ -65,6 +108,40 @@ const { traceFiber } = require('../src/services/fiberTrace');
 function hopIds(segments) {
   return segments.map((h) => h.core_id || h.splice_id);
 }
+
+describe('traceFiber across a mid-span (inserted) closure', () => {
+  test('the trace follows the fiber through the inserted box', async () => {
+    const segments = await traceFiber('G');
+    assert.deepEqual(
+      segments.map((h) => h.core_id ?? h.splice_type),
+      ['G', 'continuation', 'H'],
+    );
+    const step = segments.find((h) => h.splice_type === 'continuation');
+    assert.equal(step.enclosure_id, 'box-mid'); // the closure the fiber passes through
+    assert.equal(step.continues_from_cable_id, 'c5');
+    assert.equal(step.continues_to_cable_id, 'c5-B');
+    assert.equal(step.continues_to_cable_code, 'CBL-5-B');
+  });
+
+  test('a trace started on the downstream half walks back up through the box', async () => {
+    const segments = await traceFiber('H');
+    assert.deepEqual(
+      segments.map((h) => h.core_id ?? h.splice_type),
+      ['H', 'continuation', 'G'],
+    );
+  });
+
+  test('the continuation is priced as a fusion splice, not skipped', async () => {
+    const segments = await traceFiber('G');
+    const step = segments.find((h) => h.splice_type === 'continuation');
+    assert.equal(step.loss_db, null); // no reading recorded → planning default
+    const { calculateLossBudget } = require('../src/utils/lossBudget');
+    const budget = calculateLossBudget(segments);
+    const spliceEntry = budget.breakdown.find((e) => e.type === 'splice');
+    assert.equal(spliceEntry.loss_db, 0.1);
+    assert.equal(spliceEntry.box_id, 'box-mid');
+  });
+});
 
 describe('traceFiber', () => {
   test('traces endpoint → endpoint from the start of a chain (including branches)', async () => {

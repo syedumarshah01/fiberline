@@ -194,6 +194,100 @@ describe('analyzeImpact — direction', () => {
 
 // --- undirected fallback ----------------------------------------------------------
 
+describe('mid-span closures (a cable split in two by an inserted box)', () => {
+  /**
+   * Light does not stop at a closure that was inserted mid-span: the cable was
+   * cut into two rows and the fiber continues, core #n into core #n. The link
+   * between the halves is `cable.continues_cable_id`; without it the walk dead-
+   * ends inside the closure and nothing past it is reported.
+   */
+  const split = () => ({
+    enclosures: [
+      { id: 'olt', code: 'BOX-OLT', type: 'cabinet' },
+      { id: 'mid', code: 'BOX-MID', type: 'splice_closure' },
+      { id: 'nap', code: 'BOX-NAP', type: 'nap' },
+    ],
+    cables: [
+      { id: 'f1', code: 'CBL-F1', cable_type: 'feeder', from_enclosure_id: 'olt', to_enclosure_id: 'mid' },
+      { id: 'f1b', code: 'CBL-F1-B', cable_type: 'feeder', from_enclosure_id: 'mid', to_enclosure_id: 'nap', continues_cable_id: 'f1' },
+      { id: 'drop1', code: 'CBL-DROP-1', cable_type: 'drop', from_enclosure_id: 'nap', to_enclosure_id: null, customer_id: 'c1', customer_label: 'CUST-1' },
+    ],
+    cores: [
+      { id: 'f1c1', cable_id: 'f1', core_number: 1, status: 'spliced' },
+      { id: 'f1bc1', cable_id: 'f1b', core_number: 1, status: 'spliced' },
+      { id: 'drop1c1', cable_id: 'drop1', core_number: 1, status: 'terminated' },
+    ],
+    splices: [{ id: 's1', enclosure_id: 'nap', core_a_id: 'f1bc1', core_b_id: 'drop1c1' }],
+    splitters: [],
+    ports: [],
+    customers: [{ id: 'c1', customer_code: 'CUST-1' }],
+  });
+
+  test('failing the OLT reaches every customer past the inserted box', () => {
+    const impact = analyzeImpact({ ...split(), boxIds: ['olt'], rootCoreIds: ['f1c1'] });
+    assert.deepEqual(labels(impact), ['CUST-1']);
+    assert.equal(impact.affected.customer_count, 1);
+    // Both halves of the split cable, and the closure itself, are dark.
+    assert.deepEqual(impact.affected.cables.map((c) => c.code).sort(), ['CBL-DROP-1', 'CBL-F1', 'CBL-F1-B']);
+    assert.deepEqual(impact.affected.boxes.map((b) => b.code).sort(), ['BOX-MID', 'BOX-NAP', 'BOX-OLT']);
+  });
+
+  test('the customer path shows the closure the fiber passes through', () => {
+    const impact = analyzeImpact({ ...split(), boxIds: ['olt'], rootCoreIds: ['f1c1'] });
+    const [customer] = impact.affected.customers;
+    const kinds = customer.path_through_failure.map((i) => i.kind);
+    assert.deepEqual(kinds, ['fiber', 'continuation', 'fiber', 'splice', 'fiber']);
+    const step = customer.path_through_failure.find((i) => i.kind === 'continuation');
+    assert.equal(step.box_code, 'BOX-MID');
+    assert.equal(step.from_cable_code, 'CBL-F1');
+    assert.equal(step.to_cable_code, 'CBL-F1-B');
+  });
+
+  test('failing the inserted box itself takes everything downstream of it', () => {
+    const impact = analyzeImpact({ ...split(), boxIds: ['mid'], rootCoreIds: ['f1c1'] });
+    assert.deepEqual(labels(impact), ['CUST-1']);
+    assert.deepEqual(impact.affected.boxes.map((b) => b.code).sort(), ['BOX-MID', 'BOX-NAP']);
+  });
+
+  test('failing the NAP does not drag the upstream half into the outage', () => {
+    const impact = analyzeImpact({ ...split(), boxIds: ['nap'], rootCoreIds: ['f1c1'] });
+    assert.deepEqual(labels(impact), ['CUST-1']);
+    assert.deepEqual(impact.affected.boxes.map((b) => b.code), ['BOX-NAP']);
+    assert.deepEqual(impact.affected.cables.map((c) => c.code).sort(), ['CBL-DROP-1', 'CBL-F1-B']);
+  });
+
+  test('without the link the walk stops at the closure and says so', () => {
+    // Old data: the two halves exist but nothing joins them.
+    const unlinked = split();
+    unlinked.cables = unlinked.cables.map((c) =>
+      c.id === 'f1b' ? { ...c, continues_cable_id: null } : c,
+    );
+    const impact = analyzeImpact({ ...unlinked, boxIds: ['olt'], rootCoreIds: ['f1c1'] });
+    assert.equal(impact.affected.customer_count, 0);
+    assert.ok(impact.warnings.some((w) => /continues_cable_id/.test(w)));
+  });
+
+  test('a splitter downstream of the inserted box still counts its ports', () => {
+    const withSplitter = split();
+    withSplitter.cores = [
+      ...withSplitter.cores,
+      { id: 'drop2c1', cable_id: 'drop2', core_number: 1, status: 'terminated' },
+    ];
+    withSplitter.cables = [
+      ...withSplitter.cables,
+      { id: 'drop2', code: 'CBL-DROP-2', cable_type: 'drop', from_enclosure_id: 'nap', to_enclosure_id: null, customer_id: 'c2', customer_label: 'CUST-2' },
+    ];
+    withSplitter.splices = [];
+    withSplitter.splitters = [{ id: 'sp1', enclosure_id: 'nap', name: 'Tray A', input_core_id: 'f1bc1', split_count: 8 }];
+    withSplitter.ports = [
+      { id: 'p1', splitter_id: 'sp1', port_number: 1, output_core_id: 'drop1c1' },
+      { id: 'p2', splitter_id: 'sp1', port_number: 2, output_core_id: 'drop2c1' },
+    ];
+    const impact = analyzeImpact({ ...withSplitter, boxIds: ['olt'], rootCoreIds: ['f1c1'] });
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2']);
+  });
+});
+
 describe('customer attribution when the documentation is thin', () => {
   // A drop cable exists to reach one premises: its far end IS the customer,
   // even when nobody typed a label or marked the core terminated. The map

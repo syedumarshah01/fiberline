@@ -207,6 +207,19 @@ describe('pathText', () => {
     );
   });
 
+  it('shows the closure a cable passes through after a mid-span insert', () => {
+    assert.equal(
+      pathText([
+        { kind: 'fiber', cable_code: 'CBL-F1', core_number: 1 },
+        { kind: 'continuation', box_code: 'BOX-MID', from_cable_code: 'CBL-F1', to_cable_code: 'CBL-F1-B' },
+        { kind: 'fiber', cable_code: 'CBL-F1-B', core_number: 1 },
+        { kind: 'splice', box_code: 'BOX-NAP' },
+        { kind: 'fiber', cable_code: 'CBL-DROP-1', core_number: 1 },
+      ]),
+      'CBL-F1 #1 → through BOX-MID → CBL-F1-B #1 → splice @ BOX-NAP → CBL-DROP-1 #1',
+    );
+  });
+
   it('is empty for a missing path', () => {
     assert.equal(pathText(undefined), '');
     assert.equal(pathText([]), '');

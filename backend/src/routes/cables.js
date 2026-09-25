@@ -442,6 +442,10 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         core_count: cable.core_count,
         from_enclosure_id: enclosure.id,
         to_enclosure_id: cable.to_enclosure_id,
+        // The two halves are one fiber: core #n of the parent continues as
+        // core #n here. Without this, every trace that walks joints stops at
+        // the new box (see migration 20260101000014).
+        continues_cable_id: cable.id,
         customer_id: cable.customer_id,
         customer_label: cable.customer_label,
         status: cable.status,

@@ -1953,9 +1953,14 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                 </div>
               );
             }
+            const through = hop.splice_type === "continuation";
             return (
               <div className="empty-state loss-row" key={i}>
-                <span>↓ spliced ({hop.splice_type})</span>
+                <span>
+                  {through
+                    ? `↓ through ${hop.continues_to_cable_code || "the inserted closure"} (fusion splice)`
+                    : `↓ spliced (${hop.splice_type})`}
+                </span>
                 {budget && (
                   <span className={`loss-col ${lossEntryClass(hop)}`}>
                     <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>

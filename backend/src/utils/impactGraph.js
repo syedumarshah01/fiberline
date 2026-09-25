@@ -52,6 +52,11 @@ function push(map, key, value) {
   else map.set(key, [value]);
 }
 
+/** First value of a map-of-arrays entry (a cable has one downstream half at most). */
+function firstValue(map, key) {
+  return (map.get(key) || [])[0] ?? null;
+}
+
 function uniq(values) {
   return [...new Set(values)];
 }
@@ -82,6 +87,40 @@ function indexNetwork({
 
   const portsBySplitter = new Map();
   for (const port of ports) push(portsBySplitter, port.splitter_id, port);
+
+  const coresByCable = new Map();
+  for (const core of cores) push(coresByCable, core.cable_id, core);
+  const coreOnCable = (cableId, coreNumber) =>
+    cableId == null || coreNumber == null
+      ? null
+      : (coresByCable.get(cableId) || []).find((c) => c.core_number === coreNumber) || null;
+
+  // Mid-span splits: `child.continues_cable_id = parent.id` means the fiber
+  // physically runs on from the parent's core #n to the child's core #n, inside
+  // whatever closure sits between them. Indexed both ways so a walk can step
+  // across the box in either direction.
+  const continuationByChild = new Map();
+  for (const cable of cables) {
+    if (cable.continues_cable_id) continuationByChild.set(cable.id, cable.continues_cable_id);
+  }
+  const continuesByParent = new Map();
+  for (const [childId, parentId] of continuationByChild) {
+    push(continuesByParent, parentId, childId);
+  }
+
+  /**
+   * The core that continues `core` across a mid-span split, or null:
+   *   'down' — parent core → child core (following the light away from the OLT)
+   *   'up'   — child core  → parent core (how the light arrived)
+   * Cores pair by number, which is how the insert route builds them.
+   */
+  const continuationOf = (core, direction) => {
+    const cable = cableById.get(core.cable_id);
+    if (!cable) return null;
+    return direction === 'up'
+      ? coreOnCable(continuationByChild.get(cable.id), core.core_number)
+      : coreOnCable(firstValue(continuesByParent, cable.id), core.core_number);
+  };
 
   const spliceEdges = new Map();
   const downEdges = new Map();
@@ -155,6 +194,11 @@ function indexNetwork({
     spliceEdges,
     downEdges,
     upEdges,
+    // Mid-span splits (see continuationEdges)
+    continuationByChild,
+    continuesByParent,
+    continuationOf,
+    coreOnCable,
   };
 }
 
@@ -209,6 +253,7 @@ function orientLightPath(index, rootKeys, { maxNodes = DEFAULT_MAX_NODES } = {})
     const edges = [
       ...(index.spliceEdges.get(key) || []),
       ...(index.downEdges.get(key) || []),
+      ...continuationEdges(index, key),
     ];
     for (const edge of edges) {
       if (reached.has(edge.node)) continue;
@@ -223,6 +268,40 @@ function orientLightPath(index, rootKeys, { maxNodes = DEFAULT_MAX_NODES } = {})
   }
 
   return { reached, parents, children, depths, truncated };
+}
+
+/**
+ * The continuation edges of a node, as graph edges: a core whose cable runs on
+ * into another cable across a mid-span closure links to the same core number on
+ * the other side. Direction is the orientation's job, so both ways are listed
+ * here.
+ */
+function continuationEdges(index, key) {
+  if (keyKind(key) !== 'core') return [];
+  const core = index.coreById.get(keyId(key));
+  if (!core) return [];
+  const edges = [];
+  for (const direction of ['down', 'up']) {
+    const next = index.continuationOf(core, direction);
+    if (!next || next.id === core.id) continue;
+    const nextCable = index.cableById.get(next.cable_id);
+    edges.push({
+      node: coreKey(next.id),
+      via: {
+        type: 'continuation',
+        // The closure the fiber passes through — the box between the two
+        // halves is as dark as the cables on either side of it.
+        box_id:
+          direction === 'up'
+            ? index.cableById.get(core.cable_id)?.from_enclosure_id ?? null
+            : nextCable?.from_enclosure_id ?? null,
+        splice_id: null,
+        from_cable_id: core.cable_id,
+        to_cable_id: next.cable_id,
+      },
+    });
+  }
+  return edges;
 }
 
 /**
@@ -293,6 +372,11 @@ function floodUndirected(index, seeds, { maxNodes = DEFAULT_MAX_NODES } = {}) {
       ...(index.spliceEdges.get(key) || []),
       ...(index.downEdges.get(key) || []),
       ...(index.upEdges.get(key) || []),
+      // A mid-span split is a step along one fiber; never step back into the
+      // node we arrived from (that is the parent link, already recorded).
+      ...continuationEdges(index, key).filter(
+        (edge) => parents.get(key)?.node !== edge.node,
+      ),
     ];
     for (const edge of edges) {
       if (visited.has(edge.node)) continue;
@@ -435,6 +519,8 @@ function describeNode(index, key) {
 function describeVia(index, via) {
   if (!via) return null;
   const box = index.boxById.get(via.box_id) || null;
+  const fromCable = index.cableById.get(via.from_cable_id) || null;
+  const toCable = index.cableById.get(via.to_cable_id) || null;
   return {
     kind: via.type,
     splice_id: via.splice_id ?? null,
@@ -443,6 +529,11 @@ function describeVia(index, via) {
     port_number: via.port_number ?? null,
     box_id: box?.id ?? via.box_id ?? null,
     box_code: box?.code ?? null,
+    // For a mid-span continuation: the cable carrying on into the next one.
+    from_cable_id: fromCable?.id ?? null,
+    from_cable_code: fromCable?.code ?? null,
+    to_cable_id: toCable?.id ?? null,
+    to_cable_code: toCable?.code ?? null,
   };
 }
 
@@ -701,7 +792,9 @@ function analyzeImpact({
     if (unreachedCoreIds.length) {
       warnings.push(
         `${unreachedCoreIds.length} spliced/terminated core${unreachedCoreIds.length === 1 ? ' is' : 's are'} ` +
-          'not reachable from the network root — check for unspliced segments or a root set on the wrong box.',
+          'not reachable from the network root — check for unspliced segments, a root set on the ' +
+          'wrong box, or a mid-span closure whose two cable halves are not linked ' +
+          '(cables.continues_cable_id).',
       );
     }
   }

@@ -182,6 +182,9 @@ export function pathText(pathItems) {
       parts.push(`port${item.port_number != null ? ` ${item.port_number}` : ""}${where}`);
     } else if (item.kind === "splice") {
       parts.push(`splice${where}`);
+    } else if (item.kind === "continuation") {
+      // A closure inserted mid-span: the same fiber carries on through the box.
+      parts.push(`through ${item.box_code || "closure"}`);
     }
   }
   return parts.join(" → ");

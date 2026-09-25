@@ -23,6 +23,9 @@ const CABLE_FIELDS = [
   'id', 'code', 'name', 'cable_type',
   'from_enclosure_id', 'to_enclosure_id',
   'customer_id', 'customer_label',
+  // Mid-span splits: the downstream half of an inserted closure points at its
+  // parent cable, which is how the graph knows the fiber continues there.
+  'continues_cable_id',
 ];
 
 async function loadNetwork() {
