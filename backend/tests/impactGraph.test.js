@@ -256,33 +256,39 @@ describe('mid-span closures (a cable split in two by an inserted box)', () => {
     assert.deepEqual(impact.affected.cables.map((c) => c.code).sort(), ['CBL-DROP-1', 'CBL-F1-B']);
   });
 
-  test('without the link the walk stops at the closure and says so', () => {
-    // Old data: the two halves exist but nothing joins them.
+  test('without the link the walk stops at the closure, and the report says why', () => {
+    // Nothing joins the halves, and the app has no rule to fall back on here
+    // (the graph is built from rows, not from a query), so the walk stops — and
+    // the warning describes the shape it could not pair up.
     const unlinked = split();
     unlinked.cables = unlinked.cables.map((c) =>
       c.id === 'f1b' ? { ...c, continues_cable_id: null } : c,
     );
     const impact = analyzeImpact({ ...unlinked, boxIds: ['olt'], rootCoreIds: ['f1c1'] });
     assert.equal(impact.affected.customer_count, 0);
-    assert.ok(impact.warnings.some((w) => /continues_cable_id/.test(w)));
+    const unreached = impact.warnings.find((w) => /not reachable from the network root/.test(w));
+    assert.ok(unreached, JSON.stringify(impact.warnings));
+    assert.match(unreached, /could not pair up/);
+    assert.match(unreached, /-B/);
   });
 
-  test('the warning names the pair to link, so the fix is one UPDATE away', () => {
+  test('the warning names the pair, so a human can confirm it in one command', () => {
     const unlinked = split();
     unlinked.cables = unlinked.cables.map((c) =>
       c.id === 'f1b' ? { ...c, continues_cable_id: null } : c,
     );
     const impact = analyzeImpact({ ...unlinked, boxIds: ['olt'], rootCoreIds: ['f1c1'] });
 
-    const hint = impact.warnings.find((w) => /unlinked mid-span split/.test(w));
+    const hint = impact.warnings.find((w) => /not line up/.test(w));
     assert.ok(hint, `expected a named-pair warning, got: ${JSON.stringify(impact.warnings)}`);
     assert.match(hint, /CBL-F1-B ← CBL-F1/);
     assert.match(hint, /db:link-splits/);
+    assert.match(hint, /--child CODE --parent CODE/);
   });
 
   test('a split that IS linked produces no such hint', () => {
     const impact = analyzeImpact({ ...split(), boxIds: ['olt'], rootCoreIds: ['f1c1'] });
-    assert.equal(impact.warnings.some((w) => /unlinked mid-span split/.test(w)), false);
+    assert.equal(impact.warnings.some((w) => /not line up/.test(w)), false);
   });
 
   test('the hint stays quiet about pairs unrelated to the unreached cores', () => {
@@ -308,7 +314,7 @@ describe('mid-span closures (a cable split in two by an inserted box)', () => {
     ];
 
     const impact = analyzeImpact({ ...withBystander, boxIds: ['olt'], rootCoreIds: ['f1c1'] });
-    const hint = impact.warnings.find((w) => /unlinked mid-span split/.test(w)) || '';
+    const hint = impact.warnings.find((w) => /not line up/.test(w)) || '';
     assert.match(hint, /CBL-F1-B/, 'the split in the outage is named');
     assert.doesNotMatch(hint, /CBL-X1-B/, 'the unrelated spare pair is not');
   });

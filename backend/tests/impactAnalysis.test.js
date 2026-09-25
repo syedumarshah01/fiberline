@@ -150,6 +150,7 @@ function fakeDb(table) {
 // service opens by asking the schema probe which columns this database has.
 fakeDb.raw = async (sql) => {
   if (isSchemaProbe(sql)) return schemaProbeRows(true);
+  if (isInferenceQuery(sql)) return { rows: fakeDb.__inferredPairs || [] };
   if (typeof sql === 'string' && /available_cores/.test(sql)) {
     return { rows: CAPACITY_ROWS };
   }
@@ -160,7 +161,7 @@ fakeDb.raw = async (sql) => {
 const dbPath = require.resolve('../src/db');
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
 
-const { isSchemaProbe, schemaProbeRows } = require('./helpers/schema');
+const { isSchemaProbe, isInferenceQuery, schemaProbeRows } = require('./helpers/schema');
 const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
 beforeEach(() => resetSchemaCache());
 

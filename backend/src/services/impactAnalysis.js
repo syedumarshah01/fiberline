@@ -1,7 +1,8 @@
 const db = require('../db');
 const { buildGraph, getAvailableCoreCounts } = require('./capacityGraph');
-const { migrationHint } = require('../utils/schemaHint');
+const { migrationHint, isMissingColumnError } = require('../utils/schemaHint');
 const { schemaCapabilities } = require('../utils/schemaCapabilities');
+const { loadContinuationLinks } = require('../utils/continuationLinks');
 const {
   analyzeImpact,
   groupRestorationCandidates,
@@ -31,10 +32,10 @@ const CABLE_FIELDS = [
 ];
 
 async function loadNetwork() {
-  // A database that has not run migration 14 yet still gets a working failure
-  // simulation — it just cannot step across an inserted closure, so the column
-  // is left out of the SELECT and the gap is reported as a warning instead of
-  // failing the request.
+  // A database that has not run migration 14 still gets a working failure
+  // simulation: the column is left out of the SELECT and the mid-span links are
+  // inferred from cable naming instead (utils/continuationLinks.js), so a
+  // closure inserted mid-span is walked across either way.
   const capabilities = await schemaCapabilities();
 
   if (capabilities.has_cables === false) {
@@ -49,13 +50,63 @@ async function loadNetwork() {
     ? CABLE_FIELDS
     : CABLE_FIELDS.filter((field) => field !== 'continues_cable_id');
 
+  /**
+   * Load the network and decorate it with the mid-span links, for a given
+   * answer about the schema. Separate from the try/catch below because a stale
+   * answer gets one retry with the column left out (no migration required).
+   */
+  async function analyse(withCapabilities, withFields) {
+    const rows = await loadNetworkRows(withFields);
+    const links = await loadContinuationLinks({
+      capabilities: withCapabilities,
+      cables: rows.cables,
+    });
+
+    // Hand the graph the links in the shape it already understands. Whether they
+    // were recorded or inferred is reported separately, not hidden.
+    const cables = links.inferred
+      ? rows.cables.map((cable) =>
+          links.childToParent.has(cable.id)
+            ? { ...cable, continues_cable_id: links.childToParent.get(cable.id) }
+            : cable,
+        )
+      : rows.cables;
+
+    const schemaWarnings = withCapabilities.gaps
+      .filter((gap) => gap.severity !== 'notice')
+      .map((gap) => gap.message);
+    if (links.inferred && links.childToParent.size) {
+      schemaWarnings.push(
+        `${links.childToParent.size} mid-span cable link${links.childToParent.size === 1 ? '' : 's'} ` +
+          'inferred from cable naming (a downstream cable named "<upstream code>-B" starting ' +
+          'where the upstream one ends) — the results below already include them. To record ' +
+          'them so the report says so too, run "npm run db:schema" in backend/: it names the ' +
+          'step for this database.',
+      );
+    }
+
+    return { ...rows, cables, schema_warnings: schemaWarnings };
+  }
+
   try {
-    const rows = await loadNetworkRows(cableFields);
-    return { ...rows, schema_warnings: capabilities.gaps.map((gap) => gap.message) };
+    return await analyse(capabilities, cableFields);
   } catch (err) {
-    // Belt and braces: if the probe said the column exists but the read still
-    // fails on it (a migration applied between the two queries, a stale cache),
-    // say what to do rather than leaking Postgres' 42703.
+    // The probe said the column exists but a read just failed on it — a stale
+    // cached answer (it is cached per process) or a column dropped between the
+    // two queries. Re-ask, and if the column really is absent, do exactly what
+    // the app does on a database that never had it: leave it out of the SELECT
+    // and infer the mid-span links. No migration required either way.
+    if (isMissingColumnError(err, 'continues_cable_id')) {
+      const refreshed = await schemaCapabilities({ refresh: true });
+      if (!refreshed.columns.continues_cable_id) {
+        return analyse(
+          refreshed,
+          CABLE_FIELDS.filter((field) => field !== 'continues_cable_id'),
+        );
+      }
+    }
+    // Otherwise the database really does claim the column and the read still
+    // fails: say what to do rather than leaking Postgres' 42703.
     throw migrationHint(err, {
       column: 'continues_cable_id',
       migration: 'migration 20260101000014_cable_continuations.js',

@@ -11,13 +11,16 @@ const { validateCableData } = require("../middleware/validation");
 const { sanitizeAttenuationDbPerKm } = require("../utils/lossBudget");
 const { hasContinuationLinks } = require("../utils/schemaCapabilities");
 
-// Shown in the insert-enclosure response (and the UI alert) when the database
-// is missing cables.continues_cable_id.
+// Shown in the insert-enclosure response (and the UI alert) when the database is
+// missing cables.continues_cable_id. The split is still walkable — the app infers
+// the link from this naming convention — so this explains how the halves are
+// known, rather than warning that something is broken.
 const UNLINKED_SPLIT_WARNING =
-  "This database has no cables.continues_cable_id column, so the two halves of the " +
-  'split are not linked: run "npm run migrate" in backend/ to apply ' +
-  "20260101000014_cable_continuations.js, then set the link (or re-insert the " +
-  'enclosure). Until then, a failure simulation upstream of this new box will stop at it.';
+  "This database has no cables.continues_cable_id column, so the link between " +
+  'the two halves is not recorded. Failure simulation and fiber traces still ' +
+  'walk across it, by matching the downstream name "<upstream code>-B" and the ' +
+  'shared split box. Run "npm run db:schema" in backend/ when you want the link ' +
+  'recorded — it names the step for this database (migration 20260101000014).';
 const router = express.Router();
 
 // GET /api/cables — includes route as [ [lng,lat], [lng,lat] ] for map drawing
@@ -564,9 +567,10 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         live_cores: liveCores.length,
         pass_through_cores: passThroughCores.length,
         left_available_cores: plainAvailableCores.length,
-        // False means this database cannot record the parent/child link, so the
-        // downstream half is not yet joined to the upstream one.
+        // False means this database cannot record the parent/child link; the app
+        // falls back to inferring it from the naming convention.
         continuation_recorded: canLinkContinuation,
+        continuation_inferred: !canLinkContinuation,
       },
     });
   } catch (err) {

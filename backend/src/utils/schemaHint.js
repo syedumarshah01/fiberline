@@ -33,4 +33,19 @@ function migrationHint(err, { column, migration, feature }) {
   return hint;
 }
 
-module.exports = { migrationHint };
+/**
+ * Is this the error Postgres raises for a column this database genuinely does
+ * not have? Callers use it to decide whether to fall back to a schema-independent
+ * read before giving up (`impactAnalysis` re-probes and infers the mid-span links
+ * instead of demanding a migration).
+ */
+function isMissingColumnError(err, column) {
+  if (!err) return false;
+  const message = String(err.message || '');
+  const missingColumn =
+    err.code === '42703' ||
+    (new RegExp(`${column}\\b`).test(message) && /does not exist/i.test(message));
+  return missingColumn && new RegExp(column).test(message);
+}
+
+module.exports = { migrationHint, isMissingColumnError };

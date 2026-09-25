@@ -24,7 +24,22 @@ const KNOWN_COLUMNS = [
     column: 'continues_cable_id',
     migration: '20260101000014_cable_continuations.js',
     feature: 'Mid-span cable links',
-    disabled: 'failure simulation stops at an inserted closure, and the fiber trace does not step across one',
+    // Not a broken feature: without the column the links are inferred from the
+    // naming convention the insert route writes (utils/continuationLinks.js), so
+    // this is a notice about how the links are known, not a warning that they
+    // are missing. Callers can filter on `severity`.
+    severity: 'notice',
+    disabled:
+      'mid-span links are inferred from cable naming (a downstream cable named "<upstream code>-B" ' +
+      'starting where the upstream one ends) instead of being recorded',
+    // What to do about it. Deliberately not "run npm run migrate": on a database
+    // whose ledger already lists the migration, re-running it changes nothing,
+    // and pointing at the diagnostic is the one instruction that is always right.
+    remedy:
+      'Everything works. To record the links explicitly, run "npm run db:schema" in backend/ — ' +
+      'it names the exact step for this database (the column comes from ' +
+      '20260101000014_cable_continuations.js: migrate if it is still pending, or run the ALTER ' +
+      'it prints if the ledger already lists it).',
   },
 ];
 
@@ -89,6 +104,7 @@ async function probe(executor = db) {
       column: KNOWN_COLUMNS[0].column,
       migration: KNOWN_COLUMNS[0].migration,
       feature: KNOWN_COLUMNS[0].feature,
+      severity: 'warning',
       missing_table: true,
       message:
         'This database has no "cables" table — nothing has been migrated into it. ' +
@@ -110,10 +126,14 @@ async function probe(executor = db) {
     if (!has) {
       gaps.push({
         ...known,
+        severity: known.severity || 'warning',
         message:
-          `${known.feature} are off: this database has no ` +
-          `${known.table}.${known.column}, so ${known.disabled}. Run ` +
-          `"npm run migrate" in backend/ to apply ${known.migration}, then restart the API.`,
+          known.severity === 'notice'
+            ? `${known.feature}: this database has no ${known.table}.${known.column}, so ` +
+              `${known.disabled}. ${known.remedy || ''}`.trim()
+            : `${known.feature} are off: this database has no ` +
+              `${known.table}.${known.column}, so ${known.disabled}. Run ` +
+              `"npm run migrate" in backend/ to apply ${known.migration}, then restart the API.`,
       });
     }
   }

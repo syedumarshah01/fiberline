@@ -55,7 +55,10 @@ async function reportSchema() {
     if (!capabilities.gaps.length) return;
     console.warn('---');
     console.warn(`Schema check — database "${capabilities.database}" on ${capabilities.target}`);
-    for (const gap of capabilities.gaps) console.warn(`  ! ${gap.message}`);
+    for (const gap of capabilities.gaps) {
+      // ! for something broken, · for something the app is working around.
+      console.warn(`  ${gap.severity === 'notice' ? '·' : '!'} ${gap.message}`);
+    }
     console.warn('---');
   } catch (err) {
     // The database may simply not be up yet; the API is still listening and the

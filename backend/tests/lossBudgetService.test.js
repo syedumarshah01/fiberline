@@ -57,6 +57,7 @@ function run(q) {
     case 'splices':
       return SPLICES.filter((s) => s.core_a_id === q.coreId || s.core_b_id === q.coreId);
     case 'cables':
+      if (q.whereNotNullCol) return []; // no recorded mid-span links in this fixture
       return CABLES.filter((c) => (q.whereInVals || []).includes(c.id));
     case 'splitters':
       return SPLITTERS.filter((s) => (q.whereInVals || []).includes(s.input_core_id));
@@ -99,6 +100,9 @@ function fakeDb(table) {
       return b;
     },
     whereIn: (col, vals) => { q.whereInCol = col; q.whereInVals = vals; return b; },
+    // loadContinuationLinks asks for the recorded links this way; this fixture
+    // network has no mid-span splits, so it is an empty list.
+    whereNotNull: (col) => { q.whereNotNullCol = col; return b; },
     select: () => b,
     orderBy: () => b,
     returning: () => b,
@@ -113,13 +117,14 @@ function fakeDb(table) {
 // this database has (there are no mid-span splits in this fixture network).
 fakeDb.raw = async (sql) => {
   if (isSchemaProbe(sql)) return schemaProbeRows(true);
+  if (isInferenceQuery(sql)) return { rows: [] }; // no mid-span splits in this fixture
   throw new Error(`unexpected raw query in test stub: ${sql}`);
 };
 
 // Stub ../src/db in the require cache BEFORE loading the service.
 const dbPath = require.resolve('../src/db');
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
-const { isSchemaProbe, schemaProbeRows } = require('./helpers/schema');
+const { isSchemaProbe, isInferenceQuery, schemaProbeRows } = require('./helpers/schema');
 const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
 beforeEach(() => resetSchemaCache());
 const { buildLossBudget } = require('../src/services/lossBudget');

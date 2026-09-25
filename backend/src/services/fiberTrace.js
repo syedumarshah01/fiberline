@@ -1,6 +1,5 @@
 const db = require('../db');
-const { migrationHint } = require('../utils/schemaHint');
-const { hasContinuationLinks } = require('../utils/schemaCapabilities');
+const { loadContinuationLinks } = require('../utils/continuationLinks');
 
 /**
  * Given a starting fiber_core id, walk the chain of splices outward until it
@@ -27,10 +26,9 @@ async function traceFiber(startCoreId) {
   const segments = [];
 
   async function loadCoreWithCable(coreId) {
-    // Only ask for the mid-span link when the database has it — see
-    // utils/schemaCapabilities.js. Without it the trace works exactly as it did
-    // before mid-span continuations existed.
-    const withContinuations = await hasContinuationLinks();
+    // The cable row for the starting core. Mid-span linking is not read from
+    // here — it comes from utils/continuationLinks.js, which works with or
+    // without cables.continues_cable_id.
     const coreFields = [
       'fc.id as core_id', 'fc.core_number', 'fc.status as core_status',
       'c.id as cable_id', 'c.code as cable_code', 'c.name as cable_name',
@@ -39,26 +37,11 @@ async function traceFiber(startCoreId) {
       // attenuation → project default at calculation time).
       'c.length_m', 'c.attenuation_db_per_km',
     ];
-    if (withContinuations) {
-      // Mid-span splits: the downstream half of this cable, if any.
-      coreFields.push('c.continues_cable_id');
-    }
-
-    try {
-      return await db('fiber_cores as fc')
-        .join('cables as c', 'c.id', 'fc.cable_id')
-        .where('fc.id', coreId)
-        .select(...coreFields)
-        .first();
-    } catch (err) {
-      // A trace on a database that has not been migrated yet should say so
-      // instead of failing with `column c.continues_cable_id does not exist`.
-      throw migrationHint(err, {
-        column: 'continues_cable_id',
-        migration: 'migration 20260101000014_cable_continuations.js',
-        feature: 'Tracing a fiber',
-      });
-    }
+    return db('fiber_cores as fc')
+      .join('cables as c', 'c.id', 'fc.cable_id')
+      .where('fc.id', coreId)
+      .select(...coreFields)
+      .first();
   }
 
   // All splices touching a core, ordered deterministically so repeated traces
@@ -73,12 +56,6 @@ async function traceFiber(startCoreId) {
         { column: 'created_at', order: 'asc' },
         { column: 'id', order: 'asc' },
       ]);
-  }
-
-  /** The downstream half of a cable, if a closure was inserted mid-span. */
-  async function childCableOf(cableId) {
-    if (!(await hasContinuationLinks())) return null;
-    return db('cables').where({ continues_cable_id: cableId }).first();
   }
 
   /** The core with this number on that cable — how the two halves pair up. */
@@ -97,23 +74,27 @@ async function traceFiber(startCoreId) {
    */
   async function continuationStep(core, cameFromCoreId, taken) {
     if (!core.cable_id || !inService(core)) return null;
-    if (!(await hasContinuationLinks())) return null;
     const candidates = [];
 
-    const child = await childCableOf(core.cable_id); // downstream half
+    const childId = continuations.parentToChild.get(core.cable_id);
+    const child = childId ? continuations.byId.get(childId) : null;
     if (child) {
       candidates.push({
         cableId: child.id,
         cableCode: child.code,
+        // the closure the fiber passes through sits at the start of the child
         boxId: child.from_enclosure_id,
       });
     }
-    if (core.continues_cable_id) {
-      // upstream half — the closure is at the start of *this* cable
+
+    const parentId = continuations.childToParent.get(core.cable_id);
+    if (parentId) {
+      const parent = continuations.byId.get(parentId);
       candidates.push({
-        cableId: core.continues_cable_id,
-        cableCode: null,
-        boxId: core.from_enclosure_id,
+        cableId: parentId,
+        cableCode: parent?.code ?? null,
+        // …and at the end of the parent when walking the other way
+        boxId: parent?.to_enclosure_id ?? core.from_enclosure_id,
       });
     }
 
@@ -134,6 +115,11 @@ async function traceFiber(startCoreId) {
     }
     return null;
   }
+
+  // Mid-span links: recorded when the database has the column, inferred from
+  // cable naming when it does not (utils/continuationLinks.js) — either way the
+  // walk steps across an inserted closure instead of stopping inside it.
+  const continuations = await loadContinuationLinks();
 
   // Iterative DFS over the splice graph. The explicit stack keeps splice-marker
   // hops adjacent to the core they connect to, matching the original output

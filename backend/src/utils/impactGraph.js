@@ -835,13 +835,15 @@ function analyzeImpact({
       warnings.push(
         `${unreachedCoreIds.length} spliced/terminated core${unreachedCoreIds.length === 1 ? ' is' : 's are'} ` +
           'not reachable from the network root — check for unspliced segments, a root set on the ' +
-          'wrong box, or a mid-span closure whose two cable halves are not linked ' +
-          '(cables.continues_cable_id).',
+          'wrong box, or a mid-span closure whose two cable halves the app could not pair up ' +
+          '(downstream "<upstream code>-B", same box, same type and core count).',
       );
 
       // If the gap has a shape we recognise — a downstream cable named
-      // `<upstream>-B` starting where that cable ends, with no link recorded —
-      // name the pair. That turns a 500-line investigation into one UPDATE.
+      // `<upstream>-B` starting where that cable ends — name the pair. The links
+      // are already inferred from that naming rule before the walk, so a pair
+      // reaching here failed the geometric half of it: the two split points are
+      // more than 25 m apart, and only a human can say they are really one fiber.
       const candidates = unlinkedSplitCandidates(index, unreachedCoreIds);
       if (candidates.length) {
         const named = candidates
@@ -850,10 +852,10 @@ function analyzeImpact({
           .join(', ');
         const more = candidates.length > 3 ? ` (+${candidates.length - 3} more)` : '';
         warnings.push(
-          `${candidates.length} unlinked mid-span split${candidates.length === 1 ? '' : 's'} ` +
-            `match this: ${named}${more}. The downstream half is the same fiber as its ` +
-            'upstream half — run "npm run db:link-splits" in backend/ to see them, then ' +
-            '--apply to link them.',
+          `${candidates.length} mid-span split${candidates.length === 1 ? ' looks' : 's look'} ` +
+            `like one fiber but ${candidates.length === 1 ? 'does' : 'do'} not line up: ${named}${more}. If the halves are really the same ` +
+            'fiber, link one by hand — "npm run db:link-splits" in backend/ lists the ' +
+            'candidates it can confirm, and --child CODE --parent CODE links a pair outright.',
         );
       }
     }

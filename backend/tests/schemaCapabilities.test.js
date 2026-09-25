@@ -44,13 +44,26 @@ describe('probe', () => {
     assert.equal(result.database, 'fiber_network');
   });
 
-  test('reports the column as missing, with the migration to run', async () => {
+  test('reports the column as missing — as a notice, since the app works around it', async () => {
     const result = await probe(stubExecutor({ rows: [ROW_WITHOUT_COLUMN] }));
     assert.equal(result.columns.continues_cable_id, false);
     assert.equal(result.gaps.length, 1);
-    assert.match(result.gaps[0].message, /npm run migrate/);
-    assert.match(result.gaps[0].message, /20260101000014/);
-    assert.match(result.gaps[0].message, /failure simulation stops at an inserted closure/);
+
+    const gap = result.gaps[0];
+    // The feature is not off: the links are inferred from cable naming.
+    assert.match(gap.message, /inferred from cable naming/);
+    assert.equal(gap.severity, 'notice', 'a workaround, not a broken feature');
+    // …and the advice works on a database whose ledger already lists migration
+    // 14, where "run migrate" would do nothing. The diagnostic knows the ledger.
+    assert.match(gap.message, /npm run db:schema/);
+    assert.match(gap.message, /Everything works/);
+    assert.doesNotMatch(gap.message, /apply 20260101000014/);
+  });
+
+  test('the notice is not phrased as a failure', async () => {
+    const result = await probe(stubExecutor({ rows: [ROW_WITHOUT_COLUMN] }));
+    assert.doesNotMatch(result.gaps[0].message, /are off/);
+    assert.doesNotMatch(result.gaps[0].message, /stops at an inserted closure/);
   });
 
   test('a database with no tables says "nothing has been migrated", not "column missing"', async () => {

@@ -39,8 +39,12 @@ const MID_CABLES = {
 };
 
 // The schema probe (schemaCapabilities) asks through db.raw; this fixture's
-// database has the mid-span column unless a test says otherwise.
-fakeDb.raw = async () => schemaProbeRows(fakeDb.__continuationColumn !== false);
+// database has the mid-span column unless a test says otherwise. When it does
+// not, the links are inferred through the rule query instead.
+fakeDb.raw = async (sql) => {
+  if (isInferenceQuery(sql)) return { rows: fakeDb.__inferredPairs || [] };
+  return schemaProbeRows(fakeDb.__continuationColumn !== false);
+};
 
 function fakeDb(table) {
   if (table === 'splices') {
@@ -64,17 +68,28 @@ function fakeDb(table) {
     return builder;
   }
 
-  // Mid-span split lookups: db('cables').where({ continues_cable_id }) and
-  // db('fiber_cores').where({ cable_id, core_number }).
+  // db('cables'): the trace loads the mid-span links from here — every cable
+  // row, then (when the column exists) the recorded links.
   if (table === 'cables') {
-    const where = {};
+    const state = { where: {}, whereNotNull: null };
     const builder = {
-      where(arg) { Object.assign(where, arg); return builder; },
+      where(arg) { Object.assign(state.where, arg); return builder; },
+      whereNotNull(column) { state.whereNotNull = column; return builder; },
+      select() { return builder; },
       async first() {
-        if (!where.continues_cable_id) return null;
-        return Object.values(MID_CABLES).find(
-          (c) => c.continues_cable_id === where.continues_cable_id,
-        ) || null;
+        if (state.where.continues_cable_id) {
+          return Object.values(MID_CABLES).find(
+            (c) => c.continues_cable_id === state.where.continues_cable_id,
+          ) || null;
+        }
+        return null;
+      },
+      then(resolve, reject) {
+        const rows = Object.values(MID_CABLES);
+        const filtered = state.whereNotNull
+          ? rows.filter((row) => row[state.whereNotNull] != null)
+          : rows;
+        return Promise.resolve(filtered).then(resolve, reject);
       },
     };
     return builder;
@@ -109,7 +124,7 @@ const dbPath = require.resolve('../src/db');
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
 const { traceFiber } = require('../src/services/fiberTrace');
 const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
-const { schemaProbeRows } = require('./helpers/schema');
+const { schemaProbeRows, isInferenceQuery } = require('./helpers/schema');
 
 function hopIds(segments) {
   return segments.map((h) => h.core_id || h.splice_id);
@@ -150,16 +165,40 @@ describe('traceFiber across a mid-span (inserted) closure', () => {
 });
 
 describe('a trace on a database without the mid-span column', () => {
-  test('walks the splices and simply does not step across the closure', async () => {
+  test('still steps across the closure, using the inferred link', async () => {
+    // Migration 20260101000014 not applied: no column, so nothing is recorded.
+    // The rule query answers with the pair the insert route's naming convention
+    // describes, and the walk uses it exactly as it uses a recorded one.
     fakeDb.__continuationColumn = false;
+    fakeDb.__inferredPairs = [{ child_id: 'c5-B', parent_id: 'c5' }];
     resetSchemaCache();
     try {
       const segments = await traceFiber('G');
-      // Nothing crashes and the core itself is reported; the link simply is not
-      // there to follow (migration 20260101000014 has not been applied).
+      assert.deepEqual(
+        segments.map((h) => h.core_id ?? h.splice_type),
+        ['G', 'continuation', 'H'],
+        'the trace must not stop at the closure just because the link is inferred',
+      );
+      const step = segments.find((h) => h.splice_type === 'continuation');
+      assert.equal(step.continues_to_cable_id, 'c5-B');
+      assert.equal(step.enclosure_id, 'box-mid');
+    } finally {
+      delete fakeDb.__continuationColumn;
+      delete fakeDb.__inferredPairs;
+      resetSchemaCache();
+    }
+  });
+
+  test('and stops cleanly when nothing matches the rule', async () => {
+    fakeDb.__continuationColumn = false;
+    fakeDb.__inferredPairs = [];
+    resetSchemaCache();
+    try {
+      const segments = await traceFiber('G');
       assert.deepEqual(segments.map((h) => h.core_id ?? h.splice_type), ['G']);
     } finally {
       delete fakeDb.__continuationColumn;
+      delete fakeDb.__inferredPairs;
       resetSchemaCache();
     }
   });

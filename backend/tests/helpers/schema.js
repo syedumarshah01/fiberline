@@ -6,6 +6,9 @@
  */
 const PROBE = /information_schema\.columns/i;
 
+/** The mid-span inference rule (utils/continuationLinks.js) asks this way. */
+const INFERRED_PAIRS = /FROM cables AS child/i;
+
 /** Is this raw SQL the schema probe? */
 function isSchemaProbe(sql) {
   return PROBE.test(String(sql));
@@ -31,4 +34,17 @@ function emptyDatabaseProbeRows() {
   };
 }
 
-module.exports = { isSchemaProbe, schemaProbeRows, emptyDatabaseProbeRows };
+/**
+ * Is this raw SQL the mid-span inference rule? Answer it with
+ * `inferredPairs([{ child_id, parent_id }])` in the test's stub.
+ */
+function isInferenceQuery(sql) {
+  return INFERRED_PAIRS.test(String(sql));
+}
+
+module.exports = {
+  isSchemaProbe,
+  isInferenceQuery,
+  schemaProbeRows,
+  emptyDatabaseProbeRows,
+};

@@ -42,14 +42,34 @@ as it found it. Run `npm run migrate`; on a healthy database it changes nothing.
 
 (If you are in that state, `npm run db:schema` says so and points at `npm run migrate`.)
 
+### Mid-span links without the column (the inference fallback)
+
+`cables.continues_cable_id` is the recorded way to say "these two cable rows are one fiber".
+A database that does not have it — migration not applied, or the role cannot `ALTER` the
+table — used to leave the failure simulation stopping at an inserted closure. It does not
+any more: `src/utils/continuationLinks.js` falls back to **inferring** the links with the
+same rule migration 14's backfill and `npm run db:link-splits` use (downstream named
+`<upstream code>-B`, starting where the upstream one ends, same type and core count, split
+points within 25 m), and every consumer reads its links from there.
+
+Recorded links always win. With the column present the app never guesses: a `NULL` means
+"not a continuation". The fallback is only for a database that has no column at all, and
+when it finds links the outage report says so ("N mid-span cable links inferred from cable
+naming"). `npm run db:schema` names the step that records them on the database in front
+of you (migrate if the migration is pending; the `ALTER` if the ledger already claims it
+ran, which is the state where re-running `npm run migrate` changes nothing).
+
 The app does not fall over when the schema is behind. Each feature that needs a newer
 column checks for it first (`src/utils/schemaCapabilities.js`), drops it from its query
-when it is absent, and reports a warning naming the migration to run: the failure
-simulation keeps answering (it just cannot step across an inserted closure), the trace
-works the same, and the insert-enclosure route still cuts the cable but says the halves
-were not linked. The check is cached and re-run on a timer, so a server that is left
-running when you finally apply the migration picks the feature up by itself. The backend
-also prints the same warning at startup.
+when it is absent, and reports what is missing: a gap with `severity: 'warning'` is
+flagged `!` at startup and filtered into `warnings` on a report, while a gap the app can
+work around (`severity: 'notice'`, which is what the mid-span column is now) is printed
+with `·` and kept out of the warnings — for the mid-span
+column specifically, the failure simulation, the trace and the loss budget all keep
+walking across an inserted closure; there is nothing to switch off. The check is cached
+and re-run on a timer, so a server that is left running when you finally apply the
+migration notices by itself. The backend also prints the same lines at startup —
+`·` for a notice, `!` for something genuinely missing.
 
 ### Verifying a migration actually runs
 

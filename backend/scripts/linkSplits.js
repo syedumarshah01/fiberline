@@ -24,6 +24,7 @@
  */
 const path = require('path');
 const knexFactory = require('knex');
+const { inferredPairsSql } = require('../src/utils/continuationLinks');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -33,24 +34,18 @@ const ROOT = path.join(__dirname, '..');
  * the enclosures for context.
  */
 async function candidatePairs(knex) {
+  // The rule lives in src/utils/continuationLinks.js, where the app's inference
+  // fallback reads it from too — one definition of "these two halves are one
+  // fiber", so the listing can never disagree with what the app walks.
   const result = await knex.raw(`
-    SELECT child.id            AS child_id,
-           child.code          AS child_code,
-           parent.id           AS parent_id,
-           parent.code         AS parent_code,
-           child.core_count    AS core_count,
-           child.cable_type    AS cable_type,
-           e.code              AS at_box_code
-    FROM cables AS child
-    JOIN cables AS parent
-      ON parent.to_enclosure_id = child.from_enclosure_id
-     AND parent.cable_type = child.cable_type
-     AND parent.core_count = child.core_count
-     AND parent.id <> child.id
-     AND child.code = parent.code || '-B'
+    SELECT pairs.*,
+           child.code       AS child_code,
+           child.core_count AS core_count,
+           child.cable_type AS cable_type,
+           e.code           AS at_box_code
+    FROM (${inferredPairsSql({ childStillUnlinked: true })}) AS pairs
+    JOIN cables AS child ON child.id = pairs.child_id
     LEFT JOIN enclosures AS e ON e.id = child.from_enclosure_id
-    WHERE child.cable_type <> 'drop'
-      AND child.continues_cable_id IS NULL
     ORDER BY child.code
   `);
   return result?.rows ?? [];
@@ -152,10 +147,13 @@ async function main() {
 
   try {
     const hasColumn = await knex.schema.hasColumn('cables', 'continues_cable_id');
-    if (!hasColumn) {  // nothing can be linked without migration 14
+    if (!hasColumn) {  // a link has nowhere to be written
       console.error(
-        'This database has no cables.continues_cable_id column yet — nothing can be linked.\n' +
-          'Run "npm run migrate" first (migration 20260101000014 adds it and backfills).',
+        'This database has no cables.continues_cable_id column, so links cannot be recorded yet.\n' +
+          'The app still walks mid-span splits: without the column it infers them from cable\n' +
+          'naming, so a failure simulation already paints through an inserted closure.\n' +
+          'To record them properly, run "npm run migrate" (migrations 14 and 15 add the column\n' +
+          'and link what already exists).',
       );
       return 1;
     }

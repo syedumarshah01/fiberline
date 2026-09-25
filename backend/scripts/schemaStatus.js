@@ -97,11 +97,18 @@ async function main() {
       .select('column_name')).map((row) => row.column_name);
 
     const missing = KNOWN_COLUMNS.filter((known) => !columns.includes(known.column));
+    // A column the app can work around (severity 'notice') must not read like a
+    // broken schema — mid-span links are inferred from cable naming when
+    // cables.continues_cable_id is absent (src/utils/continuationLinks.js).
+    const optional = (known) => known.severity === 'notice';
+    const blockingMissing = missing.filter((known) => !optional(known));
     for (const known of KNOWN_COLUMNS) {
       const present = columns.includes(known.column);
-      console.log(
-        `  column: ${known.table}.${known.column} — ${present ? 'present' : 'MISSING'}`,
-      );
+      const state = present ? 'present' : optional(known) ? 'absent (optional)' : 'MISSING';
+      console.log(`  column: ${known.table}.${known.column} — ${state}`);
+    }
+    for (const known of missing.filter(optional)) {
+      console.log(`    note: ${known.disabled} — everything that walks a fiber uses them.`);
     }
 
     // Mid-span links: with the column in place, say how many splits are joined
@@ -129,27 +136,18 @@ async function main() {
       }
     }
 
-    if (!pending.length && !missing.length && !unlinkedPairs.length) {
-      console.log('\nSchema is current — nothing to do.');
-      return 0;
-    }
-
-    if (!missing.length && unlinkedPairs.length) {
-      // The schema is fine; the *data* still has splits the app cannot walk.
-      console.log(
-        '\nThe schema is up to date, but some cables are still not linked to their upstream half.',
-      );
-      console.log('Run "npm run db:link-splits" to see them, then add --apply to link them.');
-      return 1;
-    }
-
+    // Order matters for the exit code: a pending migration is a ledger fact worth
+    // exiting 1 for, even when the only thing missing is the optional column.
     if (pending.length) {
       console.log('\nFix: run "npm run migrate" in backend/, then restart the API.');
       console.log(
         '     If you already ran it, check that it used this same target ' +
           `(${describeTarget(config)}) — a different .env or NODE_ENV points at a different database.`,
       );
-    } else {
+      return 1;
+    }
+
+    if (blockingMissing.length) {
       // The ledger says applied but the column is not there: the migration was
       // recorded without its effect landing (an interrupted run, a restored
       // dump, or a hand-edited ledger). A recorded migration never runs again,
@@ -166,13 +164,52 @@ async function main() {
             '\nre-running the original one changes nothing.',
         );
       } else {
-        const migrations = missing.map((m) => m.migration).join(', ');
+        const migrations = blockingMissing.map((m) => m.migration).join(', ');
         console.log(
           `Re-apply the effect by hand, or drop the column and run "npm run migrate" again ` +
             `(${migrations}).`,
         );
       }
+      return 1;
     }
+
+    if (unlinkedPairs.length) {
+      // The schema is fine; the *data* still has splits that do not line up.
+      console.log(
+        '\nThe schema is up to date, but some cable halves still do not line up as one fiber.',
+      );
+      console.log('Run "npm run db:link-splits" to see them, then add --apply to link them.');
+      return 1;
+    }
+
+    if (missing.length) {
+      // Only optional columns are absent, and nothing is pending — so the ledger
+      // claims the migration that adds the column already ran. The app infers
+      // what it needs (src/utils/continuationLinks.js), which is why this is a
+      // note and not a non-zero exit; but re-running "npm run migrate" cannot
+      // help here, so it says what actually would.
+      console.log(
+        '\nSchema is current — nothing to do. One optional column is absent, and the app' +
+          '\nworks without it:',
+      );
+      for (const known of missing) {
+        console.log(`  ${known.table}.${known.column} — ${known.disabled}.`);
+      }
+      console.log(
+        '\nThe ledger says the migration that adds it ran, so "npm run migrate" would change' +
+          '\nnothing. To record the links by hand, add the column and link the halves:',
+      );
+      console.log(
+        '  ALTER TABLE cables ADD COLUMN IF NOT EXISTS continues_cable_id uuid' +
+          '\n    REFERENCES cables(id) ON DELETE SET NULL;',
+      );
+      console.log('  npm run db:link-splits -- --apply');
+      return 0;
+    }
+
+    console.log('\nSchema is current — nothing to do.');
+    return 0;
+
     return 1;
   } catch (err) {
     if (err.code === 'ECONNREFUSED') {
@@ -199,4 +236,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { migrationFiles, pendingMigrations, normalized };
+module.exports = { main, migrationFiles, pendingMigrations, normalized };

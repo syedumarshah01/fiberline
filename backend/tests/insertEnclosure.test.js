@@ -45,6 +45,18 @@ function table(tableName) {
   const run = async () => {
     // Fault injection for the unmigrated-database case.
     if (fakeDb.__failOnTable === tableName) throw fakeDb.__failError;
+    // …and for a probe that says the mid-span column is there while the table
+    // really does not have it: the SELECT that asks for it fails, 42703.
+    if (
+      fakeDb.__failOnCableSelect &&
+      tableName === 'cables' &&
+      state.columns.some((column) => String(column).endsWith('continues_cable_id'))
+    ) {
+      throw Object.assign(
+        new Error('column c.continues_cable_id does not exist'),
+        { code: '42703' },
+      );
+    }
     let rows = (store[tableName] || []).filter(matches);
     for (const { column, values } of state.whereIn || []) {
       rows = rows.filter((row) => values.includes(row[column]));
@@ -116,16 +128,52 @@ function fakeDb(tableName) {
 
 // `db.raw` is used for the cable-with-route load and for geography literals.
 fakeDb.raw = async (sql, params = []) => {
+  // Order matters: the inference rule and the route's cable-with-route load both
+  // mention "FROM cables", so the rule has to be recognised as a rule first.
+  if (isSchemaProbe(sql)) {
+    // Report continues_cable_id unless the test says this database predates
+    // migration 14. `__columnFlip` models a stale cached answer: the first probe
+    // (the cached one) says present, every later one says absent.
+    if (fakeDb.__unmigratedDatabase) return emptyDatabaseProbeRows();
+    if (fakeDb.__columnFlip) {
+      const first = (fakeDb.__probeCount || 0) === 0;
+      fakeDb.__probeCount = (fakeDb.__probeCount || 0) + 1;
+      return schemaProbeRows(first);
+    }
+    return schemaProbeRows(fakeDb.__continuationColumn !== false);
+  }
+
+  if (isInferenceQuery(sql)) {
+    // Stand-in for the SQL rule: pair each cable named "<upstream code>-B" that
+    // starts where the upstream one ends. Deliberately does NOT read
+    // continues_cable_id — on an unmigrated database it does not exist.
+    const rows = [];
+    for (const child of store.cables) {
+      if (!child.code?.endsWith('-B') || child.cable_type === 'drop') continue;
+      const parentCode = child.code.slice(0, -2);
+      const parent = store.cables.find(
+        (c) =>
+          c.code === parentCode &&
+          c.to_enclosure_id === child.from_enclosure_id &&
+          c.cable_type === child.cable_type,
+      );
+      if (parent) {
+        rows.push({
+          child_id: child.id,
+          child_code: child.code,
+          parent_id: parent.id,
+          parent_code: parent.code,
+        });
+      }
+    }
+    return { rows };
+  }
+
   if (/FROM cables/i.test(sql)) {
     const cable = (store.cables || []).find((c) => c.id === params[0]);
     return { rows: cable ? [cable] : [] };
   }
-  if (isSchemaProbe(sql)) {
-    // Report continues_cable_id unless the test says this database predates
-    // migration 14.
-    if (fakeDb.__unmigratedDatabase) return emptyDatabaseProbeRows();
-    return schemaProbeRows(fakeDb.__continuationColumn !== false);
-  }
+
   if (/available_cores/i.test(sql)) {
     // Free cores on any non-drop cable landing at the enclosure — the stand-in
     // for the grouping query capacityGraph issues.
@@ -142,6 +190,7 @@ fakeDb.raw = async (sql, params = []) => {
     });
     return { rows };
   }
+
   return { rows: [], sql, params };
 };
 fakeDb.fn = { now: () => new Date('2026-02-01T00:00:00Z') };
@@ -235,7 +284,7 @@ const { simulateFailure } = require('../src/services/impactAnalysis');
 // The schema probe caches its answer per process (a running server re-checks on
 // a timer), so each test starts from a clean slate.
 const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
-const { isSchemaProbe, schemaProbeRows, emptyDatabaseProbeRows } = require('./helpers/schema');
+const { isSchemaProbe, isInferenceQuery, schemaProbeRows, emptyDatabaseProbeRows } = require('./helpers/schema');
 
 let app;
 before(() => {
@@ -451,14 +500,18 @@ describe('a database that has not run migration 14 (the column is absent)', () =
 
     assert.equal(res.status, 201);
     assert.equal(res.body.summary.continuation_recorded, false);
-    assert.match(res.body.warnings.join(' '), /npm run migrate/);
+    assert.equal(res.body.summary.continuation_inferred, true);
+    assert.match(res.body.warnings.join(' '), /still/);
+    assert.match(res.body.warnings.join(' '), /npm run db:schema/);
     // The cut itself happened: upstream now ends at the new box, downstream exists.
     const mid = store.enclosures.find((e) => e.code === 'BOX-MID');
     assert.equal(store.cables.find((c) => c.id === 'f1').to_enclosure_id, mid.id);
     assert.ok(store.cables.find((c) => c.code === 'CBL-F1-B'));
   });
 
-  test('the failure simulation still answers — no 503 — and explains the gap', async () => {
+  test('the failure simulation still paints THROUGH the closure, by inference', async () => {
+    // The reported bug, on a database that never got the column: the red line
+    // must not stop at the inserted box just because the link is not recorded.
     freshStore();
     await insertMidSpanEnclosure();
     const downstream = store.cables.find((c) => c.code === 'CBL-F1-B');
@@ -467,12 +520,60 @@ describe('a database that has not run migration 14 (the column is absent)', () =
 
     const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
 
-    // It cannot walk across the closure (nothing links the halves), but it must
-    // not throw: the request answers, the upstream half is still reported, and
-    // the warning says exactly what to run.
-    assert.equal(impact.affected.boxes.map((b) => b.code).sort().includes('BOX-OLT'), true);
-    assert.match(impact.warnings.join(' '), /npm run migrate/);
-    assert.match(impact.warnings.join(' '), /continues_cable_id/);
+    assert.deepEqual(redCodes(impact), ['CBL-DROP-1', 'CBL-F1', 'CBL-F1-B'], 'both halves are dark');
+    assert.deepEqual(
+      impact.affected.boxes.map((b) => b.code).sort(),
+      ['BOX-MID', 'BOX-NAP', 'BOX-OLT'],
+      'including the box the fiber passes through',
+    );
+    assert.equal(impact.affected.customer_count, 1, 'and the customer behind it is counted');
+  });
+
+  test('...and says the links were inferred, not recorded', async () => {
+    freshStore();
+    await insertMidSpanEnclosure();
+    const downstream = store.cables.find((c) => c.code === 'CBL-F1-B');
+    connectDropTo(coreOf(downstream.id, 1));
+    pretendUnmigrated();
+
+    const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
+
+    const notice = impact.warnings.find((w) => /inferred from cable naming/.test(w));
+    assert.ok(notice, `expected an inference notice, got: ${JSON.stringify(impact.warnings)}`);
+    assert.match(notice, /already include them/);
+    assert.match(notice, /npm run db:schema/);
+    // It is a notice, not an alarm: the report above is complete and correct.
+    assert.equal(impact.affected.customer_count, 1);
+  });
+
+  test('a stale cached answer heals itself instead of demanding a migration', async () => {
+    freshStore();
+    await insertMidSpanEnclosure();
+    const downstream = store.cables.find((c) => c.code === 'CBL-F1-B');
+    connectDropTo(coreOf(downstream.id, 1));
+    // The API's cached probe answer says the column exists (a long-running
+    // process, a column dropped since), so the network load asks for it — and
+    // Postgres answers 42703. The app must re-probe, drop the column from the
+    // SELECT and infer the links, not hand the user a SQL error.
+    fakeDb.__columnFlip = true;
+    fakeDb.__failOnCableSelect = true;
+    resetSchemaCache();
+    try {
+      const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
+      assert.deepEqual(redCodes(impact), ['CBL-DROP-1', 'CBL-F1', 'CBL-F1-B']);
+      assert.equal(impact.affected.customer_count, 1);
+    } finally {
+      delete fakeDb.__columnFlip;
+      delete fakeDb.__probeCount;
+      delete fakeDb.__failOnCableSelect;
+      resetSchemaCache();
+    }
+  });
+
+  test('no inference notice when there is nothing to infer', async () => {
+    freshStore();
+    const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
+    assert.equal(impact.warnings.some((w) => /inferred from cable naming/.test(w)), false);
   });
 
   test('a database with no tables at all says so in one line', async () => {
@@ -525,10 +626,21 @@ describe('old data: a split made before the link existed', () => {
 
     const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
 
+    // This database HAS the column and the row says NULL — "not a continuation".
+    // That is a human decision, so the app does not overrule it by inference.
     assert.equal(impact.affected.customer_count, 0);
     assert.ok(
-      impact.warnings.some((w) => /continues_cable_id/.test(w)),
-      `expected the warning to point at the missing link, got: ${JSON.stringify(impact.warnings)}`,
+      impact.warnings.some((w) => /could not pair up/.test(w)),
+      `expected the warning to describe the pair it could not join, got: ${JSON.stringify(impact.warnings)}`,
+    );
+    assert.ok(
+      impact.warnings.some((w) => /CBL-F1-B ← CBL-F1/.test(w)),
+      'and to name the pair, so a human can confirm it in one command',
+    );
+    assert.equal(
+      impact.warnings.some((w) => /inferred from cable naming/.test(w)),
+      false,
+      'an explicit NULL is never overridden by inference',
     );
   });
 });
