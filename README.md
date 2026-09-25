@@ -20,6 +20,8 @@ npm run migrate
 npm run dev                # http://localhost:4000
 ```
 
+To start over with an empty database: `cd backend && npm run db:reset` (see `backend/README.md` for the lighter `--truncate` option and the manual equivalents).
+
 **2. Frontend**
 
 ```

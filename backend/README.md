@@ -8,6 +8,42 @@
 4. `npm install`
 5. `npm run migrate`
 
+## Starting over (empty database)
+
+```bash
+cd backend
+npm run db:reset                # wipe the schema, run all migrations
+npm run db:reset -- --truncate  # keep the schema + PostGIS, empty the data
+npm run db:reset -- --yes       # no confirmation prompt (scripts/CI)
+```
+
+`db:reset` drops and recreates the `public` schema (so the PostGIS extension and the
+migration ledger go too — migration `20260101000001` installs PostGIS again) and then runs
+`migrate:latest`. `--truncate` is the lighter option: it `TRUNCATE … CASCADE`s every table
+except `knex_migrations*`, keeping the schema, the extension and the migration history —
+use it when the app role has no right to `DROP`/`CREATE` a schema. Both print exactly which
+database they are about to empty and ask you to type `reset` first, and both refuse to run
+against a `NODE_ENV=production` config unless `ALLOW_PRODUCTION_RESET=1` is set.
+
+Doing it by hand instead (any one of these, then `npm run migrate`):
+
+```bash
+# drop the schema — same thing the script does
+psql -U postgres -d fiber_network -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+# or roll the migrations back (runs each migration's down(), then migrate again)
+npx knex migrate:rollback --all
+
+# or start from a brand-new database (also removes the PostGIS extension)
+dropdb -U postgres fiber_network && createdb -U postgres fiber_network
+```
+
+There is no seed data — everything is entered through the UI or the API. After a reset the
+first thing to do is declare the network root (`POST /api/headends {root_enclosure_id}`,
+or *Simulate failure* on the OLT box → *Set as the network root*), because outage analysis
+needs it to know which way downstream is. `npm run seed` currently has nothing to run: the
+`seeds/` directory does not exist yet.
+
 ## What's in this step
 
 Tables created, in dependency order:
