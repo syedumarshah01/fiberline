@@ -475,6 +475,29 @@ describe('worksheetText — the phone version', () => {
     assert.match(text, /Box closed and locked: {14}\[ \] yes/);
   });
 
+  test('counts one of something with the singular word, not "1 splices"', () => {
+    // The sheet is signed and handed over, so "1 splices" reads as a document
+    // nobody checked. One box with exactly one of each: every count must agree.
+    const bare = buildWorkOrder({
+      documentation: documentation({
+        summary: { total_cables: 1, total_cores: 1, spliced_cores: 1, available_cores: 0, damaged_cores: 0 },
+        cables_landing_here: [
+          {
+            cable: { id: 'c1', code: 'CBL-F1', cable_type: 'feeder', core_count: 1 },
+            direction: 'in',
+            cores: [core('k1', 1, 'spliced')],
+          },
+        ],
+        splices: [documentation().splices[0]],
+        splitters: [{ id: 'sp1', name: 'Tray A', input_core_id: 'k1', ports: [{ port_number: 1, output_core_id: null }] }],
+      }),
+    });
+    const text = worksheetText(bare);
+    assert.match(text, /^1 cable · 1 fibre · 1 splice · 1 splitter$/m);
+    assert.match(text, /^1 free splitter port$/m);
+    assert.ok(!/1 (cables|fibres|splices|splitters)/.test(text), 'no "1 splices" style count');
+  });
+
   test('a splice with no reading says so instead of printing "null dB"', () => {
     const bare = buildWorkOrder({
       documentation: documentation({ splices: [{ ...documentation().splices[0], loss_db: null, tray_position: null }] }),

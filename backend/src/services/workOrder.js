@@ -522,12 +522,24 @@ function worksheetText(order) {
   if (order.work_order.generated_by) lines.push(`For ${order.work_order.generated_by}`);
   lines.push(rule);
   const s = order.summary;
+  // A printed sheet that says "1 splices" reads as a template nobody looked at,
+  // so give the count its right word - the sheet is a document somebody signs.
+  const count = (n, singular, plural) => `${n} ${n === 1 ? singular : plural}`;
   lines.push(
-    `${s.cables} cables · ${s.cores} fibres · ${s.splices} splices · ${s.splitters} splitters`,
+    [
+      count(s.cables, 'cable', 'cables'),
+      count(s.cores, 'fibre', 'fibres'),
+      count(s.splices, 'splice', 'splices'),
+      count(s.splitters, 'splitter', 'splitters'),
+    ].join(' · '),
   );
-  if (s.free_splitter_ports) lines.push(`${s.free_splitter_ports} free splitter port(s)`);
-  if (s.damaged_cores) lines.push(`${s.damaged_cores} damaged fibre(s)`);
-  if (s.bad_splices) lines.push(`${s.bad_splices} splice(s) over the loss limit`);
+  if (s.free_splitter_ports) {
+    lines.push(count(s.free_splitter_ports, 'free splitter port', 'free splitter ports'));
+  }
+  if (s.damaged_cores) lines.push(count(s.damaged_cores, 'damaged fibre', 'damaged fibres'));
+  if (s.bad_splices) {
+    lines.push(`${count(s.bad_splices, 'splice', 'splices')} over the loss limit`);
+  }
   const plan = order.install_plan;
   if (plan) {
     lines.push('');
@@ -585,7 +597,8 @@ function worksheetText(order) {
     lines.push(thin);
     for (const group of landing) {
       const arrow = group.direction === 'in' ? 'IN ' : group.direction === 'out' ? 'OUT' : '·  ';
-      lines.push(`  ${arrow} ${group.cable.code} (${group.cable.cable_type}, ${group.cable.core_count} fibres)`);
+      const coreCount = `${group.cable.core_count} fibre${group.cable.core_count === 1 ? '' : 's'}`;
+      lines.push(`  ${arrow} ${group.cable.code} (${group.cable.cable_type}, ${coreCount})`);
       for (const core of group.cores) {
         const far = core.far_endpoint?.connection && core.far_endpoint.connection !== 'free'
           ? ` ← ${core.far_endpoint.label}${core.far_endpoint.enclosure_code ? ` at ${core.far_endpoint.enclosure_code}` : ''}`
