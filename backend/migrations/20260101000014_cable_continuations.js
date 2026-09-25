@@ -44,43 +44,67 @@ exports.up = async function (knex) {
   //   * same cable type and core count (the insert copies both),
   //   * the child was left with the name the insert route gives it by default
   //     (`<parent code>-B`),
-  //   * exactly ONE parent candidate matches (no guessing between two),
+  //   * exactly one parent can match at all — cables.code is UNIQUE, and the
+  //     candidate's code must be exactly `<child code>` minus the `-B`, so
+  //     there is no second candidate to choose between,
   //   * if both routes have geometry, the split points are within 25 m of each
   //     other — the two halves really are the same span.
+  //
+  // Because cables.code is UNIQUE and the parent's code must be exactly
+  // `<child code>` minus `-B`, at most one parent row can match: the UPDATE
+  // cannot fan out, so no COUNT/MIN "exactly one candidate" guard is needed.
+  // (The first version of this migration used COUNT(*) = 1 with MIN(p.id), and
+  // Postgres has no min()/max() aggregate for uuid — `npm run migrate` died with
+  // "function min(uuid) does not exist" on every database that already had
+  // cables. The guard was unnecessary machinery; it is gone.)
   //
   // A cable whose downstream code was chosen by hand cannot be recovered this
   // way; re-inserting it, or setting cables.continues_cable_id by hand, is the
   // fix. Splits made from now on are recorded exactly, not guessed.
-  const linked = await knex.raw(`
-    UPDATE cables AS child
-    SET continues_cable_id = m.parent_id
-    FROM (
-      SELECT c.id AS child_id, MIN(p.id) AS parent_id, COUNT(*) AS candidates
-      FROM cables c
-      JOIN cables p
-        ON p.to_enclosure_id = c.from_enclosure_id
-       AND p.cable_type = c.cable_type
-       AND p.core_count = c.core_count
-       AND p.id <> c.id
-       AND c.code = p.code || '-B'
-       AND (
-         p.route IS NULL
-         OR c.route IS NULL
-         OR ST_DWithin(
-              p.route,
-              ST_StartPoint(c.route::geometry)::geography,
-              25
-            )
-       )
-      WHERE c.cable_type <> 'drop'
-        AND c.continues_cable_id IS NULL
-      GROUP BY c.id
-      HAVING COUNT(*) = 1
-    ) AS m
-    WHERE child.id = m.child_id
-  `);
+  //
+  // The backfill is also deliberately subordinate to the column itself: it runs
+  // inside a savepoint, so if this heuristic ever fails on someone's data, the
+  // column and index still land (the part the code actually needs) and the
+  // failure is reported as a warning instead of a broken upgrade.
+  let count = 0;
+  try {
+    const linked = await knex.transaction(async (trx) => {
+      return trx.raw(`
+        UPDATE cables AS child
+        SET continues_cable_id = parent.id
+        FROM cables AS parent
+        WHERE parent.to_enclosure_id = child.from_enclosure_id
+          AND parent.cable_type = child.cable_type
+          AND parent.core_count = child.core_count
+          AND parent.id <> child.id
+          AND child.code = parent.code || '-B'
+          AND child.cable_type <> 'drop'
+          AND child.continues_cable_id IS NULL
+          AND (
+            parent.route IS NULL
+            OR child.route IS NULL
+            OR ST_DWithin(
+                 parent.route,
+                 ST_StartPoint(child.route::geometry)::geography,
+                 25
+               )
+          )
+      `);
+    });
+    count = linked?.rowCount ?? 0;
+  } catch (err) {
+    console.warn('');
+    console.warn('  ! Could not link the mid-span splits that already exist:');
+    console.warn(`      ${err.message}`);
+    console.warn('    The column was added, so any new split records its link exactly.');
+    console.warn('    To retry this backfill, re-run just this migration:');
+    console.warn('      npx knex migrate:down 20260101000014_cable_continuations.js');
+    console.warn('      npm run migrate');
+    console.warn('    (it only touches cables.continues_cable_id IS NULL), or set the');
+    console.warn('    links by hand.');
+    console.warn('');
+  }
 
-  const count = linked?.rowCount ?? 0;
   if (count) {
     // Visible in the migrate output so a silent heuristic is never assumed.
     console.log(`  linked ${count} mid-span split(s) to their upstream cable`);

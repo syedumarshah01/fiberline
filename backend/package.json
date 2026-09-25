@@ -13,7 +13,8 @@
     "db:truncate": "node scripts/resetDb.js --truncate",
     "seed": "knex seed:run",
     "test": "node --test",
-    "db:schema": "node scripts/schemaStatus.js"
+    "db:schema": "node scripts/schemaStatus.js",
+    "test:migrations": "node --test tests/migrationSql.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

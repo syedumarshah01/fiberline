@@ -35,6 +35,25 @@ were not linked. The check is cached and re-run on a timer, so a server that is 
 running when you finally apply the migration picks the feature up by itself. The backend
 also prints the same warning at startup.
 
+### Verifying a migration actually runs
+
+The unit tests swap the database for a stub, so they cannot catch a migration whose SQL
+is wrong — and migration 14 shipped one (`MIN(p.id)`; Postgres has no `min()` for uuid),
+which broke `npm run migrate` on every database that already had cables. To run the real
+migration against a real database:
+
+```bash
+cd backend
+TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/fiber_network \
+  npm run test:migrations
+```
+
+It creates a `fiberline_migration_test` schema, builds a small network in it, runs the
+migration, checks what it linked (and what it refused to link), checks a second run
+changes nothing, drops the schema — so pointing it at your real database is safe. It
+works with or without PostGIS. Without `TEST_DATABASE_URL` the file still runs its static
+checks (no aggregates over uuid ids, the backfill is guarded) and skips the rest.
+
 ## Starting over (empty database)
 
 ```bash
