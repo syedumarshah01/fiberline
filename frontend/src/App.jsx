@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import MapView from "./components/MapView.jsx";
 import MapViewGoogle from "./components/MapViewGoogle.jsx";
 import MapViewMapbox from "./components/MapViewMapbox.jsx";
 import LeftPanel from "./components/LeftPanel.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import { parseDeepLink, syncLocation } from "./utils/deepLink.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
 import { impactOverlay, overlayHeadline, failureTitle } from "./utils/impactOverlay.js";
@@ -93,6 +94,10 @@ export default function App() {
     return localStorage.getItem("fiberline-theme") || "dark";
   });
   
+  // A scanned QR code lands here with `?box=…` (or pole/cable/customer). State
+  // for what was requested, so it opens once the network has loaded.
+  const [qrNotice, setQrNotice] = useState(null);
+
   // Resizable right panel state
   const [rightPanelWidth, setRightPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
@@ -122,6 +127,48 @@ export default function App() {
   useEffect(() => {
     reloadAll();
   }, [reloadAll]);
+
+  /**
+   * Open whatever a scanned tag asked for. Runs when the network finishes
+   * loading (and once more if the target arrives late), because a QR link is
+   * often the very first request this browser ever made to the app.
+   *
+   * A tag whose thing has since been deleted says so instead of opening an empty
+   * panel — the sticker on the pole outlives the records.
+   */
+  const deepLink = useRef(parseDeepLink(typeof window === "undefined" ? "" : window.location.search));
+  useEffect(() => {
+    const target = deepLink.current;
+    if (!target) return;
+    const table = { pole: poles, box: enclosures, cable: cables, customer: customers }[target.kind] || [];
+    if (!table.length) return; // still loading
+    const match = table.find((row) => String(row.id) === String(target.id));
+    if (!match) {
+      setQrNotice(`That ${target.kind === "box" ? "box" : target.kind} (${target.id.slice(0, 8)}…) is not in this network any more.`);
+      deepLink.current = null;
+      return;
+    }
+    if (target.kind === "pole") handleSelectPole(match);
+    else if (target.kind === "box") handleSelectEnclosure(match);
+    else if (target.kind === "cable") handleSelectCable(match);
+    else {
+      // A customer's tag lives on their drop: what a technician needs from it is
+      // the box serving them, so open that box and say why.
+      const serving = enclosures.find((enc) => String(enc.id) === String(match.enclosure_id));
+      if (serving) {
+        handleSelectEnclosure(serving);
+        setQrNotice(`${match.code ? `${match.code} — ` : ""}served from ${serving.code}.`);
+        deepLink.current = null;
+        return;
+      }
+      setQrNotice(`Customer ${match.code || match.id.slice(0, 8)} has no box recorded.`);
+      deepLink.current = null;
+      return;
+    }
+    setQrNotice(null);
+    deepLink.current = null; // open it once, not on every reload
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poles, enclosures, cables, customers]);
 
   // Save theme preference
   useEffect(() => {
@@ -274,6 +321,7 @@ export default function App() {
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("pole", pole?.id);
   }
 
   function handleSelectEnclosure(enc) {
@@ -283,6 +331,7 @@ export default function App() {
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("box", enc?.id);
   }
 
   function handleSelectCable(cable) {
@@ -292,6 +341,7 @@ export default function App() {
     setSelectedEnclosure(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("cable", cable?.id);
   }
 
   async function handleCreatePole(data) {
@@ -545,6 +595,13 @@ export default function App() {
         </label>
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>
+
+      {qrNotice && (
+        <div className="qr-notice">
+          <span>{qrNotice}</span>
+          <button className="btn" onClick={() => setQrNotice(null)}>Dismiss</button>
+        </div>
+      )}
 
       <div className="main-flex">
         <div className="panel left">

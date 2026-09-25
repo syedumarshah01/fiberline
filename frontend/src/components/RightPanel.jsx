@@ -3,6 +3,8 @@ import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
 import ImpactPanel from "./ImpactPanel.jsx";
+import WorkOrderSheet from "./WorkOrderSheet.jsx";
+import QrLabelSheet from "./QrLabelSheet.jsx";
 import {
   OLT_TYPE_LABELS,
   formatDb,
@@ -89,7 +91,7 @@ function getFiberColorName(coreNumber) {
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
-function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCable }) {
+function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCable, onOpenWorksheet, onOpenQrTag }) {
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -485,6 +487,22 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             style={{ padding: "4px 12px", fontSize: 12 }}
           >
             Refresh
+          </button>
+          <button
+            className="btn"
+            onClick={() => onOpenWorksheet?.(doc.enclosure)}
+            title="Generate a printable splice checklist from this box's documentation"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            Work order
+          </button>
+          <button
+            className="btn"
+            onClick={() => onOpenQrTag?.(doc.enclosure)}
+            title="Print a QR sticker that opens this box's documentation when scanned"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            QR tag
           </button>
           <button
             className="btn"
@@ -2183,8 +2201,49 @@ export default function RightPanel({
         ? { kind: "pole", id: selectedPole.id, label: selectedPole.code }
         : null;
 
+  // Field work, for whatever is selected: a sticker that opens this thing's
+  // documentation when scanned, and (for a box) the splice worksheet.
+  const [qrTarget, setQrTarget] = useState(null);
+  const [worksheetFor, setWorksheetFor] = useState(null);
+
   return (
     <>
+      {qrTarget && (
+        <QrLabelSheet
+          kind={qrTarget.kind}
+          id={qrTarget.id}
+          label={qrTarget.label}
+          onClose={() => setQrTarget(null)}
+        />
+      )}
+      {worksheetFor && (
+        <WorkOrderSheet
+          boxId={worksheetFor.id}
+          boxCode={worksheetFor.label}
+          onClose={() => setWorksheetFor(null)}
+        />
+      )}
+
+      {failureTarget && mode === "view" && (
+        <div className="field-kit">
+          <button
+            className="btn"
+            onClick={() => setQrTarget(failureTarget)}
+            title={`Print a QR sticker for ${failureTarget.label} — scanning it opens the documentation`}
+          >
+            QR tag
+          </button>
+          {failureTarget.kind === "box" && (
+            <button
+              className="btn"
+              onClick={() => setWorksheetFor(failureTarget)}
+              title="A printable splice checklist generated from this box's documentation"
+            >
+              Splice worksheet
+            </button>
+          )}
+        </div>
+      )}
       {impact || impactLoading || impactError ? (
         <ImpactPanel
           impact={impact}
@@ -2217,6 +2276,8 @@ export default function RightPanel({
           onChanged={onChanged}
           onDeleteEnclosure={onDeleteEnclosure}
           onHoverCable={onHoverCable}
+          onOpenWorksheet={(box) => setWorksheetFor({ id: box.id, label: box.code })}
+          onOpenQrTag={(box) => setQrTarget({ kind: "box", id: box.id, label: box.code })}
         />
       )}
 

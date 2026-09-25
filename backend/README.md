@@ -285,4 +285,14 @@ Run with `npm run dev` (after `npm run migrate`). Base URL: `http://localhost:40
 - `GET /capacity/find-source?enclosureId=X` — BFS outward from a full box to the nearest one with spare cores, returning the path of cables to splice through
 - `GET /capacity/customer-lookup?lat=&lng=&radius=500` — nearby boxes sorted by real distance (PostGIS), which one (if any) has capacity, and if none do, the suggested source box via the same graph search
 
+**Field work — worksheets and QR tags:**
+
+- `GET /work-orders/:boxId` — a splice worksheet generated from that box's documentation: `work_order` (reference `WO-<code>-<YYYYMMDD>`, kind, generated-by), `summary` counts, `checklist` (each item carrying its `source` rule, so a line on the sheet can always be explained), `materials` (counted across the rules), `splices`, and the fibres landing in the box with their far ends. `?kind=splice|repair|survey` and `?by=<name>` are printed on the sheet. **It is derived, never invented** — the rules are `re-splice` (recorded loss over `BAD_SPLICE_LOSS_DB`), `damaged-core`, `free-splitter-port`, `splitter-input`, `missing-loss`, `through-joint` (mid-span pairs meeting here, recorded or inferred), and `spare-cores` (information, not a step), followed by four fixed close-out steps. A rule that throws becomes one warning line on the sheet: an unreadable table must not cost a technician the whole worksheet.
+- `GET /work-orders/:boxId/text` — the same sheet as plain text (`text/plain`, wrapped to 80 columns): tick boxes, materials, splices on record, every fibre with its far end, and a sign-off block. For a phone, a chat message, or `lp`.
+- `GET /qr/svg?data=<text>&ec=M&scale=6&quiet=4` — any text as an SVG QR code (400 without data, 413 when the text is over the level's capacity; scale clamped 1–40, quiet zone 0–16).
+- `GET /qr/:kind/:id` (or `:id.svg`) — a tag for a real pole, box, cable or customer (`kind` = `pole|box|enclosure|cable|customer`; 404 for an entity that does not exist, 400 for an unknown kind). JSON carries `link`, `code`, `svg` and the resolved `base_url`; `.svg` returns the image, and `?download=1` makes it an attachment.
+- `GET /qr/:kind/:id/link` — just the label and the link.
+
+The link inside a tag is the frontend's deep link (`<base>/?box=<uuid>`, `?pole=`, `?cable=`, `?customer=`), and the base is resolved `?base=` → `APP_BASE_URL` → the request origin. The encoder (`src/utils/qr.js`) has no dependencies: byte mode, versions 1–10, L/M/Q/H, ISO penalty scoring, `toSvg()` drawing a single path with the quiet zone included.
+
 Next step: the React + Leaflet frontend — the actual map where you place poles, draw cables, and click into box documentation.

@@ -13,6 +13,8 @@ const capacityRouter = require('./routes/capacity');
 const settingsRouter = require('./routes/settings');
 const impactRouter = require('./routes/impact');
 const headendsRouter = require('./routes/headends');
+const qrRouter = require('./routes/qr');
+const workOrdersRouter = require('./routes/workOrders');
 const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
 app.use(cors());
@@ -31,6 +33,10 @@ app.use('/api/capacity', capacityRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/impact', impactRouter);
 app.use('/api/headends', headendsRouter);
+// Field work: QR tags that open a box's documentation, and the worksheet a
+// technician works through inside it.
+app.use('/api/qr', qrRouter);
+app.use('/api/work-orders', workOrdersRouter);
 // Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err);
