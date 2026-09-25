@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   FAILURE_COLOR,
+  customerTitle,
+  customerNote,
   impactOverlay,
   overlayHeadline,
   failureTitle,
@@ -146,6 +148,34 @@ describe('impactBoxState', () => {
 
   it('is inert without a simulation', () => {
     assert.deepEqual(impactBoxState('b', null), { dark: false, failed: false });
+  });
+});
+
+describe('customerTitle / customerNote', () => {
+  it('uses the label when there is one', () => {
+    assert.equal(customerTitle({ customer_label: 'CUST-7', source: 'documented' }), 'CUST-7');
+    assert.equal(customerNote({ customer_label: 'CUST-7' }), '');
+  });
+
+  it('names an inferred leg instead of leaving the row blank', () => {
+    assert.equal(
+      customerTitle({ customer_label: null, cable_code: 'CBL-DROP-9', source: 'drop' }),
+      'Unlabelled drop on CBL-DROP-9',
+    );
+    assert.equal(
+      customerTitle({ customer_label: null, cable_code: 'CBL-X', source: 'customer_box' }),
+      'Customer box on CBL-X',
+    );
+    assert.equal(
+      customerTitle({ customer_label: null, cable_code: 'CBL-Y', source: 'terminated' }),
+      'Unlabelled termination on CBL-Y',
+    );
+  });
+
+  it('explains why an unnamed leg counts', () => {
+    assert.match(customerNote({ customer_label: null, source: 'drop' }), /drop cable exists to reach one premises/);
+    assert.match(customerNote({ customer_label: null, source: 'customer_box' }), /lands in a customer box/);
+    assert.equal(customerNote(null), '');
   });
 });
 

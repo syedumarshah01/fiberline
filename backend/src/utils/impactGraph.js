@@ -511,25 +511,76 @@ function buildPath(index, parents, targetKey, { orientation = null, failureBoxId
  * carrying a `customer_id` / `customer_label`, and a core marked `terminated`
  * (patched to equipment at a box, which may or may not have a label).
  */
+/**
+ * Is this core carrying light to somewhere it ends?
+ *
+ * `terminated` means the strand ends at a premise or equipment; `spliced` means
+ * it is part of the live chain. `available` is a spare, `reserved` is held for a
+ * future customer, `damaged` is broken — none of those serve anybody, so a
+ * multi-fiber drop's unused strands never inflate the outage count.
+ */
+function inService(core) {
+  return core.status === 'terminated' || core.status === 'spliced';
+}
+
+/**
+ * Does this core end inside a customer's own box? The app creates those as
+ * `terminal` enclosures ("Add customer box" → CUST-BOX-…), so a lit core
+ * landing in one is that customer's leg even if nobody labelled the drop.
+ */
+function landsAtCustomerBox(index, core) {
+  if (!inService(core)) return false;
+  const cable = index.cableById.get(core.cable_id);
+  if (!cable) return false;
+  for (const boxId of [cable.from_enclosure_id, cable.to_enclosure_id]) {
+    if (boxId && index.boxById.get(boxId)?.type === 'terminal') return true;
+  }
+  return false;
+}
+
+/**
+ * Who does this core serve, if anyone?
+ *
+ * A core is a customer leg when any of these is true:
+ *   1. the cable carries a `customer_id` or `customer_label` — documented premise;
+ *   2. the core is `terminated` — the strand ends at a premise/equipment;
+ *   3. the cable is a *drop* and the core is in service — a drop cable exists for
+ *      no other reason than to reach one premise, and `to_enclosure_id` is null
+ *      by design, so the premise is the far end by definition;
+ *   4. the core lands in a `terminal` customer box.
+ *
+ * (3) and (4) exist because documentation is not always filled in: without them
+ * the map paints a drop red while the panel insists nobody is affected, which is
+ * worse than an unattributed entry — an unknown customer is still a customer.
+ */
 function servedCustomer(index, core) {
   const cable = index.cableById.get(core.cable_id) || null;
   const customerId = cable?.customer_id ?? null;
   const label = cable?.customer_label ?? null;
+  const isDrop = cable?.cable_type === 'drop';
   const terminated = core.status === 'terminated';
-  if (!customerId && !label && !terminated) return null;
+  const inferred = !customerId && !label && ((isDrop && inService(core)) || landsAtCustomerBox(index, core));
+  if (!customerId && !label && !terminated && !inferred) return null;
 
   const known = customerId ? index.customerById.get(customerId) : null;
   const key = customerId
     ? `customer:${customerId}`
     : label
       ? `label:${label}`
-      : `core:${core.id}`;
+      // One drop cable reaches one premises, so its lit strands are one
+      // customer, not one per strand.
+      : isDrop
+        ? `drop:${cable.id}`
+        : `core:${core.id}`;
   return {
     key,
     customer_id: customerId,
     customer_label: label || known?.customer_code || null,
     customer_name: known?.name || null,
     unnamed: !customerId && !label,
+    // How we decided this is a customer: 'documented' (label/customer record),
+    // 'terminated' / 'drop' / 'customer_box' (inferred from the network shape).
+    source: customerId || label ? 'documented' : terminated ? 'terminated' : isDrop ? 'drop' : 'customer_box',
     core_id: core.id,
     core_number: core.core_number ?? null,
     cable_id: cable?.id ?? null,
@@ -862,6 +913,8 @@ function groupRestorationCandidates(customers = [], sourcesByPatchBox = {}) {
         customer_label: c.customer_label,
         customer_id: c.customer_id ?? null,
         customer_name: c.customer_name ?? null,
+        // How the customer was identified, so the UI can name an unlabelled leg.
+        source: c.source ?? null,
         core_id: c.core_id,
         cable_code: c.cable_code ?? null,
         serving_box_code: c.serving_box_code ?? null,

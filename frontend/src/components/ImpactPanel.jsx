@@ -1,5 +1,5 @@
 import React from "react";
-import { failureTitle, pathText } from "../utils/impactOverlay.js";
+import { failureTitle, pathText, customerTitle, customerNote } from "../utils/impactOverlay.js";
 
 /**
  * The outage report for a simulated failure: who is dark, how their light used
@@ -88,7 +88,7 @@ function RestorationOption({ option }) {
       </div>
       {option.restorable_customers?.length > 0 && (
         <div className="sub">
-          {option.restorable_customers.map((c) => c.customer_label).join(", ")}
+          {option.restorable_customers.map((c) => customerTitle(c)).join(", ")}
           {option.restorable_count > option.restorable_customers.length && " …"}
         </div>
       )}
@@ -187,9 +187,9 @@ export default function ImpactPanel({
       ) : (
         <>
           {customers.map((customer) => (
-            <details key={customer.core_id || customer.customer_label} className="impact-customer">
+            <details key={customer.key || customer.core_id} className="impact-customer">
               <summary>
-                <span className="code">{customer.customer_label}</span>
+                <span className="code">{customerTitle(customer)}</span>
                 {customer.customer_name ? <span className="sub"> · {customer.customer_name}</span> : null}
                 <span className="sub">
                   {" "}· {customer.hops ?? 0} hop{customer.hops === 1 ? "" : "s"} below the
@@ -198,6 +198,9 @@ export default function ImpactPanel({
                 </span>
               </summary>
               <div className="sub">Path: {pathText(customer.path_through_failure) || "—"}</div>
+              {customerNote(customer) && (
+                <div className="sub impact-inferred">{customerNote(customer)}</div>
+              )}
               {customer.patch_box_code && (
                 <div className="sub">Re-splice at {customer.patch_box_code}</div>
               )}
@@ -211,8 +214,9 @@ export default function ImpactPanel({
           )}
           {affected.unnamed_count > 0 && (
             <p className="empty-state">
-              Plus {affected.unnamed_count} terminated core
-              {affected.unnamed_count === 1 ? "" : "s"} with no customer record.
+              {affected.unnamed_count} of them have no customer record on file — they are
+              counted from the network itself (a lit strand in a drop cable, a core landing in
+              a customer box, or a terminated strand), and a label on the drop would name them.
             </p>
           )}
         </>

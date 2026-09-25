@@ -194,6 +194,94 @@ describe('analyzeImpact — direction', () => {
 
 // --- undirected fallback ----------------------------------------------------------
 
+describe('customer attribution when the documentation is thin', () => {
+  // A drop cable exists to reach one premises: its far end IS the customer,
+  // even when nobody typed a label or marked the core terminated. The map
+  // already paints such a drop red, so it has to be counted — otherwise the
+  // panel claims "nobody is affected" while a customer's drop is dark.
+  test('a lit, unlabelled drop core is still a customer down', () => {
+    const thin = {
+      ...NET,
+      cores: CORES.map((c) =>
+        c.id === 'drop2c1' ? { ...c, status: 'spliced' } : c,
+      ),
+      cables: CABLES.map((c) =>
+        c.id === 'drop2' ? { ...c, customer_id: null, customer_label: null } : c,
+      ),
+    };
+    const impact = analyzeImpact({ ...thin, boxIds: ['b'], rootCoreIds: ROOT_CORES });
+    assert.equal(impact.affected.customer_count, 3); // CUST-1, CUST-3 + the unnamed drop
+    assert.equal(impact.affected.unnamed_count, 1);
+    const unnamed = impact.affected.customers.find((c) => c.unnamed);
+    assert.equal(unnamed.cable_code, 'CBL-DROP-2');
+    assert.equal(unnamed.source, 'drop');
+  });
+
+  test('an unused spare strand in that same drop is not a second customer', () => {
+    const withSpare = {
+      ...NET,
+      cores: [
+        ...CORES,
+        { id: 'drop1c2', cable_id: 'drop1', core_number: 2, status: 'available' },
+        { id: 'drop3c2', cable_id: 'drop3', core_number: 2, status: 'available' },
+      ],
+    };
+    // Those spares are part of the failure surface (their cables land at the
+    // failed box / hang off the cascade), but they serve nobody.
+    const impact = analyzeImpact({ ...withSpare, boxIds: ['b'], rootCoreIds: ROOT_CORES });
+    assert.equal(impact.affected.customer_count, 3);
+    assert.equal(impact.affected.unnamed_count, 0);
+  });
+
+  test('one drop cable is one customer, however many strands are lit', () => {
+    const twinStrand = {
+      ...NET,
+      cores: [
+        ...CORES,
+        { id: 'drop1c2', cable_id: 'drop1', core_number: 2, status: 'spliced' },
+      ],
+      splices: [
+        ...SPLICES,
+        { id: 's7', enclosure_id: 'b', core_a_id: 'd1c2', core_b_id: 'drop1c2', splice_type: 'fusion' },
+      ],
+    };
+    const impact = analyzeImpact({ ...twinStrand, boxIds: ['b'], rootCoreIds: ROOT_CORES });
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2', 'CUST-3']);
+  });
+
+  test('a lit core landing in a customer box counts even without a drop cable', () => {
+    const direct = {
+      ...NET,
+      enclosures: [
+        ...BOXES,
+        { id: 'custbox', code: 'CUST-BOX-1', name: null, type: 'terminal' },
+      ],
+      cables: [
+        ...CABLES,
+        { id: 'direct', code: 'CBL-DIRECT', cable_type: 'distribution', from_enclosure_id: 'b', to_enclosure_id: 'custbox', customer_id: null, customer_label: null },
+      ],
+      cores: [
+        ...CORES,
+        { id: 'directc1', cable_id: 'direct', core_number: 1, status: 'spliced' },
+      ],
+      splices: [
+        ...SPLICES,
+        { id: 's8', enclosure_id: 'b', core_a_id: 'd1c1', core_b_id: 'directc1', splice_type: 'fusion' },
+      ],
+    };
+    const impact = analyzeImpact({ ...direct, boxIds: ['b'], rootCoreIds: ROOT_CORES });
+    assert.equal(impact.affected.customer_count, 4);
+    const inferred = impact.affected.customers.find((c) => c.cable_code === 'CBL-DIRECT');
+    assert.equal(inferred.source, 'customer_box');
+    assert.equal(inferred.serving_box_code, 'BOX-B');
+  });
+
+  test('a documented customer keeps its label, and says so', () => {
+    const impact = impactFor({ boxIds: ['b'] });
+    assert.equal(impact.affected.customers.find((c) => c.customer_label === 'CUST-1').source, 'documented');
+  });
+});
+
 describe('analyzeImpact — no root configured', () => {
   test('without a headend the analysis says so and over-reports', () => {
     const impact = analyzeImpact({ ...NET, boxIds: ['b'] });

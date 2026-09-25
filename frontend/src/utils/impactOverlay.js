@@ -117,6 +117,49 @@ export function customersBehind(boxId, overlay) {
 }
 
 /**
+ * What to call an affected customer leg.
+ *
+ * Documented premises carry a label; legs the analysis inferred from the
+ * network itself (a lit strand in a drop cable, a core landing in a customer
+ * box) have none. A blank row would read as "nobody", so name what it is and
+ * which cable it is on.
+ */
+export function customerTitle(customer) {
+  if (!customer) return "";
+  if (customer.customer_label) return customer.customer_label;
+  if (customer.customer_name) return customer.customer_name;
+  const cable = customer.cable_code ? ` on ${customer.cable_code}` : "";
+  switch (customer.source) {
+    case "customer_box":
+      return `Customer box${cable}`;
+    case "terminated":
+      return `Unlabelled termination${cable}`;
+    case "drop":
+      return `Unlabelled drop${cable}`;
+    default:
+      return `Unlabelled customer${cable}`;
+  }
+}
+
+/**
+ * Why this leg counts as a customer, when it has no label to prove it. Empty
+ * for properly documented customers.
+ */
+export function customerNote(customer) {
+  if (!customer || customer.customer_label || customer.customer_name) return "";
+  switch (customer.source) {
+    case "customer_box":
+      return "no customer record, but a lit core lands in a customer box";
+    case "drop":
+      return "no customer record, but a drop cable exists to reach one premises";
+    case "terminated":
+      return "no customer record, but the strand is marked terminated";
+    default:
+      return "no customer record on this leg";
+  }
+}
+
+/**
  * The path a customer's light used to take, as a readable chain:
  * "CBL-D1 → splitter @ BOX-B → CBL-DROP-1".
  */

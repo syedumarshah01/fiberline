@@ -985,3 +985,9 @@ code, .mono { font-family: var(--font-mono); }
 .impact-option { cursor: default; }
 .impact-actions { display: flex; gap: 8px; margin-top: 12px; }
 .impact-simulate { margin-bottom: 16px; }
+/* A customer the analysis inferred rather than read from a label — kept muted
+   so it never looks like a data problem, just an unnamed leg. */
+.impact-inferred {
+  color: var(--amber);
+  font-style: italic;
+}
