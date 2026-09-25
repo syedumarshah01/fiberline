@@ -192,7 +192,7 @@ export default function MapViewGoogle({
                 : isSelected || isHighlighted
                   ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
                   : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-              strokeOpacity: dark ? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
+              strokeOpacity: dark ? dark.opacity ?? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
               strokeDashArray: dark
                 ? dark.dash.join(",")
                 : hasSplicedCores && !isHighlighted

@@ -14,6 +14,9 @@ export const FAILURE_COLOR = "#ef5350";
 export const EMPTY_OVERLAY = Object.freeze({
   active: false,
   darkCableIds: new Set(),
+  // Spans that lost *some* of their fibres: one cable is many fibres, and an
+  // outage that darkens 1 of 12 must not read as a span that is gone.
+  partialCableIds: new Set(),
   darkBoxIds: new Set(),
   failureCableIds: new Set(),
   failureBoxIds: new Set(),
@@ -31,13 +34,16 @@ export function impactOverlay(impact) {
   const failure = impact.failure || {};
 
   // The response carries the affected boxes/cables as detail objects; accept a
-  // plain id list too so the same helper works with slimmer payloads.
+  // plain id list too so the same helper works with slimmer payloads (a slim
+  // payload has no core counts, so every cable in it reads as fully out).
   const boxIds = affected.boxes?.length
     ? affected.boxes.map((box) => box.id)
     : affected.box_ids || [];
-  const cableIds = affected.cables?.length
-    ? affected.cables.map((cable) => cable.id)
-    : affected.cable_ids || [];
+  const cableDetails = affected.cables?.length ? affected.cables : null;
+  const cableIds = cableDetails ? cableDetails.map((cable) => cable.id) : affected.cable_ids || [];
+  const partialCableIds = cableDetails
+    ? cableDetails.filter((cable) => cable.partially_dark).map((cable) => cable.id)
+    : [];
 
   const customersByBox = {};
   for (const customer of affected.customers || []) {
@@ -46,9 +52,11 @@ export function impactOverlay(impact) {
     customersByBox[boxId] = (customersByBox[boxId] || 0) + 1;
   }
 
+  const partial = new Set(partialCableIds);
   return {
     active: true,
-    darkCableIds: new Set(cableIds),
+    darkCableIds: new Set(cableIds.filter((id) => !partial.has(id))),
+    partialCableIds: partial,
     darkBoxIds: new Set(boxIds),
     failureCableIds: new Set(failure.cable_ids || []),
     failureBoxIds: new Set(failure.box_ids || []),
@@ -72,9 +80,14 @@ export function overlayHeadline(impact) {
   // The response carries both the detail arrays and the id lists; either is
   // enough to count, so accept whichever one is present.
   const boxes = affected.boxes?.length ?? affected.box_ids?.length ?? 0;
-  const cables = affected.cables?.length ?? affected.cable_ids?.length ?? 0;
+  const details = affected.cables?.length ? affected.cables : null;
+  const partial = details ? details.filter((cable) => cable.partially_dark).length : 0;
+  const cables = details
+    ? details.length - partial
+    : affected.cables?.length ?? affected.cable_ids?.length ?? 0;
   if (boxes) parts.push(plural(boxes, "box"));
   if (cables) parts.push(plural(cables, "cable"));
+  if (partial) parts.push(`${partial} partly out`);
   return parts.join(" · ");
 }
 
@@ -92,10 +105,13 @@ export function impactCableStyle(cableId, overlay) {
   if (!overlay?.active) return null;
   const isFailure = overlay.failureCableIds.has(cableId);
   const isDark = overlay.darkCableIds.has(cableId);
-  if (!isFailure && !isDark) return null;
-  return isFailure
-    ? { color: FAILURE_COLOR, weight: 7, opacity: 1, dash: [5, 3], animated: false }
-    : { color: FAILURE_COLOR, weight: 5, opacity: 1, dash: [12, 5], animated: false };
+  // Partly out: the span still carries light on its other fibres, so it is drawn
+  // as a thin broken line rather than as a span that is gone.
+  const isPartial = overlay.partialCableIds?.has(cableId);
+  if (!isFailure && !isDark && !isPartial) return null;
+  if (isFailure) return { color: FAILURE_COLOR, weight: 7, opacity: 1, dash: [5, 3], animated: false };
+  if (isDark) return { color: FAILURE_COLOR, weight: 5, opacity: 1, dash: [12, 5], animated: false };
+  return { color: FAILURE_COLOR, weight: 3, opacity: 0.55, dash: [2, 7], animated: false };
 }
 
 /** `{ dark, failed }` for a box marker. */

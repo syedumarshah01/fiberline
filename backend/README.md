@@ -44,18 +44,43 @@ as it found it. Run `npm run migrate`; on a healthy database it changes nothing.
 
 ### What "dark" means in a failure simulation
 
-A report paints what the failure actually darkened, not everything it is attached
-to (`src/utils/impactGraph.js`). The failed element and everything the light
-*below* it can no longer reach is dark; the span that feeds the failed element is
-not — it still carries light up to the break — and neither is a branch that only
-shares an upstream box. So failing a mid-span joint reddens the joint, the half
-below it and its customers, not the whole route back to the OLT. The exception is
-the headend's own box (`rootBoxIds`): that is where the light is injected, so
-failing it takes everything down.
+The whole analysis is built on one primitive, `reachableKeys()` in
+`src/utils/impactGraph.js`: **everything the light can reach from the headend's
+root cores.** Light travels splices (either way — a splice is physically
+bidirectional), splitter ports (input → output only: light never flows backwards
+through a splitter) and mid-span continuations, and it does not pass through
+anything that failed:
 
-Direction comes from the headend root. Without one there is no upstream to
-reason about, so the walk goes both ways from the failure point and the report
-says it may include the feeding span and branches that are still lit.
+- a joint inside a failed box is gone, so an edge whose joint sits in one of the
+  failed boxes is not traversable — this is what stops a walk at an inserted
+  closure or a dead cabinet;
+- a fibre on a failed cable is cut: nothing enters it, so every core of that cable
+  is dark; a *root* on a failed cable is still where light is injected, but the
+  light is not followed out of it, because the app does not know where along the
+  span the break is;
+- a root whose own box failed is not a source at all (`rootBoxIds` — the headend's
+  enclosure): that is the light source going out, and everything goes dark.
+
+`analyzeImpact` asks that question twice — before the failure and after it — and
+everything that had light and no longer does is the outage. Three consequences
+worth knowing:
+
+- **the feeding span stays lit.** A cut cable is dark together with everything
+  behind it, but the cable that fed it still carries light up to the break, and
+  so does the box it came from;
+- **a second path keeps a fibre lit.** Reachability is a graph walk, not a walk of
+  the BFS tree, so a fibre fed from two places (a ring, a dual-homed box, a core
+  patched twice) is not reported when only one of its paths is cut. The tree is
+  only used to read paths off;
+- **cables are counted per fibre.** `affected.cables[].cores_dark` /
+  `cores_in_service` and `partially_dark` say how much of a span is out, and
+  `affected.partial_cable_count` totals it: an outage that darkens 1 of a cable's
+  12 fibres is partly out, not gone, and the map styles it that way. Spares
+  (`available`/`reserved`) never count as lost fibres.
+
+Direction comes from the headend root. Without one there is no upstream to reason
+about, so the walk goes both ways from the failure point and the report says it
+may include the feeding span and branches that are still lit.
 
 ### Mid-span links without the column (the inference fallback)
 

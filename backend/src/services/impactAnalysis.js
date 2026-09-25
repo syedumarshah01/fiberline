@@ -385,6 +385,7 @@ async function simulateFailure({
       unnamed_terminations: analysis.affected.unnamed_count,
       affected_boxes: analysis.affected.boxes.length,
       affected_cables: analysis.affected.cables.length,
+      partially_dark_cables: analysis.affected.partial_cable_count,
       affected_cores: analysis.affected.core_count,
       restoration_options: restoration.candidates.length,
     },

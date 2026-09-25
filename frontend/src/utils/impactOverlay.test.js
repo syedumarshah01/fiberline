@@ -49,6 +49,22 @@ const IMPACT_DETAIL = {
   },
 };
 
+/** A response where one span lost some of its fibres and another is gone. */
+const IMPACT_PARTIAL = {
+  failure: { kind: 'cable', id: 'ca', label: 'CBL-A', box_ids: [], cable_ids: ['ca'] },
+  affected: {
+    customer_count: 1,
+    partial_cable_count: 1,
+    boxes: [{ id: 'nap', code: 'BOX-NAP', is_failure: false }],
+    cables: [
+      { id: 'ca', code: 'CBL-A', is_failure: true, cores_dark: 1, cores_in_service: 1 },
+      { id: 'x', code: 'CBL-X', is_failure: false, cores_dark: 1, cores_in_service: 2, partially_dark: true },
+      { id: 'drop1', code: 'CBL-DROP-1', is_failure: false, cores_dark: 1, cores_in_service: 1 },
+    ],
+    customers: [{ customer_label: 'CUST-1', serving_box_id: 'nap', hops: 2, path_through_failure: [] }],
+  },
+};
+
 describe('impactOverlay', () => {
   it('is inactive when nothing is simulated', () => {
     const overlay = impactOverlay(null);
@@ -62,6 +78,35 @@ describe('impactOverlay', () => {
     assert.deepEqual([...overlay.darkBoxIds].sort(), ['b', 'c']);
     assert.deepEqual(overlay.darkCableIds.has('d1'), true);
     assert.equal(overlay.darkCableIds.has('unrelated'), false);
+  });
+
+  it('separates spans that lost some fibres from spans that are out', () => {
+    const overlay = impactOverlay(IMPACT_PARTIAL);
+    assert.deepEqual([...overlay.darkCableIds].sort(), ['ca', 'drop1']);
+    assert.deepEqual([...overlay.partialCableIds], ['x']);
+  });
+
+  it('draws a partly-out span as a thin broken line, not as a dead span', () => {
+    const overlay = impactOverlay(IMPACT_PARTIAL);
+    const gone = impactCableStyle('drop1', overlay);
+    const partial = impactCableStyle('x', overlay);
+    assert.ok(partial, 'a partly-out cable is still styled');
+    assert.equal(partial.color, FAILURE_COLOR);
+    assert.ok(partial.weight < gone.weight, 'lighter than a span that is out');
+    assert.ok(partial.opacity < 1, 'and translucent');
+    assert.notDeepEqual(partial.dash, gone.dash);
+  });
+
+  it('says how many spans are partly out, without counting them as dark', () => {
+    const headline = overlayHeadline(IMPACT_PARTIAL);
+    assert.match(headline, /2 cables/);
+    assert.match(headline, /1 partly out/);
+  });
+
+  it('treats every cable in a slim payload as fully out (no core counts there)', () => {
+    const overlay = impactOverlay(IMPACT);
+    assert.equal(overlay.partialCableIds.size, 0);
+    assert.equal(overlay.darkCableIds.size, 3);
   });
 
   it('counts customers per serving box for marker badges', () => {

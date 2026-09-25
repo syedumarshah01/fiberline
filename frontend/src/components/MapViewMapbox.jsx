@@ -174,7 +174,7 @@ export default function MapViewMapbox({
           : isSelected || isHighlighted
             ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
             : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-        "line-opacity": dark ? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
+        "line-opacity": dark ? dark.opacity ?? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
       };
       // An empty dash array is invalid — only set it when spliced cores exist
       // (or when the cable is dark, which is drawn dashed itself).

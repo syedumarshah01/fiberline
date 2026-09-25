@@ -130,6 +130,10 @@ export default function ImpactPanel({
   const customers = affected.customers || [];
   const candidates = impact.upstream_reroute_candidates || [];
   const warnings = impact.warnings || [];
+  // One cable is many fibres: a span that lost some of them is counted (and
+  // drawn) apart from one that is gone.
+  const cablesPartlyOut = affected.cables?.filter((cable) => cable.partially_dark).length ?? 0;
+  const cablesFullyOut = (affected.cables?.length ?? 0) - cablesPartlyOut;
 
   return (
     <div className="impact-panel">
@@ -162,8 +166,11 @@ export default function ImpactPanel({
           <div className="l">boxes dark</div>
         </div>
         <div className="summary-card">
-          <div className="n">{affected.cables?.length ?? 0}</div>
+          <div className="n">{cablesFullyOut}</div>
           <div className="l">cables dark</div>
+          {cablesPartlyOut > 0 && (
+            <div className="l impact-inferred">+{cablesPartlyOut} partly out</div>
+          )}
         </div>
       </div>
 

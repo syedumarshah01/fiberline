@@ -281,9 +281,12 @@ export default function MapView({
               className: [
                 hasSplicedCores && !dark ? "cable-line-active" : "",
                 cable.cable_type === "drop" && !dark ? "cable-line-drop" : "",
-                dark ? "cable-line-dark" : "",
+                // Styling for an out span is inline (see impactCableStyle); these
+                // classes only carry what inline options cannot — the marching
+                // ants, which an out span must not have.
+                dark ? "cable-line-out" : "",
               ].filter(Boolean).join(" "),
-              opacity: dark ? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
+              opacity: dark ? dark.opacity ?? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
             }}
             eventHandlers={onCableClick ? {
               click: () => {

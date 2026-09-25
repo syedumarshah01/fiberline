@@ -347,6 +347,85 @@ function continuationEdges(index, key) {
 }
 
 /**
+ * Every edge light can leave this node by, ignoring whether it is still there:
+ * splices both ways, splitter input → outputs only (light never flows backwards
+ * through a splitter), and mid-span continuations both ways.
+ *
+ * This is the light-path graph. `orientLightPath` builds a *tree* over it for
+ * paths; reachability must not use that tree, or a second path to a node (a ring,
+ * a core patched twice at one box) would look dark.
+ */
+function lightEdges(index, key) {
+  return [
+    ...(index.spliceEdges.get(key) || []),
+    ...(index.downEdges.get(key) || []),
+    ...continuationEdges(index, key),
+  ];
+}
+
+/**
+ * Everything the light can reach from `roots`, over the full light-path graph.
+ *
+ * This is the one definition of "has light": light leaves the headend's root
+ * cores and travels splices (either way), splitter ports (input → output) and
+ * mid-span continuations, and it does not pass through anything that failed:
+ *
+ *   - a joint inside a failed box is gone — an edge whose `via.box_id` is one of
+ *     the failed boxes is not traversable, which is what stops a walk at an
+ *     inserted closure or a burnt cabinet;
+ *   - a fibre on a failed cable is cut — nothing enters it, so every core of that
+ *     cable is dark; a *root* sitting on a failed cable is still where the light
+ *     is injected, but the light is not followed out of it, because the app does
+ *     not know where along the span the break is;
+ *   - a root whose own box failed is not a source at all — that is the headend
+ *     going out, not a cut, and everything is dark.
+ *
+ * Reachability is what "dark" is measured against: a node is dark when it was
+ * reachable before the failure and is not reachable after it.
+ */
+function reachableKeys(
+  index,
+  roots,
+  { failureBoxIds = new Set(), failureCableIds = new Set(), rootBoxIds = new Set() } = {},
+) {
+  const reached = new Set();
+  const queue = [];
+  const onFailedCable = (key) => {
+    if (keyKind(key) !== 'core') return false;
+    const core = index.coreById.get(keyId(key));
+    return Boolean(core) && failureCableIds.has(core.cable_id);
+  };
+
+  for (const root of roots) {
+    if (reached.has(root)) continue;
+    const core = index.coreById.get(keyId(root));
+    const cable = core ? index.cableById.get(core.cable_id) : null;
+    // Where the light is injected. Only this failure being *at* that box kills it.
+    const sourceGone =
+      Boolean(cable) &&
+      ((failureBoxIds.has(cable.from_enclosure_id) && rootBoxIds.has(cable.from_enclosure_id)) ||
+        (failureBoxIds.has(cable.to_enclosure_id) && rootBoxIds.has(cable.to_enclosure_id)));
+    if (sourceGone) continue;
+    reached.add(root);
+    queue.push(root);
+  }
+
+  while (queue.length) {
+    const key = queue.shift();
+    if (onFailedCable(key)) continue; // the light dies inside a cut span
+    for (const edge of lightEdges(index, key)) {
+      if (reached.has(edge.node)) continue;
+      if (edge.via?.box_id && failureBoxIds.has(edge.via.box_id)) continue; // dead joint
+      if (onFailedCable(edge.node)) continue; // no light into a cut cable's fibre
+      reached.add(edge.node);
+      queue.push(edge.node);
+    }
+  }
+
+  return reached;
+}
+
+/**
  * Walk downstream only: from each seed, follow the rooted tree's child edges.
  * This is what keeps a failure from reporting branches that merely share an
  * upstream box — light does not flow back up a splice.
@@ -757,74 +836,55 @@ function analyzeImpact({
 
   const failureBoxIds = new Set(boxIds.filter(Boolean));
   const failureCableIds = new Set(cableIds.filter(Boolean));
+  // The boxes the light is injected at (the headend's own) — see reachableKeys.
+  const rootBoxSet = new Set(rootBoxIds.filter(Boolean));
   const warnings = [];
 
   const roots = uniq(rootCoreIds.filter((id) => index.coreById.has(id))).map(coreKey);
   const directed = roots.length > 0;
 
-  // Root the light path at the OLT, if one is configured, and note which cores
-  // never reach it (unspliced segment, or a root set on the wrong box).
+  // Root the light path at the OLT, if one is configured: the tree is what paths
+  // are read off, and the two reachable sets are what "dark" is measured against.
   const orientation = directed ? orientLightPath(index, roots, { maxNodes }) : null;
+
+  // Light before the failure, and light after it. A node is dark when it was
+  // reachable before and is not reachable now — no node is dark merely because
+  // something broke nearby. Both are full graph walks, so a node with a second
+  // path to the root stays lit (a ring, a core patched twice at one box).
+  const intactKeys = directed ? reachableKeys(index, roots) : null;
+  const litKeys = directed
+    ? reachableKeys(index, roots, { failureBoxIds, failureCableIds, rootBoxIds: rootBoxSet })
+    : null;
+
   // Only *lit* cores matter here: a spare 'available' core that reaches nothing
   // is normal (that is what spares are), but a spliced/terminated core that
   // cannot trace back to the OLT is a documentation gap worth surfacing.
   const unreachedCoreIds = directed
     ? index.cores
         .filter((core) => core.status !== 'available')
-        .filter((core) => !orientation.reached.has(coreKey(core.id)))
+        .filter((core) => !intactKeys.has(coreKey(core.id)))
         .map((core) => core.id)
     : [];
 
-  // What light still reaches, now that the failed elements are out of the way.
-  //
-  // The failure surface is a *cut*: a joint inside a failed box cannot pass
-  // light, a fibre on a failed cable is gone, and if the headend's own box
-  // failed there is no light to begin with. Everything below the cut is dark —
-  // and the span that feeds the failed box is *not*: it still carries light up
-  // to the break. Painting it red made a mid-span simulation look as if the
-  // whole route had gone out, which is what this replaces.
-  const litKeys = new Set();
-  if (directed) {
-    const rootBoxSet = new Set(rootBoxIds.filter(Boolean));
-    const onFailedCable = (key) => {
-      if (keyKind(key) !== 'core') return false;
-      const core = index.coreById.get(keyId(key));
-      return Boolean(core) && failureCableIds.has(core.cable_id);
-    };
-    const queue = [];
-    for (const root of roots) {
-      const core = index.coreById.get(keyId(root));
-      const cable = core ? index.cableById.get(core.cable_id) : null;
-      // Only if *this failure* is at the headend's box: the light is injected
-      // there, so a failure anywhere else leaves the root fibre lit.
-      const sourceGone = Boolean(cable) && (
-        (failureBoxIds.has(cable.from_enclosure_id) && rootBoxSet.has(cable.from_enclosure_id)) ||
-        (failureBoxIds.has(cable.to_enclosure_id) && rootBoxSet.has(cable.to_enclosure_id))
-      );
-      if (sourceGone) continue;
-      litKeys.add(root);
-      queue.push(root);
-    }
-    while (queue.length) {
-      const key = queue.shift();
-      if (onFailedCable(key)) continue; // the light dies inside a cut cable
-      for (const edge of orientation.children.get(key) || []) {
-        if (litKeys.has(edge.node)) continue;
-        if (edge.via?.box_id && failureBoxIds.has(edge.via.box_id)) continue; // dead joint
-        if (onFailedCable(edge.node)) continue; // no light into a cut cable's fibre
-        litKeys.add(edge.node);
-        queue.push(edge.node);
-      }
-    }
-  }
-
   const surface = failureSurfaceSeeds(index, { failureBoxIds, failureCableIds });
   const rootedSeeds = directed
-    ? surface.seedKeys.filter((seed) => orientation.reached.has(seed))
+    ? surface.seedKeys.filter((seed) => intactKeys.has(seed))
     : [];
   const unrootedSeeds = directed
-    ? surface.seedKeys.filter((seed) => !orientation.reached.has(seed))
+    ? surface.seedKeys.filter((seed) => !intactKeys.has(seed))
     : [];
+
+  /** The dark set, in walk order, with anything the walk missed appended. */
+  function darkKeys() {
+    const keys = [];
+    const seen = new Set();
+    for (const key of [...flood.keys, ...intactKeys]) {
+      if (seen.has(key) || litKeys.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
+    return keys;
+  }
 
   const unrootedFlood =
     directed && unrootedSeeds.length
@@ -840,14 +900,14 @@ function analyzeImpact({
       ].filter(Boolean))
     : floodUndirected(index, surface.seedKeys, { maxNodes });
 
-  // Which nodes to report. Directed: only the ones light no longer reaches —
-  // the walk itself still covers the seed on the feeding side (it has to, to
-  // reach the far end of the cut), but a fibre that still has light is not part
-  // of the outage. Undirected (no root): everything the walk through the failure
-  // reaches, both ways, which is the documented over-approximation.
-  const reportKeys = directed
-    ? flood.keys.filter((key) => !litKeys.has(key))
-    : flood.keys;
+  // What the outage took out. Directed: everything that had light and no longer
+  // does — the walk's own keys (which carry the paths, and cover a failure point
+  // that was not connected to the root in the first place) plus whatever else
+  // lost its light but the walk never entered (a node light reached by a second
+  // path the tree does not contain). A fibre that still has light is never in
+  // there. Undirected (no root): everything the walk through the failure reaches,
+  // both ways, which is the documented over-approximation.
+  const reportKeys = directed ? darkKeys() : flood.keys;
 
   // A seed that cannot trace back to the root is only worth warning about when
   // it actually carries something: a spare core sitting in the failed cable
@@ -861,9 +921,12 @@ function analyzeImpact({
     return core ? Boolean(servedCustomer(index, core)) : false;
   });
 
-  if (flood.truncated) {
+  // Either walk being capped means the answer is incomplete, and a silently
+  // incomplete outage report is worse than a slow one.
+  if (flood.truncated || orientation?.truncated) {
     warnings.push(
-      `The affected area is larger than ${maxNodes} nodes and was truncated — the customer list may be incomplete.`,
+      `The network or the affected area is larger than ${maxNodes} nodes and the walk was ` +
+        'truncated — the customer list may be incomplete.',
     );
   }
   if (!surface.seedKeys.length) {
@@ -954,6 +1017,18 @@ function analyzeImpact({
   const customersByKey = new Map();
   let customerOverflow = false;
 
+  // How much of each cable is actually out. A cable is one physical span but
+  // many fibres, and an outage that darkens 1 of its 12 cores must not read the
+  // same as a span that is gone: `partially_dark` is what the map styles
+  // differently and what the panel counts separately.
+  const inServiceByCable = new Map();
+  for (const core of index.cores) {
+    if (core.cable_id && inService(core)) {
+      inServiceByCable.set(core.cable_id, (inServiceByCable.get(core.cable_id) || 0) + 1);
+    }
+  }
+  const darkCoresByCable = new Map();
+
   for (const key of reportKeys) {
     if (keyKind(key) === 'core') {
       const core = index.coreById.get(keyId(key));
@@ -961,7 +1036,12 @@ function analyzeImpact({
       // Spares carry no light, so they can neither go dark nor paint a cable:
       // an unused strand on the cable that *feeds* a failed box is not an
       // outage, and counting it painted the upstream span red.
-      if (inService(core)) affectedCoreIds.push(core.id);
+      if (inService(core)) {
+        affectedCoreIds.push(core.id);
+        if (core.cable_id) {
+          darkCoresByCable.set(core.cable_id, (darkCoresByCable.get(core.cable_id) || 0) + 1);
+        }
+      }
       const cable = index.cableById.get(core.cable_id);
       if (cable && (inService(core) || failureCableIds.has(cable.id))) {
         addCable(cable.id, { is_failure: failureCableIds.has(cable.id) });
@@ -1006,6 +1086,19 @@ function analyzeImpact({
     );
   }
 
+  // Every affected cable carries how much of it is out; a cut span is out in
+  // full whatever its strand count, so `is_failure` wins over the arithmetic.
+  for (const [cableId, entry] of affectedCables) {
+    const inServiceCount = inServiceByCable.get(cableId) || 0;
+    const darkCount = darkCoresByCable.get(cableId) || 0;
+    affectedCables.set(cableId, {
+      ...entry,
+      cores_dark: darkCount,
+      cores_in_service: inServiceCount,
+      partially_dark: !entry.is_failure && darkCount > 0 && darkCount < inServiceCount,
+    });
+  }
+
   const affectedCustomers = [...customersByKey.values()].sort(
     (a, b) => a.hops - b.hops || String(a.customer_label).localeCompare(String(b.customer_label)),
   );
@@ -1038,7 +1131,8 @@ function analyzeImpact({
       customers: affectedCustomers,
       customer_count: affectedCustomers.length,
       unnamed_count: affectedCustomers.filter((c) => c.unnamed).length,
-      truncated: flood.truncated || customerOverflow,
+      partial_cable_count: [...affectedCables.values()].filter((c) => c.partially_dark).length,
+      truncated: flood.truncated || customerOverflow || Boolean(orientation?.truncated),
     },
   };
 }
@@ -1173,6 +1267,8 @@ module.exports = {
   keyKind,
   keyId,
   indexNetwork,
+  lightEdges,
+  reachableKeys,
   orientLightPath,
   floodDownstream,
   floodUndirected,

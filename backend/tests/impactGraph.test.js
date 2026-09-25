@@ -22,6 +22,7 @@ const {
   analyzeImpact,
   failureSurfaceSeeds,
   indexNetwork,
+  reachableKeys,
   orientLightPath,
   floodDownstream,
   floodUndirected,
@@ -525,6 +526,117 @@ describe('customer attribution when the documentation is thin', () => {
   });
 });
 
+describe('redundant feeds and partially-out cables', () => {
+  /**
+   * Two runs into the same box, each feeding one fibre of the cable leaving it:
+   *
+   *   OLT ─ F1 ─ P ─┬─ A ─┐
+   *                 └─ B ─┴─ Q ─ X (2 cores) ─ NAP ─┬─ DROP-1 ─ CUST-1 (core 1)
+   *                                                 └─ DROP-2 ─ CUST-2 (core 2)
+   *
+   * Cutting A takes CUST-1's feed — but X carries two fibres and only one of
+   * them is out, so the *span* X is partly out, not out, and CUST-2 is fine.
+   */
+  const dual = () => ({
+    enclosures: [
+      { id: 'olt', code: 'BOX-OLT', type: 'cabinet' },
+      { id: 'p', code: 'BOX-P', type: 'splice_closure' },
+      { id: 'q', code: 'BOX-Q', type: 'splice_closure' },
+      { id: 'nap', code: 'BOX-NAP', type: 'nap' },
+    ],
+    cables: [
+      { id: 'f1', code: 'CBL-F1', cable_type: 'feeder', from_enclosure_id: 'olt', to_enclosure_id: 'p' },
+      { id: 'ca', code: 'CBL-A', cable_type: 'distribution', from_enclosure_id: 'p', to_enclosure_id: 'q' },
+      { id: 'cb', code: 'CBL-B', cable_type: 'distribution', from_enclosure_id: 'p', to_enclosure_id: 'q' },
+      { id: 'x', code: 'CBL-X', cable_type: 'distribution', from_enclosure_id: 'q', to_enclosure_id: 'nap' },
+      { id: 'drop1', code: 'CBL-DROP-1', cable_type: 'drop', from_enclosure_id: 'nap', to_enclosure_id: null, customer_id: 'c1', customer_label: 'CUST-1' },
+      { id: 'drop2', code: 'CBL-DROP-2', cable_type: 'drop', from_enclosure_id: 'nap', to_enclosure_id: null, customer_id: 'c2', customer_label: 'CUST-2' },
+    ],
+    cores: [
+      { id: 'f1c1', cable_id: 'f1', core_number: 1, status: 'spliced' },
+      { id: 'ac1', cable_id: 'ca', core_number: 1, status: 'spliced' },
+      { id: 'bc1', cable_id: 'cb', core_number: 1, status: 'spliced' },
+      { id: 'xc1', cable_id: 'x', core_number: 1, status: 'spliced' },
+      { id: 'xc2', cable_id: 'x', core_number: 2, status: 'spliced' },
+      { id: 'drop1c1', cable_id: 'drop1', core_number: 1, status: 'terminated' },
+      { id: 'drop2c1', cable_id: 'drop2', core_number: 1, status: 'terminated' },
+    ],
+    splices: [
+      { id: 's1', enclosure_id: 'p', core_a_id: 'f1c1', core_b_id: 'ac1' },
+      { id: 's2', enclosure_id: 'p', core_a_id: 'f1c1', core_b_id: 'bc1' },
+      { id: 's3', enclosure_id: 'q', core_a_id: 'ac1', core_b_id: 'xc1' },
+      { id: 's4', enclosure_id: 'q', core_a_id: 'bc1', core_b_id: 'xc2' },
+      { id: 's5', enclosure_id: 'nap', core_a_id: 'xc1', core_b_id: 'drop1c1' },
+      { id: 's6', enclosure_id: 'nap', core_a_id: 'xc2', core_b_id: 'drop2c1' },
+    ],
+    splitters: [],
+    ports: [],
+    customers: [{ id: 'c1', customer_code: 'CUST-1' }, { id: 'c2', customer_code: 'CUST-2' }],
+  });
+
+  const at = (overrides) =>
+    analyzeImpact({ ...dual(), rootCoreIds: ['f1c1'], rootBoxIds: ['olt'], ...overrides });
+
+  test('a cable that lost some of its fibres is partly out, not out', () => {
+    const impact = at({ cableIds: ['ca'] });
+    const x = impact.affected.cables.find((c) => c.id === 'x');
+    assert.equal(x.cores_dark, 1, 'the fibre fed by the cut run');
+    assert.equal(x.cores_in_service, 2);
+    assert.equal(x.partially_dark, true);
+    assert.equal(impact.affected.partial_cable_count, 1);
+    // The cut run itself is out in full, and so is the drop behind it.
+    const ca = impact.affected.cables.find((c) => c.id === 'ca');
+    assert.equal(ca.is_failure, true);
+    assert.equal(ca.partially_dark, false);
+    assert.equal(impact.affected.cables.find((c) => c.id === 'drop2'), undefined,
+      'CUST-2 still has light — their drop is not in the report');
+  });
+
+  test('the customer behind the working fibre stays up', () => {
+    const impact = at({ cableIds: ['ca'] });
+    assert.deepEqual(labels(impact), ['CUST-1']);
+  });
+
+  test('cut both runs and the span is out in full, both customers down', () => {
+    const impact = at({ cableIds: ['ca', 'cb'] });
+    const x = impact.affected.cables.find((c) => c.id === 'x');
+    assert.equal(x.cores_dark, 2);
+    assert.equal(x.partially_dark, false, 'every fibre in it is dark now');
+    assert.equal(impact.affected.partial_cable_count, 0);
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2']);
+  });
+
+  test('a customer whose fibre has a second path is not reported when one is cut', () => {
+    // Dual feed: the same fibre spliced to two runs at the same box. Cutting one
+    // leaves the light arriving by the other — reporting the customer would be
+    // the over-report that made the map look wrong.
+    const dualFed = dual();
+    dualFed.splices = [
+      ...dualFed.splices,
+      { id: 's7', enclosure_id: 'q', core_a_id: 'bc1', core_b_id: 'xc1' },
+    ];
+    const impact = analyzeImpact({
+      ...dualFed, rootCoreIds: ['f1c1'], rootBoxIds: ['olt'], cableIds: ['ca'],
+    });
+    assert.deepEqual(labels(impact), []);
+    assert.equal(impact.affected.cables.some((c) => c.id === 'drop1'), false);
+  });
+
+  test('spares are never counted as lost fibres', () => {
+    // CBL-X carries one more, unused strand: the span's out-ness is measured
+    // against the fibres in service, not the strand count on the label.
+    const withSpare = dual();
+    withSpare.cores = [...withSpare.cores, { id: 'xc3', cable_id: 'x', core_number: 3, status: 'available' }];
+    const impact = analyzeImpact({
+      ...withSpare, rootCoreIds: ['f1c1'], rootBoxIds: ['olt'], cableIds: ['ca'],
+    });
+    const x = impact.affected.cables.find((c) => c.id === 'x');
+    assert.equal(x.cores_in_service, 2);
+    assert.equal(x.cores_dark, 1);
+    assert.equal(x.partially_dark, true);
+  });
+});
+
 describe('analyzeImpact — no root configured', () => {
   test('without a headend the analysis says so and over-reports', () => {
     const impact = analyzeImpact({ ...NET, boxIds: ['b'] });
@@ -656,6 +768,70 @@ describe('impact paths and boxes', () => {
     const impact = impactFor({ boxIds: ['b'], maxNodes: 2 });
     assert.equal(impact.affected.truncated, true);
     assert.ok(impact.warnings.some((w) => /truncated/.test(w)));
+  });
+});
+
+// --- reachability: the definition of "has light" ---------------------------------------
+
+describe('reachableKeys', () => {
+  const roots = [coreKey('f1c1')];
+  const index = indexNetwork(NET);
+
+  test('follows splices both ways and splitter ports input → output only', () => {
+    const lit = reachableKeys(index, roots);
+    assert.ok(lit.has(coreKey('f1c1')), 'the root itself');
+    assert.ok(lit.has(coreKey('d1c1')), 'a splice carries light either way');
+    assert.ok(lit.has(splitterKey('sp1')), 'the feeder feeds the splitter');
+    assert.ok(lit.has(coreKey('drop1c1')), 'a port carries light out');
+    // …but light never flows backwards through the splitter, so a port output
+    // does not light up the network behind it.
+    const fromPort = reachableKeys(index, [coreKey('drop1c1')]);
+    assert.equal(fromPort.has(splitterKey('sp1')), false);
+    assert.equal(fromPort.has(coreKey('f1c1')), false);
+    assert.equal(fromPort.has(coreKey('drop2c1')), false, 'nor its sibling ports');
+  });
+
+  test('a joint inside a failed box stops the light there', () => {
+    const lit = reachableKeys(index, roots, { failureBoxIds: new Set(['a']) });
+    assert.ok(lit.has(coreKey('f1c1')), 'the fibre feeding the box still has light');
+    assert.equal(lit.has(coreKey('d1c1')), false, 'nothing passes through the dead splice');
+    assert.equal(lit.has(coreKey('drop1c1')), false);
+  });
+
+  test('a fibre on a failed cable is never entered', () => {
+    const lit = reachableKeys(index, roots, { failureCableIds: new Set(['d1']) });
+    assert.equal(lit.has(coreKey('d1c1')), false);
+    assert.equal(lit.has(splitterKey('sp1')), false);
+    assert.ok(lit.has(coreKey('f1c1')), 'the span above the cut is still lit');
+  });
+
+  test('a root on a failed cable is still the source, but light is not followed past it', () => {
+    // The cable leaving the OLT is the one that failed: light is injected at the
+    // OLT end, but the app does not know where along the span the break is, so
+    // nothing downstream is assumed lit.
+    const lit = reachableKeys(index, roots, { failureCableIds: new Set(['f1']) });
+    assert.ok(lit.has(coreKey('f1c1')));
+    assert.equal(lit.has(coreKey('d1c1')), false);
+  });
+
+  test('a root whose own box failed is not a source at all', () => {
+    const lit = reachableKeys(index, roots, {
+      failureBoxIds: new Set(['olt']),
+      rootBoxIds: new Set(['olt']),
+    });
+    assert.equal(lit.size, 0, 'the headend is gone: nothing has light');
+  });
+
+  test('a node with a second path stays lit when one path is cut', () => {
+    // The same fibre fed from two boxes — a dual feed. Cut one and the light
+    // still arrives by the other.
+    const dual = {
+      ...NET,
+      splices: [...SPLICES, { id: 's9', enclosure_id: 'a', core_a_id: 'd2c1', core_b_id: 'd1c1' }],
+    };
+    const dualIndex = indexNetwork(dual);
+    const cut = reachableKeys(dualIndex, roots, { failureCableIds: new Set(['d2']) });
+    assert.ok(cut.has(coreKey('d1c1')), 'light still arrives from the other side');
   });
 });
 
