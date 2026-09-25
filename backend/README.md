@@ -101,6 +101,32 @@ from the inferred pairs when it does not (`continuationFields()` / `decorateCabl
 its SELECT when the probe says the column is there, so the query is valid on either
 database.
 
+### The database is brought up on startup
+
+`src/utils/schemaBootstrap.js` runs once when the API starts (from `src/server.js`, after the port is
+open, on its own short-lived connection so it never holds DDL over the request pool):
+
+1. `knex.migrate.latest()` with this package's migrations directory — everything the ledger has not
+   recorded, in order. A migration whose transaction never committed is rolled back by knex and
+   applied again, which is how a database whose migration "did not take" recovers.
+2. The mid-span column, read as a *capability* rather than trusted to a ledger: if
+   `cables.continues_cable_id` is absent it runs the repair migration's own `ensure()` (migration 15
+   and `up` are the same function — one definition, two callers). This covers the state migrations
+   cannot: 14 **and** 15 recorded, column absent.
+3. The remaining unlinked halves, through the same rule as `npm run db:link-splits`.
+
+Failure is never fatal: a warning, and the app keeps working with inferred links. `SCHEMA_BOOTSTRAP=off`
+(or `SCHEMA_BOOTSTRAP=false`) skips the whole pass for a deploy where something else owns the schema.
+
+**A bug this turned up, worth knowing about:** `schemaCapabilities` used to read the column list with
+`array_agg(column_name)`. `information_schema.columns.column_name` is a domain over `name`, so the
+aggregate produces `sql_identifier[]` — an array type node-postgres has no parser for, arriving as the
+string `"{continues_cable_id}"`. `new Set(that)` is a set of characters, `has()` answered false, and
+the app concluded a column that was right there did not exist: it inferred links it should have read
+and warned about a missing column on every database that had one. The SQL now casts to `::text` and
+`asArray()` reads either shape. Both are covered by tests, including one that runs the un-cast query
+against a real Postgres and asserts the string it produces — the only way to catch this class of bug.
+
 Recorded links always win. With the column present the app never guesses: a `NULL` means
 "not a continuation". The fallback is only for a database that has no column at all, and
 when it finds links the outage report says so ("N mid-span cable links inferred from cable

@@ -36,10 +36,11 @@ const KNOWN_COLUMNS = [
     // whose ledger already lists the migration, re-running it changes nothing,
     // and pointing at the diagnostic is the one instruction that is always right.
     remedy:
-      'Everything works. To record the links explicitly, run "npm run db:schema" in backend/ — ' +
-      'it names the exact step for this database (the column comes from ' +
-      '20260101000014_cable_continuations.js: migrate if it is still pending, or run the ALTER ' +
-      'it prints if the ledger already lists it).',
+      'The API applies pending migrations and adds this column when it starts ' +
+      '(src/utils/schemaBootstrap.js) — seeing this message means that pass could not do it: ' +
+      'the database user may lack rights to ALTER the table, or SCHEMA_BOOTSTRAP is set to off. ' +
+      'Run "npm run db:schema" in backend/ for the exact step for this database (the column comes ' +
+      'from 20260101000014_cable_continuations.js).',
   },
 ];
 
@@ -70,6 +71,34 @@ function connectionTarget() {
 }
 
 /**
+ * Read a Postgres array as a JS array, whether or not the driver parsed it.
+ *
+ * `information_schema.columns.column_name` is a domain over `name`
+ * (`information_schema.sql_identifier`), and `array_agg` over a domain produces
+ * `sql_identifier[]` — an array type with its own OID that node-postgres has no
+ * parser for, so it hands back the raw literal, `"{continues_cable_id}"`. A Set
+ * built from that string holds single characters, `has()` answers false, and the
+ * app concludes a column that is right there does not exist: it infers links it
+ * should have read, and warns about a missing column on every database that has
+ * it. (Found exactly that way: `GET /api/cables` returned a recorded link with
+ * `continuation_inferred: true`.)
+ *
+ * The SQL below now casts to text so the driver parses it; this function keeps
+ * the answer honest for any other shape it might arrive in — a stub in a test,
+ * an older driver, or a future column type doing the same thing.
+ */
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  // Postgres array literal: {a,b}, with quoting/escaping for odd names.
+  const body = value.replace(/^\s*\{/, '').replace(/\}\s*$/, '');
+  if (!body.trim()) return [];
+  return body
+    .match(/"(?:[^"\\]|\\.)*"|[^,]+/g)
+    ?.map((part) => part.trim().replace(/^"(.*)"$/, '$1').replace(/\\"/g, '"')) ?? [];
+}
+
+/**
  * Ask the database which of KNOWN_COLUMNS it has. Throws only if the database
  * itself is unreachable — a missing column is a normal, expected answer here.
  */
@@ -79,7 +108,7 @@ async function probe(executor = db) {
     SELECT current_database() AS database,
            to_regclass('cables') IS NOT NULL AS has_cables,
            COALESCE((
-             SELECT array_agg(column_name)
+             SELECT array_agg(column_name::text)
              FROM information_schema.columns
              WHERE table_schema = ANY (current_schemas(false))
                AND table_name = 'cables'
@@ -90,7 +119,7 @@ async function probe(executor = db) {
   const database = row?.database ?? null;
   // No row at all is only possible in a test stub; assume the table is there.
   const hasCables = row?.has_cables !== false;
-  const present = new Set(row?.columns ?? []);
+  const present = new Set(asArray(row?.columns));
 
   const columns = {};
   const gaps = [];
@@ -179,6 +208,7 @@ function resetSchemaCache() {
 
 module.exports = {
   KNOWN_COLUMNS,
+  asArray,
   connectionTarget,
   probe,
   schemaCapabilities,

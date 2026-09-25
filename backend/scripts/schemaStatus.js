@@ -197,7 +197,9 @@ async function main() {
       }
       console.log(
         '\nThe ledger says the migration that adds it ran, so "npm run migrate" would change' +
-          '\nnothing. To record the links by hand, add the column and link the halves:',
+          '\nnothing. Restart the API: it adds the column (and links the split halves) at' +
+          '\nstartup — see src/utils/schemaBootstrap.js. If it is still absent after that, the' +
+          '\ndatabase user cannot ALTER the table; do it by hand and link the halves:',
       );
       console.log(
         '  ALTER TABLE cables ADD COLUMN IF NOT EXISTS continues_cable_id uuid' +

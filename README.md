@@ -63,6 +63,15 @@ Direction is what makes this work: light flows from the headend root (`headends.
 
 The answer is `{ affected_count, affected{ customers, boxes, cables, cores }, upstream_reroute_candidates, unreached, warnings }` — each affected customer carries the label, the hops below the failure, its serving box and `path_through_failure` (the exact fiber-by-fiber route its light used to take).
 
+**The column is the app's job, not yours.** Starting the API applies the migrations this build has
+that the database does not, and if `cables.continues_cable_id` is missing it adds it and links the
+halves of every mid-span split it can match — on a database whose ledger already claims those
+migrations ran, where `npm run migrate` answers "Already up to date" and changes nothing. It is
+reported in the startup output and it never fails the API: a database that is down, or a user without
+DDL rights, prints what it could not do and the app carries on inferring links from cable naming. Set
+`SCHEMA_BOOTSTRAP=off` to leave the schema entirely to your own process (`npm run migrate`,
+`npm run db:schema`, `npm run db:link-splits` all still work exactly as before).
+
 **The mid-span link in the API:** every cable the API returns says what it continues, whether or not the database has the column. `GET /api/cables` (and `GET /api/cables/:id`, and each entry in a failure report's `affected.cables`) carries:
 
 ```json

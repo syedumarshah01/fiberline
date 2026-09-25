@@ -13,6 +13,7 @@ const capacityRouter = require('./routes/capacity');
 const settingsRouter = require('./routes/settings');
 const impactRouter = require('./routes/impact');
 const headendsRouter = require('./routes/headends');
+const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -37,9 +38,13 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Fiber network API listening on port ${PORT}`);
-  reportSchema();
+  // Before reporting what the database is missing, try to make it not missing:
+  // apply the migrations this build has that the database does not (see
+  // utils/schemaBootstrap.js). Then report whatever is genuinely left.
+  await bootstrapSchemaNow();
+  await reportSchema();
 });
 
 /**
@@ -51,6 +56,8 @@ app.listen(PORT, () => {
 async function reportSchema() {
   try {
     const { schemaCapabilities } = require('./utils/schemaCapabilities');
+    // refresh: true — the bootstrap a moment ago may have added exactly the
+    // column this would otherwise report as missing for the next 30 seconds.
     const capabilities = await schemaCapabilities({ refresh: true });
     if (!capabilities.gaps.length) return;
     console.warn('---');

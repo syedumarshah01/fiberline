@@ -55,7 +55,7 @@ async function foreignKeyOnColumn(knex) {
  * Guarded in its own savepoint: if it ever fails on someone's data, the column
  * (the part the application needs) still lands, and the failure is reported.
  */
-async function backfill(knex) {
+async function backfill(knex, { log = console } = {}) {
   try {
     const linked = await knex.transaction(async (trx) =>
       trx.raw(`
@@ -82,22 +82,32 @@ async function backfill(knex) {
     );
     const count = linked?.rowCount ?? 0;
     if (count) {
-      console.log(`  linked ${count} mid-span split(s) to their upstream cable`);
+      log.log(`  linked ${count} mid-span split(s) to their upstream cable`);
     }
     return count;
   } catch (err) {
-    console.warn('  ! Could not link the mid-span splits that already exist:');
-    console.warn(`      ${err.message}`);
-    console.warn('    The column is in place, so new splits record their link exactly.');
-    console.warn('    For the ones already there: npm run db:link-splits -- --apply');
+    log.warn('  ! Could not link the mid-span splits that already exist:');
+    log.warn(`      ${err.message}`);
+    log.warn('    The column is in place, so new splits record their link exactly.');
+    log.warn('    For the ones already there: npm run db:link-splits -- --apply');
     return 0;
   }
 }
 
-exports.up = async function (knex) {
+/**
+ * Ensure the column, its index, its foreign key and the links between the halves
+ * of every split that exists — the exact work this migration is named for.
+ *
+ * Exported by name as well as wired to `up`, because there is a second caller:
+ * `src/utils/schemaBootstrap.js` runs it when the API starts and finds the column
+ * missing on a database whose ledger already claims this migration ran (a
+ * recorded migration never runs again, so knex alone cannot get out of that
+ * state). One definition, two callers — the repair cannot drift from itself.
+ */
+async function ensureContinuationColumn(knex, { log = console } = {}) {
   // 1. The column itself.
   if (await knex.schema.hasColumn('cables', COLUMN)) {
-    console.log(`  cables.${COLUMN} already exists — keeping it`);
+    log.log(`  cables.${COLUMN} already exists — keeping it`);
   } else {
     await knex.schema.alterTable('cables', (table) => {
       table
@@ -108,7 +118,7 @@ exports.up = async function (knex) {
         .inTable('cables')
         .onDelete('SET NULL');
     });
-    console.log(`  added cables.${COLUMN}`);
+    log.log(`  added cables.${COLUMN}`);
   }
 
   // 2. The index.
@@ -127,7 +137,7 @@ exports.up = async function (knex) {
     `);
     const clearedCount = cleared?.rowCount ?? 0;
     if (clearedCount) {
-      console.warn(
+      log.warn(
         `  ! cleared ${clearedCount} dangling ${COLUMN} reference(s) so the foreign key can be validated`,
       );
     }
@@ -136,11 +146,11 @@ exports.up = async function (knex) {
          ADD CONSTRAINT cables_${COLUMN}_foreign
          FOREIGN KEY (${COLUMN}) REFERENCES cables(id) ON DELETE SET NULL;`,
     );
-    console.log(`  added the foreign key on cables.${COLUMN}`);
+    log.log(`  added the foreign key on cables.${COLUMN}`);
   }
 
   // 4. Link what is still unlinked.
-  await backfill(knex);
+  const linked = await backfill(knex, { log });
 
   // 5. Never report success without the thing this migration exists for.
   if (!(await knex.schema.hasColumn('cables', COLUMN))) {
@@ -149,7 +159,13 @@ exports.up = async function (knex) {
         'check the database user can ALTER this table.',
     );
   }
-};
+  // How many halves the backfill joined — knex ignores a migration's return
+  // value, but the startup pass uses it to say what it did.
+  return linked;
+}
+
+exports.ensure = ensureContinuationColumn;
+exports.up = ensureContinuationColumn;
 
 exports.down = async function (knex) {
   // The inverse of the schema this migration ensures — which 14 also owns, so a
