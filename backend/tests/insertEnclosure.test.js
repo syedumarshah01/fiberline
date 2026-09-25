@@ -43,6 +43,8 @@ function table(tableName) {
     Object.entries(state.where).every(([key, value]) => row[key] === value);
 
   const run = async () => {
+    // Fault injection for the unmigrated-database case.
+    if (fakeDb.__failOnTable === tableName) throw fakeDb.__failError;
     let rows = (store[tableName] || []).filter(matches);
     for (const { column, values } of state.whereIn || []) {
       rows = rows.filter((row) => values.includes(row[column]));
@@ -380,6 +382,32 @@ describe('POST /api/cables/:id/insert-enclosure — the halves stay one fiber', 
     // side (CBL-F1-B) and the span feeding it (CBL-F1).
     assert.deepEqual(redCodes(impact), ['CBL-DROP-1', 'CBL-F1', 'CBL-F1-B']);
     assert.ok(!impact.affected.boxes.some((b) => b.code === 'BOX-OLT'), 'the OLT is upstream');
+  });
+});
+
+describe('a database that has not been migrated yet', () => {
+  test('the simulation says to run the migration instead of leaking a SQL error', async () => {
+    freshStore();
+    await insertMidSpanEnclosure();
+    // What Postgres answers when cables.continues_cable_id is not there yet.
+    fakeDb.__failOnTable = 'cables';
+    fakeDb.__failError = Object.assign(
+      new Error('column c.continues_cable_id does not exist'),
+      { code: '42703' },
+    );
+    try {
+      await assert.rejects(
+        () => simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] }),
+        (err) => {
+          assert.match(err.message, /npm run migrate/);
+          assert.match(err.message, /continues_cable_id/);
+          return true;
+        },
+      );
+    } finally {
+      delete fakeDb.__failOnTable;
+      delete fakeDb.__failError;
+    }
   });
 });
 

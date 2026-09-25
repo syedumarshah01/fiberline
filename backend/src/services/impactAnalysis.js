@@ -1,5 +1,6 @@
 const db = require('../db');
 const { buildGraph, getAvailableCoreCounts } = require('./capacityGraph');
+const { migrationHint } = require('../utils/schemaHint');
 const {
   analyzeImpact,
   groupRestorationCandidates,
@@ -29,6 +30,20 @@ const CABLE_FIELDS = [
 ];
 
 async function loadNetwork() {
+  try {
+    return await loadNetworkRows();
+  } catch (err) {
+    // Same courtesy as the fiber trace: an unmigrated database gets told to
+    // run the migration rather than a bare undefined_column error.
+    throw migrationHint(err, {
+      column: 'continues_cable_id',
+      migration: 'migration 20260101000014_cable_continuations.js',
+      feature: 'Failure simulation',
+    });
+  }
+}
+
+async function loadNetworkRows() {
   const [enclosures, cables, cores, splices, splitters, ports, headends, customers] =
     await Promise.all([
       db('enclosures').select(...ENCLOSURE_FIELDS),

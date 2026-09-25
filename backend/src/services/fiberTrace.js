@@ -1,4 +1,5 @@
 const db = require('../db');
+const { migrationHint } = require('../utils/schemaHint');
 
 /**
  * Given a starting fiber_core id, walk the chain of splices outward until it
@@ -25,20 +26,30 @@ async function traceFiber(startCoreId) {
   const segments = [];
 
   async function loadCoreWithCable(coreId) {
-    return db('fiber_cores as fc')
-      .join('cables as c', 'c.id', 'fc.cable_id')
-      .where('fc.id', coreId)
-      .select(
-        'fc.id as core_id', 'fc.core_number', 'fc.status as core_status',
-        'c.id as cable_id', 'c.code as cable_code', 'c.name as cable_name',
-        'c.cable_type', 'c.from_enclosure_id', 'c.to_enclosure_id', 'c.customer_id', 'c.customer_label',
-        // Mid-span splits: the downstream half of this cable, if any.
-        'c.continues_cable_id',
-        // Loss-budget inputs: the cable's length and per-km attenuation (NULL
-        // attenuation → project default at calculation time).
-        'c.length_m', 'c.attenuation_db_per_km'
-      )
-      .first();
+    try {
+      return await db('fiber_cores as fc')
+        .join('cables as c', 'c.id', 'fc.cable_id')
+        .where('fc.id', coreId)
+        .select(
+          'fc.id as core_id', 'fc.core_number', 'fc.status as core_status',
+          'c.id as cable_id', 'c.code as cable_code', 'c.name as cable_name',
+          'c.cable_type', 'c.from_enclosure_id', 'c.to_enclosure_id', 'c.customer_id', 'c.customer_label',
+          // Mid-span splits: the downstream half of this cable, if any.
+          'c.continues_cable_id',
+          // Loss-budget inputs: the cable's length and per-km attenuation (NULL
+          // attenuation → project default at calculation time).
+          'c.length_m', 'c.attenuation_db_per_km'
+        )
+        .first();
+    } catch (err) {
+      // A trace on a database that has not been migrated yet should say so
+      // instead of failing with `column c.continues_cable_id does not exist`.
+      throw migrationHint(err, {
+        column: 'continues_cable_id',
+        migration: 'migration 20260101000014_cable_continuations.js',
+        feature: 'Tracing a fiber',
+      });
+    }
   }
 
   // All splices touching a core, ordered deterministically so repeated traces
