@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { validateEnclosureData } = require('../middleware/validation');
 const { normalizeEditableCode } = require('../utils/codegen');
+const { BAD_SPLICE_LOSS_DB } = require('../utils/lossBudget');
 const router = express.Router();
 
 // GET /api/enclosures — all boxes, with parent pole coordinates or direct location
@@ -326,11 +327,29 @@ router.delete('/:id', async (req, res, next) => {
 
       const availableCores = cores.filter((c) => c.status === 'available');
 
+      // QC: any splice in this box whose RECORDED loss is suspiciously high is
+      // auto-flagged as a probable bad splice — techs get a work list without
+      // hunting through every tray reading.
+      const badSplices = splices.rows
+        .filter((s) => s.loss_db != null && Number(s.loss_db) > BAD_SPLICE_LOSS_DB)
+        .map((s) => ({
+          splice_id: s.id,
+          loss_db: Number(s.loss_db),
+          splice_type: s.splice_type,
+          tray: [s.tray_number, s.tray_position].filter(Boolean).join('/') || null,
+          core_a: `${s.cable_a_code} #${s.core_a_number}`,
+          core_b: `${s.cable_b_code} #${s.core_b_number}`,
+        }));
+
       res.json({
         enclosure,
         cables_landing_here: Object.values(coresByCable),
         splices: splices.rows,
         splitters: splittersWithPorts,
+        qc_flags: {
+          bad_splice_threshold_db: BAD_SPLICE_LOSS_DB,
+          bad_splices: badSplices,
+        },
         summary: {
           total_cables: cables.length,
           total_cores: cores.length,
@@ -339,6 +358,7 @@ router.delete('/:id', async (req, res, next) => {
           terminated_cores: cores.filter((c) => c.status === 'terminated').length,
           reserved_cores: cores.filter((c) => c.status === 'reserved').length,
           damaged_cores: cores.filter((c) => c.status === 'damaged').length,
+          bad_splices: badSplices.length,
         },
       });
     } catch (err) {

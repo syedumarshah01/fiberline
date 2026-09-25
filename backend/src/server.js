@@ -10,6 +10,7 @@ const splicesRouter = require('./routes/splices');
 const fiberCoresRouter = require('./routes/fiberCores');
 const splittersRouter = require('./routes/splitters');
 const capacityRouter = require('./routes/capacity');
+const settingsRouter = require('./routes/settings');
 
 const app = express();
 app.use(cors());
@@ -25,6 +26,7 @@ app.use('/api/splices', splicesRouter);
 app.use('/api/fiber-cores', fiberCoresRouter);
 app.use('/api/splitters', splittersRouter);
 app.use('/api/capacity', capacityRouter);
+app.use('/api/settings', settingsRouter);
 
 // Centralized error handler
 app.use((err, req, res, next) => {

@@ -2,6 +2,15 @@ import React, { useEffect, useState } from "react";
 import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
+import {
+  OLT_TYPE_LABELS,
+  formatDb,
+  lossEntryClass,
+  lossSourceLabel,
+  budgetStatusClass,
+  spliceLossClass,
+  splitterLabel,
+} from "../utils/lossView.js";
 
 function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
@@ -498,6 +507,21 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
         </div>
       </div>
 
+      {/* QC: auto-flag any splice in this box whose recorded loss is
+          suspiciously high — a probable bad splice worth re-doing. */}
+      {!!doc.qc_flags?.bad_splices?.length && (
+        <div
+          className="qc-flag"
+          title={doc.qc_flags.bad_splices
+            .map((s) => `${s.core_a} ↔ ${s.core_b}: ${formatDb(s.loss_db)} dB${s.tray ? ` (tray ${s.tray})` : ""}`)
+            .join("\n")}
+        >
+          ⚠ {doc.qc_flags.bad_splices.length} bad splice
+          {doc.qc_flags.bad_splices.length === 1 ? "" : "s"} — recorded loss above{" "}
+          {formatDb(doc.qc_flags.bad_splice_threshold_db)} dB (see the Loss column below)
+        </div>
+      )}
+
       {/* Inline box editor — code is what shows on the map label */}
       {editingBox && (
         <form onSubmit={handleSaveBox} className="inline-edit-card" style={{ marginBottom: 12 }}>
@@ -667,6 +691,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               <th>In (from)</th>
               <th>Out (to)</th>
               <th>Type</th>
+              <th>Loss dB</th>
               <th>Note</th>
               <th></th>
             </tr>
@@ -681,6 +706,18 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   {s.cable_b_code} #{s.core_b_number}
                 </td>
                 <td>{s.splice_type}</td>
+                <td
+                  className={spliceLossClass(s.loss_db, doc.qc_flags?.bad_splice_threshold_db)}
+                  title={
+                    s.loss_db != null
+                      ? spliceLossClass(s.loss_db, doc.qc_flags?.bad_splice_threshold_db) === "loss-flagged"
+                        ? "Bad splice — recorded loss above the threshold, re-splice recommended"
+                        : "Measured loss (OTDR / power meter)"
+                      : "No loss recorded — the loss budget assumes a default"
+                  }
+                >
+                  {s.loss_db != null ? formatDb(s.loss_db) : "—"}
+                </td>
                 <td
                   style={{ maxWidth: 140, cursor: "pointer" }}
                   title="Click to edit this splice (incl. its note)"
@@ -821,7 +858,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             />
           </div>
           <div className="field">
-            <label>Loss (dB)</label>
+            <label>Measured loss (dB) — OTDR / power meter</label>
             <input
               type="number"
               step="0.01"
@@ -1302,6 +1339,8 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
 function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
   const [full, setFull] = useState(null);
   const [trace, setTrace] = useState(null);
+  const [budget, setBudget] = useState(null);
+  const [tracedCoreId, setTracedCoreId] = useState(null);
   const [insertForm, setInsertForm] = useState(null);
   const [splitInfo, setSplitInfo] = useState(null);
   const [splitRatio, setSplitRatio] = useState(0.5);
@@ -1313,6 +1352,8 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
   useEffect(() => {
     setTrace(null);
+    setBudget(null);
+    setTracedCoreId(null);
     setInsertForm(null);
     setSplitInfo(null);
     setSplitRatio(0.5);
@@ -1432,6 +1473,8 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       });
       setInsertForm(null);
       setTrace(null);
+      setBudget(null);
+      setTracedCoreId(null);
       setSplitLngLat(null);
       if (onSplitPointChange) onSplitPointChange(null, null);
       await api.getCable(cable.id).then(setFull);
@@ -1461,8 +1504,21 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       code: full.code || "",
       name: full.name || "",
       customer_label: full.customer_label || "",
+      attenuation_db_per_km: full.attenuation_db_per_km ?? "",
     });
     setEditingCable(true);
+  }
+
+  // Switching OLT type persists the project-wide budget setting, then
+  // recomputes this trace's budget against the new budget constant.
+  async function handleOltTypeChange(oltType) {
+    if (!tracedCoreId) return;
+    try {
+      await api.updateSettings({ olt_type: oltType });
+      setBudget(await api.getLossBudget(tracedCoreId));
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   async function handleSaveCable(e) {
@@ -1473,6 +1529,10 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
         code: cableForm.code,
         name: cableForm.name.trim() ? cableForm.name.trim() : null,
         customer_label: cableForm.customer_label.trim() ? cableForm.customer_label.trim() : null,
+        attenuation_db_per_km:
+          cableForm.attenuation_db_per_km === "" || cableForm.attenuation_db_per_km == null
+            ? null
+            : Number(cableForm.attenuation_db_per_km),
       });
       setEditingCable(false);
       await api.getCable(cable.id).then(setFull);
@@ -1551,6 +1611,19 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
               onChange={(e) => setCableForm((f) => ({ ...f, customer_label: e.target.value }))}
             />
           </div>
+          <div className="field">
+            <label>Attenuation (dB/km) — blank = 0.35 singlemode default</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={cableForm.attenuation_db_per_km}
+              onChange={(e) =>
+                setCableForm((f) => ({ ...f, attenuation_db_per_km: e.target.value }))
+              }
+              placeholder="0.35"
+            />
+          </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-primary" type="submit" disabled={savingCable}>
               {savingCable ? "Saving…" : "Save cable"}
@@ -1593,7 +1666,11 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                 <button
                   className="btn"
                   style={{ padding: "3px 8px", fontSize: 11 }}
-                  onClick={() => api.traceFiber(c.id).then(setTrace)}
+                  onClick={() => {
+                    setTracedCoreId(c.id);
+                    api.traceFiber(c.id).then(setTrace).catch(() => setTrace(null));
+                    api.getLossBudget(c.id).then(setBudget).catch(() => setBudget(null));
+                  }}
                 >
                   Trace
                 </button>
@@ -1769,24 +1846,124 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
       {trace && (
         <div>
-          <p className="section-title">Fiber path (req #6)</p>
-          {trace.hops.map((hop, i) =>
-            hop.cable_code ? (
-              <div className="list-item" key={i}>
-                <div className="code">
-                  {hop.cable_code} · core #{hop.core_number}
+          <p className="section-title">Fiber path &amp; loss budget</p>
+
+          {/* Budget summary: total vs OLT budget, with margin & verdict */}
+          {budget && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="summary-grid cols-3">
+                <div className="summary-card">
+                  <div className="n">{formatDb(budget.total_loss_db)} dB</div>
+                  <div className="l">Path loss</div>
                 </div>
-                <div className="sub">
-                  {hop.cable_type}
-                  <Pill status={hop.core_status} />
+                <div className="summary-card">
+                  <div className="n">{formatDb(budget.budget_db)} dB</div>
+                  <div className="l">{OLT_TYPE_LABELS[budget.olt_type] || budget.olt_type} budget</div>
+                </div>
+                <div className="summary-card">
+                  <div className={`n ${budgetStatusClass(budget.status)}`}>
+                    {formatDb(budget.margin_db)} dB
+                  </div>
+                  <div className="l">Margin — {budget.status}</div>
                 </div>
               </div>
-            ) : (
-              <div className="empty-state" key={i} style={{ paddingLeft: 8 }}>
-                ↓ spliced ({hop.splice_type})
+              <div className="loss-controls">
+                <label htmlFor="olt-type-select">OLT type</label>
+                <select
+                  id="olt-type-select"
+                  value={budget.olt_type}
+                  onChange={(e) => handleOltTypeChange(e.target.value)}
+                  title="Project-wide setting: which OLT/transport budget to compare against"
+                >
+                  {Object.entries(OLT_TYPE_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="loss-legend">
+                  <span className="loss-measured">✓ measured</span>
+                  {" · "}
+                  <span className="loss-assumed">~ assumed (default)</span>
+                  {!!budget.counts?.flagged_bad_splices && (
+                    <>
+                      {" · "}
+                      <span className="loss-flagged">⚠ bad splice</span>
+                    </>
+                  )}
+                </span>
               </div>
-            ),
+              {!!budget.warnings?.length && (
+                <div className="loss-warnings">
+                  {budget.warnings.map((w, i) => (
+                    <div key={i}>⚠ {w}</div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
+
+          {/* The path itself, annotated with per-segment loss + running total.
+              With a budget we render its breakdown (same order as the hops,
+              plus splitter crossings); without one we fall back to raw hops. */}
+          {(budget ? budget.breakdown : trace.hops).map((hop, i) => {
+            if (hop.type === "splitter") {
+              return (
+                <div className="empty-state loss-row" key={i}>
+                  <span>
+                    ◇ splitter {splitterLabel(hop)}
+                  </span>
+                  {budget && (
+                    <span className={`loss-col ${lossEntryClass(hop)}`}>
+                      <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>
+                      <span className="loss-src">{lossSourceLabel(hop)}</span>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            if (hop.core_id) {
+              return (
+                <div className="list-item loss-row" key={i}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="code">
+                      {hop.cable_code} · core #{hop.core_number}
+                    </div>
+                    <div className="sub">
+                      {hop.cable_type}
+                      <Pill status={hop.core_status} />
+                    </div>
+                  </div>
+                  {budget && (
+                    <span className={`loss-col ${lossEntryClass(hop)}`}>
+                      <span>
+                        {hop.loss_db == null ? "—" : `+${formatDb(hop.loss_db)} dB`} · Σ{" "}
+                        {formatDb(hop.running_db)}
+                      </span>
+                      <span className="loss-src">
+                        {hop.length_missing
+                          ? "length unknown"
+                          : hop.duplicate_cable
+                            ? "same cable — not re-counted"
+                            : `${Math.round(hop.length_m)} m × ${formatDb(hop.attenuation_db_per_km)} dB/km`}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <div className="empty-state loss-row" key={i}>
+                <span>↓ spliced ({hop.splice_type})</span>
+                {budget && (
+                  <span className={`loss-col ${lossEntryClass(hop)}`}>
+                    <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>
+                    <span className="loss-src">{lossSourceLabel(hop)}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

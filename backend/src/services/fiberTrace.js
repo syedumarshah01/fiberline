@@ -25,7 +25,10 @@ async function traceFiber(startCoreId) {
       .select(
         'fc.id as core_id', 'fc.core_number', 'fc.status as core_status',
         'c.id as cable_id', 'c.code as cable_code', 'c.name as cable_name',
-        'c.cable_type', 'c.from_enclosure_id', 'c.to_enclosure_id', 'c.customer_id', 'c.customer_label'
+        'c.cable_type', 'c.from_enclosure_id', 'c.to_enclosure_id', 'c.customer_id', 'c.customer_label',
+        // Loss-budget inputs: the cable's length and per-km attenuation (NULL
+        // attenuation → project default at calculation time).
+        'c.length_m', 'c.attenuation_db_per_km'
       )
       .first();
   }
@@ -63,6 +66,9 @@ async function traceFiber(startCoreId) {
         splice_id: via.id,
         enclosure_id: via.enclosure_id,
         splice_type: via.splice_type,
+        // Measured splice loss (OTDR/power meter), if recorded — the loss
+        // budget falls back to a planning default when this is null.
+        loss_db: via.loss_db,
       });
     }
     segments.push(core);

@@ -14,13 +14,13 @@ const assert = require('node:assert/strict');
 //                                  \--S3--> cable4.coreD   (chained branch)
 const CORES = {
   A: { core_id: 'A', core_number: 1, core_status: 'spliced', cable_id: 'c1', cable_code: 'CBL-1', cable_type: 'feeder' },
-  B: { core_id: 'B', core_number: 1, core_status: 'spliced', cable_id: 'c2', cable_code: 'CBL-2', cable_type: 'feeder' },
+  B: { core_id: 'B', core_number: 1, core_status: 'spliced', cable_id: 'c2', cable_code: 'CBL-2', cable_type: 'feeder', length_m: 5000, attenuation_db_per_km: 0.4 },
   C: { core_id: 'C', core_number: 2, core_status: 'terminated', cable_id: 'c3', cable_code: 'CBL-3', cable_type: 'distribution' },
   D: { core_id: 'D', core_number: 3, core_status: 'spliced', cable_id: 'c4', cable_code: 'CBL-4', cable_type: 'drop' },
 };
 const SPLICES = [
   { id: 'S1', enclosure_id: 'box1', splice_type: 'fusion', core_a_id: 'A', core_b_id: 'B', splice_date: '2026-01-01', created_at: '1' },
-  { id: 'S2', enclosure_id: 'box2', splice_type: 'fusion', core_a_id: 'B', core_b_id: 'C', splice_date: '2026-01-02', created_at: '2' },
+  { id: 'S2', enclosure_id: 'box2', splice_type: 'fusion', core_a_id: 'B', core_b_id: 'C', splice_date: '2026-01-02', created_at: '2', loss_db: 0.15 },
   { id: 'S3', enclosure_id: 'box2', splice_type: 'mechanical', core_a_id: 'B', core_b_id: 'D', splice_date: '2026-01-03', created_at: '3' },
 ];
 
@@ -89,5 +89,21 @@ describe('traceFiber', () => {
   test('tracing from the far end walks upstream and includes branches', async () => {
     const ids = hopIds(await traceFiber('C'));
     assert.deepEqual(ids, ['C', 'S2', 'B', 'S1', 'A', 'S3', 'D']);
+  });
+
+  test('splice markers carry the recorded loss reading for the loss budget', async () => {
+    // S2 has a measured reading in the fixture; S1 does not.
+    const segs = await traceFiber('A');
+    const s2 = segs.find((s) => s.splice_id === 'S2');
+    const s1 = segs.find((s) => s.splice_id === 'S1');
+    assert.equal(s2.loss_db, 0.15);
+    assert.equal(s1.loss_db, undefined);
+  });
+
+  test('core hops expose the cable length and attenuation override', async () => {
+    const segs = await traceFiber('A');
+    const b = segs.find((s) => s.core_id === 'B');
+    assert.equal(b.length_m, 5000);
+    assert.equal(b.attenuation_db_per_km, 0.4);
   });
 });

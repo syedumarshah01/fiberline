@@ -793,3 +793,70 @@ code, .mono { font-family: var(--font-mono); }
   .vdoc-upstream { padding-left: 20px; }
   .summary-grid, .summary-grid.cols-3 { grid-template-columns: 1fr; }
 }
+
+/* ---------- Loss budget (trace panel + box documentation) ---------- */
+/* Path rows lay out as [segment …………… loss + running total]. */
+.loss-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.loss-row.list-item { padding: 7px 8px; }
+.loss-col {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  flex: none;
+}
+.loss-col .loss-src {
+  font-family: var(--font-body);
+  font-size: 9.5px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+/* Verified vs assumed vs flagged — the whole point of the coloring is that a
+   tech can see at a glance which dB numbers are measurements and which are
+   planning defaults. */
+.loss-measured { color: var(--teal); }
+.loss-assumed { color: var(--amber); }
+.loss-flagged { color: var(--red); font-weight: 700; }
+.loss-neutral { color: var(--text-muted); }
+.loss-status-ok { color: var(--teal); }
+.loss-status-marginal { color: var(--amber); }
+.loss-status-fail { color: var(--red); }
+.loss-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.loss-controls label { color: var(--text-muted); }
+.loss-legend { font-size: 10px; color: var(--text-faint); }
+.loss-warnings {
+  background: rgba(240, 180, 41, 0.08);
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--amber);
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+/* Auto-flagged bad splices in the box documentation */
+.qc-flag {
+  background: rgba(239, 83, 80, 0.1);
+  border: 1px solid rgba(239, 83, 80, 0.4);
+  color: var(--red);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 11px;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}

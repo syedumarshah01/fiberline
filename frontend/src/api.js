@@ -165,6 +165,10 @@ export const api = {
 
   // Fiber cores
   traceFiber: (coreId) => request(`/fiber-cores/${coreId}/trace`),
+  getLossBudget: (coreId, oltType) =>
+    request(
+      `/fiber-cores/${coreId}/loss-budget${oltType ? `?olt_type=${oltType}` : ""}`,
+    ),
   updateCore: (id, data) =>
     request(`/fiber-cores/${id}`, {
       method: "PATCH",
@@ -179,6 +183,14 @@ export const api = {
     request(`/capacity/customer-lookup?lat=${lat}&lng=${lng}&radius=${radius}`),
   getCustomerRoute: (customerLat, customerLng, enclosureId) =>
     request(`/capacity/customer-route?customerLat=${customerLat}&customerLng=${customerLng}&enclosureId=${enclosureId}`),
+
+  // Project settings (loss budget: OLT type, budget / safety-margin overrides)
+  getSettings: () => request("/settings"),
+  updateSettings: (data) =>
+    request("/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 
   // Health check
   health: () => safeRequest("/health"),

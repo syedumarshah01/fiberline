@@ -8,6 +8,7 @@ const {
   splitRouteAtDistance,
 } = require("../services/streetRoute");
 const { validateCableData } = require("../middleware/validation");
+const { sanitizeAttenuationDbPerKm } = require("../utils/lossBudget");
 const router = express.Router();
 
 // GET /api/cables — includes route as [ [lng,lat], [lng,lat] ] for map drawing
@@ -21,7 +22,7 @@ router.get("/", async (req, res, next) => {
     const rows = await db.raw(`
       SELECT c.id, c.code, c.name, c.cable_type, c.core_count, c.status,
              c.from_enclosure_id, c.to_enclosure_id, c.customer_id, c.customer_label,
-             c.length_m,
+             c.length_m, c.attenuation_db_per_km,
              (SELECT COUNT(*) FROM fiber_cores fc
               WHERE fc.cable_id = c.id AND (
                 fc.status = 'spliced'
@@ -240,7 +241,7 @@ async function loadCableWithRoute(trx, cableId) {
   const dbInstance = trx || db;
   const result = await dbInstance.raw(
     `SELECT id, code, name, cable_type, core_count, status, from_enclosure_id, to_enclosure_id,
-            customer_id, customer_label, length_m, notes,
+            customer_id, customer_label, length_m, attenuation_db_per_km, notes,
             ST_AsGeoJSON(route::geometry) AS route_geojson
      FROM cables
      WHERE id = ?`,
@@ -445,6 +446,9 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         customer_label: cable.customer_label,
         status: cable.status,
         length_m: split.downstream_length_m,
+        // The downstream half is the same fiber — keep its attenuation
+        // override (null = project default) so budgets stay accurate.
+        attenuation_db_per_km: cable.attenuation_db_per_km,
         notes: cable.notes,
         route: trx.raw("ST_SetSRID(ST_GeomFromText(?), 4326)::geography", [
           coordinatesToWkt(split.downstream),
@@ -584,6 +588,7 @@ router.post("/", validateCableData, async (req, res, next) => {
       route_geometry,
       status,
       length_m,
+      attenuation_db_per_km,
       notes,
     } = req.body;
 
@@ -623,6 +628,14 @@ router.post("/", validateCableData, async (req, res, next) => {
     }
 
     const normalizedName = name ?? null;
+    // Optional per-cable attenuation override; null → project default at
+    // loss-budget time (0.35 dB/km singlemode @ 1310 nm).
+    const attenuationResult = sanitizeAttenuationDbPerKm(attenuation_db_per_km);
+    if (attenuationResult.error) {
+      await trx.rollback();
+      return res.status(400).json({ error: attenuationResult.error });
+    }
+    const normalizedAttenuation = attenuationResult.value ?? null;
     // For drop cables, to_enclosure_id can be set (for customer enclosures)
     // or customer_id can be set (for registered customers)
     const normalizedToEnclosureId =
@@ -646,6 +659,7 @@ router.post("/", validateCableData, async (req, res, next) => {
         customer_label: normalizedCustomerLabel,
         status: normalizedStatus,
         length_m: normalizedLength,
+        attenuation_db_per_km: normalizedAttenuation,
         notes: normalizedNotes,
         route: trx.raw("ST_SetSRID(ST_GeomFromText(?), 4326)::geography", [
           coordinatesToWkt(streetRoute.route),
@@ -672,10 +686,27 @@ router.post("/", validateCableData, async (req, res, next) => {
 // PATCH /api/cables/:id
 router.patch("/:id", async (req, res, next) => {
   try {
-    const fields = ["name", "status", "length_m", "notes", "customer_label"];
+    const fields = [
+      "name",
+      "status",
+      "length_m",
+      "notes",
+      "customer_label",
+      "attenuation_db_per_km",
+    ];
     const updates = { updated_at: db.fn.now() };
     for (const f of fields)
       if (req.body[f] !== undefined) updates[f] = req.body[f];
+
+    // Attenuation is numeric-or-null; the edit form submits '' when blank,
+    // which Postgres would reject for a decimal column.
+    if (updates.attenuation_db_per_km !== undefined) {
+      const { value, error } = sanitizeAttenuationDbPerKm(
+        updates.attenuation_db_per_km,
+      );
+      if (error) return res.status(400).json({ error });
+      updates.attenuation_db_per_km = value ?? null;
+    }
 
     // `code` is the identifier users see everywhere — it's editable, but must
     // stay non-empty and unique (the column is UNIQUE; pre-check for a clear
