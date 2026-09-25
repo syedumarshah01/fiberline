@@ -1488,10 +1488,17 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
             `available in the new joint, ready to splice when needed.`
           : `No fibers were in use across the cut point, so nothing was spliced automatically — ` +
             `every core is available in the new joint, ready to splice when needed.`;
+      // The API reports here when it could not link the two halves (a database
+      // without migration 20260101000014) — the cut happened, but a failure
+      // simulation upstream of the new box will stop at it until that is fixed.
+      const warnings = result.warnings?.length
+        ? `\n\n⚠ ${result.warnings.join('\n')}`
+        : "";
       alert(
         `Done! New pole and enclosure "${result.enclosure.code}" placed.\n` +
         `Upstream: ${Math.round(result.split_info.upstream_length_m)}m → Box → Downstream: ${Math.round(result.split_info.downstream_length_m)}m\n` +
-        spliceLine
+        spliceLine +
+        warnings
       );
     } catch (err) {
       alert(err.message);

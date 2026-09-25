@@ -14,7 +14,7 @@
  * BOX-A has spare cores and stays live in every scenario here, so it is the
  * box a patch would be pulled from.
  */
-const { test, describe } = require('node:test');
+const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 // --- fixture -------------------------------------------------------------------
@@ -146,8 +146,10 @@ function fakeDb(table) {
   return builder;
 }
 
-// capacityGraph.getAvailableCoreCounts() runs one raw aggregate query.
+// capacityGraph.getAvailableCoreCounts() runs one raw aggregate query, and the
+// service opens by asking the schema probe which columns this database has.
 fakeDb.raw = async (sql) => {
+  if (isSchemaProbe(sql)) return schemaProbeRows(true);
   if (typeof sql === 'string' && /available_cores/.test(sql)) {
     return { rows: CAPACITY_ROWS };
   }
@@ -157,6 +159,10 @@ fakeDb.raw = async (sql) => {
 // Stub ../src/db in the require cache BEFORE loading the service.
 const dbPath = require.resolve('../src/db');
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
+
+const { isSchemaProbe, schemaProbeRows } = require('./helpers/schema');
+const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
+beforeEach(() => resetSchemaCache());
 
 const {
   resolveRoots,

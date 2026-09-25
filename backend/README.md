@@ -8,6 +8,33 @@
 4. `npm install`
 5. `npm run migrate`
 
+## Is my database up to date?
+
+```bash
+cd backend
+npm run db:schema
+```
+
+Read-only. It prints the target the API itself would connect to (password-free), the
+database and user it actually reached, how many migrations are applied and which are
+pending, and whether every column the running code expects is present — exit code 0 when
+current, 1 when behind, so it works as a pre-flight check.
+
+That matters because a pull that adds a migration and a pull that runs it are two
+different things, and the failure mode is confusing: the API reports a missing column
+while `npm run migrate` insists everything is applied — because migrate went to a
+different database (a stale `.env`, `NODE_ENV=production` with `DATABASE_URL`, another
+Postgres on another port). `db:schema` prints both sides of that comparison.
+
+The app does not fall over when the schema is behind. Each feature that needs a newer
+column checks for it first (`src/utils/schemaCapabilities.js`), drops it from its query
+when it is absent, and reports a warning naming the migration to run: the failure
+simulation keeps answering (it just cannot step across an inserted closure), the trace
+works the same, and the insert-enclosure route still cuts the cable but says the halves
+were not linked. The check is cached and re-run on a timer, so a server that is left
+running when you finally apply the migration picks the feature up by itself. The backend
+also prints the same warning at startup.
+
 ## Starting over (empty database)
 
 ```bash

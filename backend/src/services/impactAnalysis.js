@@ -1,6 +1,7 @@
 const db = require('../db');
 const { buildGraph, getAvailableCoreCounts } = require('./capacityGraph');
 const { migrationHint } = require('../utils/schemaHint');
+const { schemaCapabilities } = require('../utils/schemaCapabilities');
 const {
   analyzeImpact,
   groupRestorationCandidates,
@@ -30,11 +31,31 @@ const CABLE_FIELDS = [
 ];
 
 async function loadNetwork() {
+  // A database that has not run migration 14 yet still gets a working failure
+  // simulation — it just cannot step across an inserted closure, so the column
+  // is left out of the SELECT and the gap is reported as a warning instead of
+  // failing the request.
+  const capabilities = await schemaCapabilities();
+
+  if (capabilities.has_cables === false) {
+    // Nothing to analyse: the database has no schema at all. Saying so beats
+    // letting `relation "cables" does not exist` reach the panel.
+    const err = new Error(capabilities.gaps[0].message);
+    err.status = 503;
+    throw err;
+  }
+
+  const cableFields = capabilities.columns.continues_cable_id
+    ? CABLE_FIELDS
+    : CABLE_FIELDS.filter((field) => field !== 'continues_cable_id');
+
   try {
-    return await loadNetworkRows();
+    const rows = await loadNetworkRows(cableFields);
+    return { ...rows, schema_warnings: capabilities.gaps.map((gap) => gap.message) };
   } catch (err) {
-    // Same courtesy as the fiber trace: an unmigrated database gets told to
-    // run the migration rather than a bare undefined_column error.
+    // Belt and braces: if the probe said the column exists but the read still
+    // fails on it (a migration applied between the two queries, a stale cache),
+    // say what to do rather than leaking Postgres' 42703.
     throw migrationHint(err, {
       column: 'continues_cable_id',
       migration: 'migration 20260101000014_cable_continuations.js',
@@ -43,11 +64,11 @@ async function loadNetwork() {
   }
 }
 
-async function loadNetworkRows() {
+async function loadNetworkRows(cableFields = CABLE_FIELDS) {
   const [enclosures, cables, cores, splices, splitters, ports, headends, customers] =
     await Promise.all([
       db('enclosures').select(...ENCLOSURE_FIELDS),
-      db('cables').select(...CABLE_FIELDS),
+      db('cables').select(...cableFields),
       db('fiber_cores').select('id', 'cable_id', 'core_number', 'status'),
       db('splices').select('id', 'enclosure_id', 'core_a_id', 'core_b_id', 'splice_type'),
       db('splitters').select('id', 'enclosure_id', 'name', 'input_core_id', 'split_count'),
@@ -264,7 +285,7 @@ async function simulateFailure({
 
   // "No root configured" is the wrong diagnosis when every headend row is
   // simply not wired to a box yet.
-  let warnings = analysis.warnings;
+  let warnings = [...(network.schema_warnings || []), ...analysis.warnings];
   if (network.headends.length && !rooted.length) {
     warnings = warnings
       .filter((w) => !/network root .*is configured/i.test(w))

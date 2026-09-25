@@ -12,7 +12,8 @@
     "db:reset": "node scripts/resetDb.js",
     "db:truncate": "node scripts/resetDb.js --truncate",
     "seed": "knex seed:run",
-    "test": "node --test"
+    "test": "node --test",
+    "db:schema": "node scripts/schemaStatus.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

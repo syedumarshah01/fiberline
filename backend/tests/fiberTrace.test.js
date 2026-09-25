@@ -38,6 +38,10 @@ const MID_CABLES = {
   'c5-B': { id: 'c5-B', code: 'CBL-5-B', cable_type: 'distribution', continues_cable_id: 'c5', from_enclosure_id: 'box-mid' },
 };
 
+// The schema probe (schemaCapabilities) asks through db.raw; this fixture's
+// database has the mid-span column unless a test says otherwise.
+fakeDb.raw = async () => schemaProbeRows(fakeDb.__continuationColumn !== false);
+
 function fakeDb(table) {
   if (table === 'splices') {
     let coreId = null;
@@ -104,6 +108,8 @@ function fakeDb(table) {
 const dbPath = require.resolve('../src/db');
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
 const { traceFiber } = require('../src/services/fiberTrace');
+const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
+const { schemaProbeRows } = require('./helpers/schema');
 
 function hopIds(segments) {
   return segments.map((h) => h.core_id || h.splice_id);
@@ -140,6 +146,22 @@ describe('traceFiber across a mid-span (inserted) closure', () => {
     const spliceEntry = budget.breakdown.find((e) => e.type === 'splice');
     assert.equal(spliceEntry.loss_db, 0.1);
     assert.equal(spliceEntry.box_id, 'box-mid');
+  });
+});
+
+describe('a trace on a database without the mid-span column', () => {
+  test('walks the splices and simply does not step across the closure', async () => {
+    fakeDb.__continuationColumn = false;
+    resetSchemaCache();
+    try {
+      const segments = await traceFiber('G');
+      // Nothing crashes and the core itself is reported; the link simply is not
+      // there to follow (migration 20260101000014 has not been applied).
+      assert.deepEqual(segments.map((h) => h.core_id ?? h.splice_type), ['G']);
+    } finally {
+      delete fakeDb.__continuationColumn;
+      resetSchemaCache();
+    }
   });
 });
 

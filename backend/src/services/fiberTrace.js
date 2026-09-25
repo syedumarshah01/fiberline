@@ -1,5 +1,6 @@
 const db = require('../db');
 const { migrationHint } = require('../utils/schemaHint');
+const { hasContinuationLinks } = require('../utils/schemaCapabilities');
 
 /**
  * Given a starting fiber_core id, walk the chain of splices outward until it
@@ -26,20 +27,28 @@ async function traceFiber(startCoreId) {
   const segments = [];
 
   async function loadCoreWithCable(coreId) {
+    // Only ask for the mid-span link when the database has it — see
+    // utils/schemaCapabilities.js. Without it the trace works exactly as it did
+    // before mid-span continuations existed.
+    const withContinuations = await hasContinuationLinks();
+    const coreFields = [
+      'fc.id as core_id', 'fc.core_number', 'fc.status as core_status',
+      'c.id as cable_id', 'c.code as cable_code', 'c.name as cable_name',
+      'c.cable_type', 'c.from_enclosure_id', 'c.to_enclosure_id', 'c.customer_id', 'c.customer_label',
+      // Loss-budget inputs: the cable's length and per-km attenuation (NULL
+      // attenuation → project default at calculation time).
+      'c.length_m', 'c.attenuation_db_per_km',
+    ];
+    if (withContinuations) {
+      // Mid-span splits: the downstream half of this cable, if any.
+      coreFields.push('c.continues_cable_id');
+    }
+
     try {
       return await db('fiber_cores as fc')
         .join('cables as c', 'c.id', 'fc.cable_id')
         .where('fc.id', coreId)
-        .select(
-          'fc.id as core_id', 'fc.core_number', 'fc.status as core_status',
-          'c.id as cable_id', 'c.code as cable_code', 'c.name as cable_name',
-          'c.cable_type', 'c.from_enclosure_id', 'c.to_enclosure_id', 'c.customer_id', 'c.customer_label',
-          // Mid-span splits: the downstream half of this cable, if any.
-          'c.continues_cable_id',
-          // Loss-budget inputs: the cable's length and per-km attenuation (NULL
-          // attenuation → project default at calculation time).
-          'c.length_m', 'c.attenuation_db_per_km'
-        )
+        .select(...coreFields)
         .first();
     } catch (err) {
       // A trace on a database that has not been migrated yet should say so
@@ -68,6 +77,7 @@ async function traceFiber(startCoreId) {
 
   /** The downstream half of a cable, if a closure was inserted mid-span. */
   async function childCableOf(cableId) {
+    if (!(await hasContinuationLinks())) return null;
     return db('cables').where({ continues_cable_id: cableId }).first();
   }
 
@@ -87,6 +97,7 @@ async function traceFiber(startCoreId) {
    */
   async function continuationStep(core, cameFromCoreId, taken) {
     if (!core.cable_id || !inService(core)) return null;
+    if (!(await hasContinuationLinks())) return null;
     const candidates = [];
 
     const child = await childCableOf(core.cable_id); // downstream half

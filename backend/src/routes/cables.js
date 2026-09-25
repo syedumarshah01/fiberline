@@ -9,6 +9,15 @@ const {
 } = require("../services/streetRoute");
 const { validateCableData } = require("../middleware/validation");
 const { sanitizeAttenuationDbPerKm } = require("../utils/lossBudget");
+const { hasContinuationLinks } = require("../utils/schemaCapabilities");
+
+// Shown in the insert-enclosure response (and the UI alert) when the database
+// is missing cables.continues_cable_id.
+const UNLINKED_SPLIT_WARNING =
+  "This database has no cables.continues_cable_id column, so the two halves of the " +
+  'split are not linked: run "npm run migrate" in backend/ to apply ' +
+  "20260101000014_cable_continuations.js, then set the link (or re-insert the " +
+  'enclosure). Until then, a failure simulation upstream of this new box will stop at it.';
 const router = express.Router();
 
 // GET /api/cables — includes route as [ [lng,lat], [lng,lat] ] for map drawing
@@ -329,6 +338,10 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       split_distance_m,  // absolute distance in meters from the start
     } = req.body;
 
+    // Can this database record that the two halves are one fiber? If not, the
+    // cut still happens — it just cannot be linked (migration 20260101000014).
+    const canLinkContinuation = await hasContinuationLinks();
+
     const cable = await loadCableWithRoute(trx, cableId);
     if (!cable) {
       await trx.rollback();
@@ -444,8 +457,10 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         to_enclosure_id: cable.to_enclosure_id,
         // The two halves are one fiber: core #n of the parent continues as
         // core #n here. Without this, every trace that walks joints stops at
-        // the new box (see migration 20260101000014).
-        continues_cable_id: cable.id,
+        // the new box (see migration 20260101000014) — so on a database that
+        // predates the column the row is written without it, and the response
+        // says the link was not recorded.
+        ...(canLinkContinuation ? { continues_cable_id: cable.id } : {}),
         customer_id: cable.customer_id,
         customer_label: cable.customer_label,
         status: cable.status,
@@ -542,12 +557,16 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         length_m: split.upstream_length_m,
       },
       downstream_cable: downstreamCable,
+      warnings: canLinkContinuation ? [] : [UNLINKED_SPLIT_WARNING],
       summary: {
         total_cores: originalCores.length,
         auto_spliced_pairs: autoSplicedPairs,
         live_cores: liveCores.length,
         pass_through_cores: passThroughCores.length,
         left_available_cores: plainAvailableCores.length,
+        // False means this database cannot record the parent/child link, so the
+        // downstream half is not yet joined to the upstream one.
+        continuation_recorded: canLinkContinuation,
       },
     });
   } catch (err) {

@@ -120,6 +120,12 @@ fakeDb.raw = async (sql, params = []) => {
     const cable = (store.cables || []).find((c) => c.id === params[0]);
     return { rows: cable ? [cable] : [] };
   }
+  if (isSchemaProbe(sql)) {
+    // Report continues_cable_id unless the test says this database predates
+    // migration 14.
+    if (fakeDb.__unmigratedDatabase) return emptyDatabaseProbeRows();
+    return schemaProbeRows(fakeDb.__continuationColumn !== false);
+  }
   if (/available_cores/i.test(sql)) {
     // Free cores on any non-drop cable landing at the enclosure — the stand-in
     // for the grouping query capacityGraph issues.
@@ -158,6 +164,9 @@ const ROUTE = {
 
 function freshStore() {
   idSeq = 0;
+  delete fakeDb.__continuationColumn;
+  delete fakeDb.__unmigratedDatabase;
+  resetSchemaCache();
   store = {
     poles: [],
     enclosures: [
@@ -223,6 +232,10 @@ require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: f
 
 const cablesRouter = require('../src/routes/cables');
 const { simulateFailure } = require('../src/services/impactAnalysis');
+// The schema probe caches its answer per process (a running server re-checks on
+// a timer), so each test starts from a clean slate.
+const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
+const { isSchemaProbe, schemaProbeRows, emptyDatabaseProbeRows } = require('./helpers/schema');
 
 let app;
 before(() => {
@@ -408,6 +421,86 @@ describe('a database that has not been migrated yet', () => {
       delete fakeDb.__failOnTable;
       delete fakeDb.__failError;
     }
+  });
+});
+
+describe('a database that has not run migration 14 (the column is absent)', () => {
+  /** Pretend the probe looked at a database without cables.continues_cable_id. */
+  function pretendUnmigrated() {
+    fakeDb.__continuationColumn = false;
+    resetSchemaCache(); // pretend the server just started against this database
+    // The real column would not be there, so a read naming it must fail loudly
+    // if the code ever asks for it anyway.
+    const rows = store.cables;
+    store.cables = new Proxy(rows, {
+      get(target, prop) {
+        if (prop === 'continues_cable_id') {
+          throw Object.assign(new Error('column "continues_cable_id" does not exist'), {
+            code: '42703',
+          });
+        }
+        return target[prop];
+      },
+    });
+  }
+
+  test('the insert still works and reports that the halves are not linked', async () => {
+    freshStore();
+    pretendUnmigrated();
+    const res = await insertMidSpanEnclosure();
+
+    assert.equal(res.status, 201);
+    assert.equal(res.body.summary.continuation_recorded, false);
+    assert.match(res.body.warnings.join(' '), /npm run migrate/);
+    // The cut itself happened: upstream now ends at the new box, downstream exists.
+    const mid = store.enclosures.find((e) => e.code === 'BOX-MID');
+    assert.equal(store.cables.find((c) => c.id === 'f1').to_enclosure_id, mid.id);
+    assert.ok(store.cables.find((c) => c.code === 'CBL-F1-B'));
+  });
+
+  test('the failure simulation still answers — no 503 — and explains the gap', async () => {
+    freshStore();
+    await insertMidSpanEnclosure();
+    const downstream = store.cables.find((c) => c.code === 'CBL-F1-B');
+    connectDropTo(coreOf(downstream.id, 1));
+    pretendUnmigrated();
+
+    const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
+
+    // It cannot walk across the closure (nothing links the halves), but it must
+    // not throw: the request answers, the upstream half is still reported, and
+    // the warning says exactly what to run.
+    assert.equal(impact.affected.boxes.map((b) => b.code).sort().includes('BOX-OLT'), true);
+    assert.match(impact.warnings.join(' '), /npm run migrate/);
+    assert.match(impact.warnings.join(' '), /continues_cable_id/);
+  });
+
+  test('a database with no tables at all says so in one line', async () => {
+    freshStore();
+    fakeDb.__unmigratedDatabase = true;
+    resetSchemaCache();
+
+    await assert.rejects(
+      () => simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] }),
+      (err) => {
+        assert.match(err.message, /no "cables" table/);
+        assert.match(err.message, /npm run migrate/);
+        assert.equal(err.status, 503);
+        return true;
+      },
+    );
+  });
+
+  test('a migrated database reports no such warning', async () => {
+    freshStore();
+    await insertMidSpanEnclosure();
+    const downstream = store.cables.find((c) => c.code === 'CBL-F1-B');
+    connectDropTo(coreOf(downstream.id, 1));
+
+    const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
+
+    assert.equal(impact.affected.customer_count, 1);
+    assert.equal(impact.warnings.some((w) => /npm run migrate/.test(w)), false);
   });
 });
 

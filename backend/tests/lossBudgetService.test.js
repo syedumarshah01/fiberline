@@ -15,7 +15,7 @@
  * SP1's input core (FX) is deliberately NOT part of the spliced path, so the
  * only way the budget can know about SP1 is the cascade-parent walk.
  */
-const { test, describe } = require('node:test');
+const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 // --- in-memory fixture --------------------------------------------------------
@@ -109,9 +109,19 @@ function fakeDb(table) {
   return b;
 }
 
+// The trace behind the budget opens by asking the schema probe which columns
+// this database has (there are no mid-span splits in this fixture network).
+fakeDb.raw = async (sql) => {
+  if (isSchemaProbe(sql)) return schemaProbeRows(true);
+  throw new Error(`unexpected raw query in test stub: ${sql}`);
+};
+
 // Stub ../src/db in the require cache BEFORE loading the service.
 const dbPath = require.resolve('../src/db');
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
+const { isSchemaProbe, schemaProbeRows } = require('./helpers/schema');
+const { resetSchemaCache } = require('../src/utils/schemaCapabilities');
+beforeEach(() => resetSchemaCache());
 const { buildLossBudget } = require('../src/services/lossBudget');
 
 // Both directions must add up to the same total:

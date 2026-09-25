@@ -39,4 +39,30 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Fiber network API listening on port ${PORT}`);
+  reportSchema();
 });
+
+/**
+ * Say up front when this database is behind the code, instead of letting the
+ * first click on *Simulate failure* discover it. Not fatal — the features that
+ * need the missing column turn themselves off and say so in their own
+ * warnings (see utils/schemaCapabilities.js).
+ */
+async function reportSchema() {
+  try {
+    const { schemaCapabilities } = require('./utils/schemaCapabilities');
+    const capabilities = await schemaCapabilities({ refresh: true });
+    if (!capabilities.gaps.length) return;
+    console.warn('---');
+    console.warn(`Schema check — database "${capabilities.database}" on ${capabilities.target}`);
+    for (const gap of capabilities.gaps) console.warn(`  ! ${gap.message}`);
+    console.warn('---');
+  } catch (err) {
+    // The database may simply not be up yet; the API is still listening and the
+    // usual connection error will surface on the first real request. A knex
+    // connection failure is an AggregateError, which often carries no message
+    // text at all — name it rather than logging a blank line.
+    const reason = err.message?.trim() || err.code || err.name || 'unknown error';
+    console.warn(`Schema check skipped: ${reason}`);
+  }
+}

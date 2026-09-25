@@ -15,18 +15,25 @@
  * is how the insert route creates them.
  */
 exports.up = async function (knex) {
-  await knex.schema.alterTable('cables', (table) => {
-    table
-      .uuid('continues_cable_id')
-      .references('id')
-      .inTable('cables')
-      // Deleting either half must not delete the other — the remaining half is
-      // still a real cable, it just stops claiming a continuation.
-      .onDelete('SET NULL');
-  });
+  // Idempotent on purpose: a run that was interrupted, or a hand-applied
+  // column, must not make `npm run migrate` fail with "column already exists".
+  const hasColumn = await knex.schema.hasColumn('cables', 'continues_cable_id');
+  if (hasColumn) {
+    console.log('  cables.continues_cable_id already exists — keeping it');
+  } else {
+    await knex.schema.alterTable('cables', (table) => {
+      table
+        .uuid('continues_cable_id')
+        .references('id')
+        .inTable('cables')
+        // Deleting either half must not delete the other — the remaining half is
+        // still a real cable, it just stops claiming a continuation.
+        .onDelete('SET NULL');
+    });
+  }
 
   await knex.raw(
-    `CREATE INDEX cables_continues_cable_idx ON cables (continues_cable_id);`,
+    `CREATE INDEX IF NOT EXISTS cables_continues_cable_idx ON cables (continues_cable_id);`,
   );
 
   // Backfill the splits that already exist. There is no foreign key to the
@@ -81,7 +88,10 @@ exports.up = async function (knex) {
 };
 
 exports.down = async function (knex) {
-  await knex.schema.alterTable('cables', (table) => {
-    table.dropColumn('continues_cable_id');
-  });
+  await knex.raw('DROP INDEX IF EXISTS cables_continues_cable_idx;');
+  if (await knex.schema.hasColumn('cables', 'continues_cable_id')) {
+    await knex.schema.alterTable('cables', (table) => {
+      table.dropColumn('continues_cable_id');
+    });
+  }
 };
