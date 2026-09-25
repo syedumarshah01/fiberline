@@ -1082,3 +1082,113 @@ describe('haversineMeters', () => {
     assert.equal(haversineMeters(null, { lat: 1, lng: 1 }), null);
   });
 });
+
+describe('a splitter port\'s downstream cable — out-ness is measured in light, not in status columns', () => {
+  /**
+   *   [OLT] ─ CBL-F1 ─ [BOX-A: splitter] ─ CBL-D1 ─ [BOX-B] ─ CBL-DROP-1 ─ CUST-1
+   *
+   * CBL-D1 is the span the failed box's splitter port feeds. One fibre on it was
+   * ever lit — the port's own output — and failing BOX-A takes it. The rest of
+   * the span is documented the way imported data arrives: status 'spliced', while
+   * no splice, splitter input or port output ever names those cores, so nothing
+   * joins them to the plant and no light ever reached them.
+   */
+  const shaped = () => ({
+    enclosures: [
+      { id: 'olt', code: 'BOX-OLT', type: 'cabinet' },
+      { id: 'a', code: 'BOX-A', type: 'splice_closure' },
+      { id: 'b', code: 'BOX-B', type: 'nap' },
+    ],
+    cables: [
+      { id: 'f1', code: 'CBL-F1', cable_type: 'feeder', from_enclosure_id: 'olt', to_enclosure_id: 'a' },
+      { id: 'd1', code: 'CBL-D1', cable_type: 'distribution', from_enclosure_id: 'a', to_enclosure_id: 'b' },
+      { id: 'drop1', code: 'CBL-DROP-1', cable_type: 'drop', from_enclosure_id: 'b', customer_id: 'cust1', customer_label: 'CUST-1' },
+    ],
+    cores: [
+      { id: 'f1c1', cable_id: 'f1', core_number: 1, status: 'spliced' },
+      { id: 'd1c1', cable_id: 'd1', core_number: 1, status: 'spliced' }, // the port's output
+      { id: 'd1c2', cable_id: 'd1', core_number: 2, status: 'spliced' }, // status only — nothing joins it
+      { id: 'd1c3', cable_id: 'd1', core_number: 3, status: 'spliced' }, // status only — nothing joins it
+      { id: 'd1c4', cable_id: 'd1', core_number: 4, status: 'available' },
+      { id: 'drop1c1', cable_id: 'drop1', core_number: 1, status: 'terminated' },
+    ],
+    splices: [{ id: 's1', enclosure_id: 'b', core_a_id: 'd1c1', core_b_id: 'drop1c1' }],
+    splitters: [{ id: 'sp1', enclosure_id: 'a', name: 'Tray A', input_core_id: 'f1c1', split_count: 4 }],
+    ports: [{ id: 'p1', splitter_id: 'sp1', port_number: 1, output_core_id: 'd1c1', output_splitter_id: null }],
+    customers: [{ id: 'cust1', customer_code: 'CUST-1', name: 'Ada' }],
+  });
+
+  /** The same span, with one more core genuinely fed around the failed box. */
+  const withSecondFeed = () => {
+    const net = shaped();
+    net.enclosures.push({ id: 'c', code: 'BOX-C', type: 'splice_closure' });
+    net.cables.push(
+      { id: 'f2', code: 'CBL-F2', cable_type: 'feeder', from_enclosure_id: 'olt', to_enclosure_id: 'c' },
+      { id: 'd2', code: 'CBL-D2', cable_type: 'distribution', from_enclosure_id: 'c', to_enclosure_id: 'b' },
+      { id: 'drop2', code: 'CBL-DROP-2', cable_type: 'drop', from_enclosure_id: 'b', customer_id: 'cust2', customer_label: 'CUST-2' },
+    );
+    net.cores.push(
+      { id: 'f2c1', cable_id: 'f2', core_number: 1, status: 'spliced' },
+      { id: 'd2c1', cable_id: 'd2', core_number: 1, status: 'spliced' },
+      { id: 'drop2c1', cable_id: 'drop2', core_number: 1, status: 'terminated' },
+    );
+    // d1c2 really is a working fibre: fed from BOX-C, handed over at BOX-B, and
+    // carrying CUST-2 — all joints that survive BOX-A.
+    net.splices.push(
+      { id: 's2', enclosure_id: 'c', core_a_id: 'f2c1', core_b_id: 'd2c1' },
+      { id: 's3', enclosure_id: 'b', core_a_id: 'd2c1', core_b_id: 'd1c2' },
+      { id: 's4', enclosure_id: 'b', core_a_id: 'd1c2', core_b_id: 'drop2c1' },
+    );
+    net.customers.push({ id: 'cust2', customer_code: 'CUST-2', name: 'Grace' });
+    return net;
+  };
+
+  const failBoxA = (net = shaped()) => analyzeImpact({
+    ...net, rootCoreIds: ['f1c1'], rootBoxIds: ['olt'], boxIds: ['a'],
+  });
+  const cable = (impact, id) => impact.affected.cables.find((c) => c.id === id) || null;
+
+  test('the span the port feeds is out in full, not partly out', () => {
+    const impact = failBoxA();
+    const d1 = cable(impact, 'd1');
+    assert.ok(d1, 'the downstream cable is in the payload');
+    assert.equal(d1.cores_dark, 1, 'the one fibre on it that carried light');
+    assert.equal(d1.cores_in_service, 1,
+      'a status column with no joint behind it is not a working fibre');
+    assert.equal(d1.partially_dark, false,
+      'every fibre on the span that had light lost it, so the span is out — the map must not draw it faint');
+    assert.equal(impact.affected.partial_cable_count, 0);
+  });
+
+  test('and the customer behind the port is still reported down', () => {
+    const impact = failBoxA();
+    assert.deepEqual(labels(impact), ['CUST-1']);
+    assert.ok(cable(impact, 'drop1'), 'the drop hanging off the span is painted too');
+  });
+
+  test('with no headend the port\'s span still comes out fully out', () => {
+    // The sweep's other half: the walk is undirected and over-reports the span
+    // that feeds the failure, but the span the port feeds must still be red.
+    const impact = analyzeImpact({ ...shaped(), boxIds: ['a'] });
+    assert.equal(impact.directed, false);
+    const d1 = cable(impact, 'd1');
+    assert.ok(d1);
+    assert.equal(d1.cores_dark, d1.cores_in_service,
+      'nothing unjoined is counted as a working fibre here either');
+    assert.equal(d1.partially_dark, false);
+  });
+
+  test('a fibre with a feed that survives the box keeps the span partly out', () => {
+    // The guard against over-painting: d1c2 is lit through BOX-C, so the span is
+    // half out and saying otherwise would strand CUST-2 on paper.
+    const impact = analyzeImpact({
+      ...withSecondFeed(), rootCoreIds: ['f1c1', 'f2c1'], rootBoxIds: ['olt'], boxIds: ['a'],
+    });
+    const d1 = cable(impact, 'd1');
+    assert.equal(d1.cores_dark, 1);
+    assert.equal(d1.cores_in_service, 2);
+    assert.equal(d1.partially_dark, true);
+    assert.equal(impact.affected.partial_cable_count, 1);
+    assert.deepEqual(labels(impact), ['CUST-1']);
+  });
+});

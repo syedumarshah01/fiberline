@@ -75,8 +75,13 @@ worth knowing:
 - **cables are counted per fibre.** `affected.cables[].cores_dark` /
   `cores_in_service` and `partially_dark` say how much of a span is out, and
   `affected.partial_cable_count` totals it: an outage that darkens 1 of a cable's
-  12 fibres is partly out, not gone, and the map styles it that way. Spares
-  (`available`/`reserved`) never count as lost fibres.
+  12 fibres is partly out, not gone, and the map styles it that way. The count is
+  of fibres that carried light — a recorded joint (a splice, a splitter's input, a
+  port's output) or a path to the root — so a spare (`available`/`reserved`) never
+  counts as a lost fibre, and neither does a status column on a strand no joint
+  ever names: an import leftover marked `spliced` must not dilute a span whose
+  every lit fibre is out, the cable fed by a failed box's splitter port among
+  them, into a "partly out" line.
 
 Direction comes from the headend root. Without one there is no upstream to reason
 about, so the walk goes both ways from the failure point and the report says it

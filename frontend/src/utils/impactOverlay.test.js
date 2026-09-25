@@ -87,7 +87,7 @@ describe('impactOverlay', () => {
     assert.deepEqual([...overlay.partialCableIds], ['x']);
   });
 
-  it('draws a partly-out span as a thin broken line, not as a dead span', () => {
+  it('draws a partly-out span as a broken line, not as a dead span', () => {
     const overlay = impactOverlay(IMPACT_PARTIAL);
     const gone = impactCableStyle('drop1', overlay);
     const partial = impactCableStyle('x', overlay);
@@ -96,6 +96,14 @@ describe('impactOverlay', () => {
     assert.ok(partial.weight < gone.weight, 'lighter than a span that is out');
     assert.ok(partial.opacity < 1, 'and translucent');
     assert.notDeepEqual(partial.dash, gone.dash);
+  });
+
+  it('still reads as red from across a busy map', () => {
+    // Broken is the signal; faint is not. A partly-out span has a dead strand in
+    // it and a technician sent to the fault has to be able to see it.
+    const partial = impactCableStyle('x', impactOverlay(IMPACT_PARTIAL));
+    assert.ok(partial.weight >= 4, `thick enough to see (got ${partial.weight})`);
+    assert.ok(partial.opacity >= 0.7, `not washed out (got ${partial.opacity})`);
   });
 
   it('says how many spans are partly out, without counting them as dark', () => {

@@ -1097,9 +1097,22 @@ function analyzeImpact({
   // many fibres, and an outage that darkens 1 of its 12 cores must not read the
   // same as a span that is gone: `partially_dark` is what the map styles
   // differently and what the panel counts separately.
+  //
+  // Both numbers are counted in *light*, and the evidence for light is the same
+  // evidence the rest of this file uses. With a headend configured it is a fact —
+  // light reached the fibre from the root — and a joint is only how it got there.
+  // Without one there is nothing to trace, so a recorded joint (a splice, a
+  // splitter's input, a port's output) is the evidence instead. What is never
+  // evidence is a status column on a strand nothing joins: an import leftover or
+  // a hand-edited row. Counting those as working fibres is what drew the span
+  // hanging off a failed box's splitter port as "1 of 3 out" — a faint, dashed
+  // line — while every fibre on that span that had light was dark, which is not
+  // what the technician sent to the fault reads.
+  const carriesLight = (core) =>
+    directed ? intactKeys.has(coreKey(core.id)) : index.joinedCoreIds.has(core.id);
   const inServiceByCable = new Map();
   for (const core of index.cores) {
-    if (core.cable_id && inPlant(index, core)) {
+    if (core.cable_id && inPlant(index, core) && carriesLight(core)) {
       inServiceByCable.set(core.cable_id, (inServiceByCable.get(core.cable_id) || 0) + 1);
     }
   }
@@ -1114,7 +1127,8 @@ function analyzeImpact({
       // outage, and counting it painted the upstream span red.
       if (inPlant(index, core)) {
         affectedCoreIds.push(core.id);
-        if (core.cable_id) {
+        // Only a fibre that carried light can have lost it — see carriesLight.
+        if (core.cable_id && carriesLight(core)) {
           darkCoresByCable.set(core.cable_id, (darkCoresByCable.get(core.cable_id) || 0) + 1);
         }
       }

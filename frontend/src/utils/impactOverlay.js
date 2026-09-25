@@ -105,13 +105,16 @@ export function impactCableStyle(cableId, overlay) {
   if (!overlay?.active) return null;
   const isFailure = overlay.failureCableIds.has(cableId);
   const isDark = overlay.darkCableIds.has(cableId);
-  // Partly out: the span still carries light on its other fibres, so it is drawn
-  // as a thin broken line rather than as a span that is gone.
+  // Partly out: the span still carries light on some of its fibres, so it is
+  // drawn broken rather than solid — but it *is* an outage, and a strand of the
+  // span is dead, so it has to read as one from across the map. It used to be a
+  // 3px line at 55% with a 2-7 dash, which is all but invisible on a busy map
+  // next to a span that is painted solid; broken is the signal, faint is not.
   const isPartial = overlay.partialCableIds?.has(cableId);
   if (!isFailure && !isDark && !isPartial) return null;
   if (isFailure) return { color: FAILURE_COLOR, weight: 7, opacity: 1, dash: [5, 3], animated: false };
   if (isDark) return { color: FAILURE_COLOR, weight: 5, opacity: 1, dash: [12, 5], animated: false };
-  return { color: FAILURE_COLOR, weight: 3, opacity: 0.55, dash: [2, 7], animated: false };
+  return { color: FAILURE_COLOR, weight: 4, opacity: 0.8, dash: [4, 6], animated: false };
 }
 
 /** `{ dark, failed }` for a box marker. */
