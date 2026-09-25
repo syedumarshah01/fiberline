@@ -54,6 +54,31 @@ changes nothing, drops the schema — so pointing it at your real database is sa
 works with or without PostGIS. Without `TEST_DATABASE_URL` the file still runs its static
 checks (no aggregates over uuid ids, the backfill is guarded) and skips the rest.
 
+### Mid-span splits that are still unlinked
+
+Migration 14 backfills splits that already existed — the two halves of a closure inserted
+mid-span — but only where it can be sure: the downstream cable must start where the
+upstream one ends, share its type and core count, be named `<upstream code>-B`, and have
+a route that meets the parent's end within 25 m. A pair it skipped leaves the failure
+simulation stopping at that box, which is exactly what the schema check reports:
+
+```bash
+cd backend
+npm run db:schema        # lists pairs that look unlinked, and how many are linked
+npm run db:link-splits   # same rule, on demand — read-only
+npm run db:link-splits -- --apply
+```
+
+If the downstream cable was renamed, no rule can find it — name the two halves explicitly:
+
+```bash
+npm run db:link-splits -- --child FEEDER-TO-SECTOR-7 --parent CBL-F8
+```
+
+The failure simulation also names the pair when it can: an outage blocked by an unlinked
+split says which cable continues which, so the fix is one command. Linking is always
+"core #n continues as core #n", which is how the insert route builds the halves.
+
 ## Starting over (empty database)
 
 ```bash

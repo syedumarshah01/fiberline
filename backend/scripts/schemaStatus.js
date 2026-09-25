@@ -88,9 +88,43 @@ async function main() {
       );
     }
 
-    if (!pending.length && !missing.length) {
+    // Mid-span links: with the column in place, say how many splits are joined
+    // and list any pair that still looks unlinked — that is the difference
+    // between "the migration ran" and "my inserted closure is walkable".
+    let unlinkedPairs = [];
+    let linkedCount = 0;
+    if (columns.includes('continues_cable_id') && (await knex.schema.hasTable('cables'))) {
+      try {
+        const { candidatePairs, linkedCount: countLinks } = require('./linkSplits');
+        linkedCount = (await countLinks(knex)) ?? 0;
+        unlinkedPairs = await candidatePairs(knex);
+        console.log(`  mid-span links: ${linkedCount} cable(s) continue another`);
+        if (unlinkedPairs.length) {
+          console.log(`  ! ${unlinkedPairs.length} pair(s) look like an unlinked split:`);
+          for (const pair of unlinkedPairs.slice(0, 10)) {
+            console.log(`      ${pair.child_code}  ←  ${pair.parent_code}`);
+          }
+          if (unlinkedPairs.length > 10) {
+            console.log(`      … and ${unlinkedPairs.length - 10} more`);
+          }
+        }
+      } catch (err) {
+        console.log(`  mid-span links: unavailable (${err.message})`);
+      }
+    }
+
+    if (!pending.length && !missing.length && !unlinkedPairs.length) {
       console.log('\nSchema is current — nothing to do.');
       return 0;
+    }
+
+    if (!missing.length && unlinkedPairs.length) {
+      // The schema is fine; the *data* still has splits the app cannot walk.
+      console.log(
+        '\nThe schema is up to date, but some cables are still not linked to their upstream half.',
+      );
+      console.log('Run "npm run db:link-splits" to see them, then add --apply to link them.');
+      return 1;
     }
 
     if (pending.length) {

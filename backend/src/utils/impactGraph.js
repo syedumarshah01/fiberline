@@ -194,7 +194,8 @@ function indexNetwork({
     spliceEdges,
     downEdges,
     upEdges,
-    // Mid-span splits (see continuationEdges)
+    // Mid-span splits (see continuationEdges, unlinkedSplitCandidates)
+    coresByCable,
     continuationByChild,
     continuesByParent,
     continuationOf,
@@ -268,6 +269,47 @@ function orientLightPath(index, rootKeys, { maxNodes = DEFAULT_MAX_NODES } = {})
   }
 
   return { reached, parents, children, depths, truncated };
+}
+
+/**
+ * Cables that look like the downstream half of a split the database never
+ * linked: named `<upstream code>-B`, starting where that cable ends, same type
+ * and core count — the same rule the migration's backfill and
+ * scripts/linkSplits.js use. Only pairs whose downstream core is among the
+ * unreached ones are reported, so the hint is about the gap in front of the
+ * user, not a general audit of the network.
+ */
+function unlinkedSplitCandidates(index, unreachedCoreIds) {
+  const unreachedCables = new Set(
+    unreachedCoreIds
+      .map((id) => index.coreById.get(id)?.cable_id)
+      .filter(Boolean),
+  );
+  if (!unreachedCables.size) return [];
+
+  const pairs = [];
+  for (const child of index.cables) {
+    if (child.continues_cable_id || child.cable_type === 'drop') continue;
+    if (!child.from_enclosure_id) continue;
+    if (![...(index.coresByCable?.get(child.id) || [])].some((core) => unreachedCables.has(core.cable_id))) {
+      continue;
+    }
+    if (!child.code.endsWith('-B')) continue;
+    const parentCode = child.code.slice(0, -2);
+
+    const parent = index.cables.find(
+      (cable) =>
+        cable.code === parentCode &&
+        cable.to_enclosure_id === child.from_enclosure_id &&
+        cable.cable_type === child.cable_type &&
+        cable.core_count === child.core_count &&
+        cable.id !== child.id,
+    );
+    if (parent) {
+      pairs.push({ child_id: child.id, child_code: child.code, parent_id: parent.id, parent_code: parent.code });
+    }
+  }
+  return pairs;
 }
 
 /**
@@ -796,6 +838,24 @@ function analyzeImpact({
           'wrong box, or a mid-span closure whose two cable halves are not linked ' +
           '(cables.continues_cable_id).',
       );
+
+      // If the gap has a shape we recognise — a downstream cable named
+      // `<upstream>-B` starting where that cable ends, with no link recorded —
+      // name the pair. That turns a 500-line investigation into one UPDATE.
+      const candidates = unlinkedSplitCandidates(index, unreachedCoreIds);
+      if (candidates.length) {
+        const named = candidates
+          .slice(0, 3)
+          .map((pair) => `${pair.child_code} ← ${pair.parent_code}`)
+          .join(', ');
+        const more = candidates.length > 3 ? ` (+${candidates.length - 3} more)` : '';
+        warnings.push(
+          `${candidates.length} unlinked mid-span split${candidates.length === 1 ? '' : 's'} ` +
+            `match this: ${named}${more}. The downstream half is the same fiber as its ` +
+            'upstream half — run "npm run db:link-splits" in backend/ to see them, then ' +
+            '--apply to link them.',
+        );
+      }
     }
   }
 
