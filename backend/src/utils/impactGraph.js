@@ -203,6 +203,35 @@ function indexNetwork({
   };
 }
 
+/**
+ * The mid-span link of a cable, in the shape the API reports it: the half it
+ * continues, the half that continues it, and the closure in between. One
+ * direction is authoritative (`continues_*`, exactly like the column); the other
+ * is derived here so every affected cable in a report can be read on its own.
+ */
+function cableContinuationFields(index, cable) {
+  const codeOf = (boxId) => (boxId ? index.boxById.get(boxId)?.code ?? null : null);
+  const parentId = cable ? index.continuationByChild.get(cable.id) ?? null : null;
+  const parent = parentId ? index.cableById.get(parentId) ?? null : null;
+  // The joint sits where the downstream half starts.
+  const atBoxId = parentId ? cable.from_enclosure_id ?? null : null;
+
+  const continuedBy = [];
+  for (const childId of cable ? index.continuesByParent.get(cable.id) || [] : []) {
+    const child = index.cableById.get(childId) ?? null;
+    const boxId = child?.from_enclosure_id ?? null;
+    continuedBy.push({ id: childId, code: child?.code ?? null, at_box_id: boxId, at_box_code: codeOf(boxId) });
+  }
+
+  return {
+    continues_cable_id: parentId,
+    continues_cable_code: parent?.code ?? null,
+    continues_at_box_id: atBoxId,
+    continues_at_box_code: codeOf(atBoxId),
+    continued_by: continuedBy,
+  };
+}
+
 function nodeExists(index, key) {
   return keyKind(key) === 'core'
     ? index.coreById.has(keyId(key))
@@ -1007,6 +1036,11 @@ function analyzeImpact({
       code: cable?.code ?? null,
       cable_type: cable?.cable_type ?? null,
       is_failure: failureCableIds.has(cableId),
+      // Which half this cable continues, and the closure they meet in — the
+      // reason a red chain steps across a box that is not a splice. Recorded in
+      // the database when it has the column, inferred from cable naming when it
+      // does not (the service marks which, see impactAnalysis.js).
+      ...cableContinuationFields(index, cable),
       ...extra,
     };
     affectedCables.set(cableId, existing ? { ...existing, ...entry } : entry);

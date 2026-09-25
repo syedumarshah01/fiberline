@@ -9,7 +9,12 @@ const {
 } = require("../services/streetRoute");
 const { validateCableData } = require("../middleware/validation");
 const { sanitizeAttenuationDbPerKm } = require("../utils/lossBudget");
-const { hasContinuationLinks } = require("../utils/schemaCapabilities");
+const { hasContinuationLinks, schemaCapabilities } = require("../utils/schemaCapabilities");
+const {
+  loadContinuationLinks,
+  decorateCables,
+  loadBoxCodes,
+} = require("../utils/continuationLinks");
 
 // Shown in the insert-enclosure response (and the UI alert) when the database is
 // missing cables.continues_cable_id. The split is still walkable — the app infers
@@ -31,10 +36,17 @@ const router = express.Router();
 // bookkeeping quirks — port-assigned cores always dash the cable).
 router.get("/", async (req, res, next) => {
   try {
+    // The recorded column when the database has it, the naming rule when it does
+    // not (utils/continuationLinks.js) — so a client can see that two cable rows
+    // are one fibre without caring which kind of database it is talking to.
+    const capabilities = await schemaCapabilities();
+    const withColumn = capabilities.columns.continues_cable_id === true;
+
     const rows = await db.raw(`
       SELECT c.id, c.code, c.name, c.cable_type, c.core_count, c.status,
              c.from_enclosure_id, c.to_enclosure_id, c.customer_id, c.customer_label,
              c.length_m, c.attenuation_db_per_km,
+             ${withColumn ? "c.continues_cable_id," : ""}
              (SELECT COUNT(*) FROM fiber_cores fc
               WHERE fc.cable_id = c.id AND (
                 fc.status = 'spliced'
@@ -44,12 +56,17 @@ router.get("/", async (req, res, next) => {
       FROM cables c
       ORDER BY c.created_at DESC
     `);
-    const cables = rows.rows.map((c) => ({
+    const cableRows = rows.rows.map((c) => ({
       ...c,
       route: c.route_geojson ? JSON.parse(c.route_geojson).coordinates : null,
       route_geojson: undefined,
     }));
-    res.json(cables);
+
+    const links = await loadContinuationLinks({ capabilities, cables: cableRows });
+    const boxCodes = links.childToParent.size || links.parentToChild.size
+      ? await loadBoxCodes(db)
+      : null;
+    res.json(decorateCables(cableRows, links, { boxCodes }));
   } catch (err) {
     next(err);
   }
@@ -63,7 +80,15 @@ router.get("/:id", async (req, res, next) => {
     const cores = await db("fiber_cores")
       .where({ cable_id: req.params.id })
       .orderBy("core_number");
-    res.json({ ...cable, cores });
+
+    // The whole network's links, so the code of the half this one continues is
+    // known even when only this cable was fetched.
+    const links = await loadContinuationLinks();
+    const boxCodes = links.childToParent.size || links.parentToChild.size
+      ? await loadBoxCodes(db)
+      : null;
+    const [decorated] = decorateCables([cable], links, { boxCodes });
+    res.json({ ...decorated, cores });
   } catch (err) {
     next(err);
   }

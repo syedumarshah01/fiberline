@@ -85,7 +85,7 @@ async function loadNetwork() {
       );
     }
 
-    return { ...rows, cables, schema_warnings: schemaWarnings };
+    return { ...rows, cables, links, schema_warnings: schemaWarnings };
   }
 
   try {
@@ -329,6 +329,16 @@ async function simulateFailure({
     rootBoxIds,
     maxCustomers,
   });
+
+  // Say which kind of link each affected cable's continuation is: recorded in
+  // the database, or inferred from the naming rule (utils/continuationLinks.js).
+  // A red chain that steps across a box is only trustworthy if the reader can
+  // see how the app knew the two halves are one fibre.
+  for (const cable of analysis.affected.cables) {
+    if (cable.continues_cable_id || cable.continued_by?.length) {
+      cable.continuation_inferred = Boolean(network.links?.inferred);
+    }
+  }
 
   const restoration = await planRestoration({
     analysis,

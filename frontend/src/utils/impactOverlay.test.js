@@ -12,6 +12,7 @@ import {
   impactBoxState,
   customersBehind,
   pathText,
+  cableLinkText,
 } from './impactOverlay.js';
 
 /** A trimmed-down simulate response (only the fields the map reads). */
@@ -268,5 +269,50 @@ describe('pathText', () => {
   it('is empty for a missing path', () => {
     assert.equal(pathText(undefined), '');
     assert.equal(pathText([]), '');
+  });
+});
+
+describe('cableLinkText', () => {
+  it('is empty for a cable with no mid-span link', () => {
+    assert.equal(cableLinkText({ code: 'CBL-DROP-1', continued_by: [] }), '');
+    assert.equal(cableLinkText(null), '');
+  });
+
+  it('reads the upstream link, and says when it was inferred', () => {
+    assert.equal(
+      cableLinkText({
+        continues_cable_code: 'CBL-F1',
+        continues_at_box_code: 'BOX-MID',
+        continuation_inferred: true,
+      }),
+      'Continues CBL-F1 through BOX-MID (inferred from cable naming)',
+    );
+  });
+
+  it('reads the downstream link, listing every half the span was split into', () => {
+    assert.equal(
+      cableLinkText({
+        continued_by: [
+          { code: 'CBL-F1-B', at_box_code: 'BOX-MID' },
+          { code: 'CBL-F1-C', at_box_code: 'BOX-MID-2' },
+        ],
+      }),
+      'Split into CBL-F1-B at BOX-MID, CBL-F1-C at BOX-MID-2',
+    );
+  });
+
+  it('reads both directions when a cable is in the middle of a split chain', () => {
+    const text = cableLinkText({
+      continues_cable_code: 'CBL-F1',
+      continues_at_box_code: 'BOX-MID',
+      continued_by: [{ code: 'CBL-F1-B', at_box_code: 'BOX-MID-2' }],
+    });
+    assert.match(text, /^Continues CBL-F1 through BOX-MID/);
+    assert.match(text, /Split into CBL-F1-B at BOX-MID-2$/);
+  });
+
+  it('copes with a link whose box code the API could not resolve', () => {
+    assert.equal(cableLinkText({ continues_cable_code: 'CBL-F1' }), 'Continues CBL-F1');
+    assert.equal(cableLinkText({ continued_by: [{ id: 'x' }] }), 'Split into an unnamed cable');
   });
 });

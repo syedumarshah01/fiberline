@@ -14,6 +14,9 @@ const {
   inferredPairsSql,
   loadInferredPairs,
   loadContinuationLinks,
+  continuationFields,
+  decorateCables,
+  loadBoxCodes,
 } = require('../src/utils/continuationLinks');
 
 const CABLES = [
@@ -187,5 +190,140 @@ describe('loadContinuationLinks', () => {
     assert.equal(links.inferred, false);
     assert.equal(links.childToParent.get('f1b'), 'f1');
     assert.ok(CABLE_FIELDS.every((field) => field in links.byId.get('f1')));
+  });
+});
+
+describe('continuationFields / decorateCables', () => {
+  const links = ({ inferred, pairs }) => {
+    const childToParent = new Map();
+    const parentToChild = new Map();
+    for (const pair of pairs) {
+      childToParent.set(pair.child_id, pair.parent_id);
+      parentToChild.set(pair.parent_id, pair.child_id);
+    }
+    return { byId: new Map(CABLES.map((c) => [c.id, c])), childToParent, parentToChild, inferred, pairs };
+  };
+  const boxCodes = new Map([['mid', 'BOX-MID']]);
+
+  test('a downstream half says what it continues, and where they meet', () => {
+    const [f1, f1b] = decorateCables(
+      CABLES,
+      links({ inferred: false, pairs: [{ child_id: 'f1b', parent_id: 'f1' }] }),
+      { boxCodes },
+    );
+    assert.equal(f1b.continues_cable_id, 'f1');
+    assert.equal(f1b.continues_cable_code, 'CBL-F1');
+    assert.equal(f1b.continues_at_box_id, 'mid');
+    assert.equal(f1b.continues_at_box_code, 'BOX-MID');
+    assert.equal(f1b.continuation_inferred, false);
+    assert.deepEqual(f1b.continued_by, [], 'nothing continues the downstream half either');
+    // The upstream half carries the same field set, all null: a client can read
+    // the field without asking whether this cable is the end of a chain.
+    assert.equal(f1.continues_cable_id, null);
+    assert.equal(f1.continues_cable_code, null);
+    assert.equal(f1.continues_at_box_code, null);
+    // …and the other direction is a list, because a span can be split twice.
+    assert.deepEqual(f1.continued_by, [
+      { id: 'f1b', code: 'CBL-F1-B', at_box_id: 'mid', at_box_code: 'BOX-MID' },
+    ]);
+  });
+
+  test('the same fields come back when the link was inferred, flagged as such', () => {
+    const [, f1b] = decorateCables(
+      CABLES,
+      links({ inferred: true, pairs: [{ child_id: 'f1b', parent_id: 'f1' }] }),
+      { boxCodes },
+    );
+    assert.equal(f1b.continues_cable_id, 'f1');
+    assert.equal(f1b.continues_cable_code, 'CBL-F1');
+    assert.equal(f1b.continuation_inferred, true, 'the client can tell it is not recorded');
+  });
+
+  test('every cable carries the field set — no link reads as null, not as absent', () => {
+    const [f1] = decorateCables(CABLES, links({ inferred: true, pairs: [] }), { boxCodes });
+    for (const field of [
+      'continues_cable_id',
+      'continues_cable_code',
+      'continues_at_box_id',
+      'continues_at_box_code',
+      'continuation_inferred',
+      'continued_by',
+    ]) {
+      assert.ok(field in f1, `${field} is always present`);
+    }
+    assert.equal(f1.continuation_inferred, false, 'nothing to infer is not an inference');
+    assert.deepEqual(f1.continued_by, []);
+  });
+
+  test('the box id comes back even without the codes map', () => {
+    const [, f1b] = decorateCables(
+      CABLES,
+      links({ inferred: false, pairs: [{ child_id: 'f1b', parent_id: 'f1' }] }),
+    );
+    assert.equal(f1b.continues_at_box_id, 'mid');
+    assert.equal(f1b.continues_at_box_code, null);
+  });
+
+  test('a parent present in the pairs but not in the row set yields the id, no code', () => {
+    const [f1b] = decorateCables(
+      [CABLES[1]],
+      links({ inferred: false, pairs: [{ child_id: 'f1b', parent_id: 'f1' }] }),
+      { boxCodes },
+    );
+    // The caller only loaded one cable, so the other half's code is unknown —
+    // the id is still there, and nothing throws.
+    assert.equal(f1b.continues_cable_id, 'f1');
+  });
+
+  test('loadBoxCodes reads the enclosures table', async () => {
+    const db = () => ({
+      select: async () => [{ id: 'mid', code: 'BOX-MID' }, { id: 'nap', code: 'BOX-NAP' }],
+    });
+    const codes = await loadBoxCodes(db);
+    assert.equal(codes.get('mid'), 'BOX-MID');
+  });
+});
+
+describe('continued_by — the other direction', () => {
+  const links = (pairs, inferred = false) => {
+    const childToParent = new Map(pairs.map((p) => [p.child_id, p.parent_id]));
+    return {
+      byId: new Map(CABLES.map((c) => [c.id, c])),
+      childToParent,
+      parentToChild: new Map(pairs.map((p) => [p.parent_id, p.child_id])),
+      inferred,
+      pairs,
+    };
+  };
+  const boxCodes = new Map([['mid', 'BOX-MID'], ['mid2', 'BOX-MID-2']]);
+
+  test('a cable split in two places lists both halves, each with its box', () => {
+    // The same span cut twice: CBL-F1-B and CBL-F1-C both continue CBL-F1.
+    const rows = [
+      ...CABLES,
+      { id: 'f1c', code: 'CBL-F1-C', cable_type: 'feeder', core_count: 12, from_enclosure_id: 'mid2', to_enclosure_id: 'nap' },
+    ];
+    const withLinks = links([
+      { child_id: 'f1b', parent_id: 'f1' },
+      { child_id: 'f1c', parent_id: 'f1' },
+    ]);
+    withLinks.byId.set('f1c', rows[2]);
+    const [f1] = decorateCables([rows[0]], withLinks, { boxCodes });
+    assert.deepEqual(f1.continued_by, [
+      { id: 'f1b', code: 'CBL-F1-B', at_box_id: 'mid', at_box_code: 'BOX-MID' },
+      { id: 'f1c', code: 'CBL-F1-C', at_box_id: 'mid2', at_box_code: 'BOX-MID-2' },
+    ]);
+    assert.equal(f1.continuation_inferred, false);
+  });
+
+  test('an inferred link flags the parent side too', () => {
+    const withLinks = links([{ child_id: 'f1b', parent_id: 'f1' }], true);
+    const [f1] = decorateCables([CABLES[0]], withLinks, { boxCodes });
+    assert.equal(f1.continuation_inferred, true, 'the list is inferred as well');
+  });
+
+  test('a cable with no links anywhere carries an empty list, not null', () => {
+    const [f1] = decorateCables([CABLES[0]], links([]), { boxCodes });
+    assert.deepEqual(f1.continued_by, []);
   });
 });

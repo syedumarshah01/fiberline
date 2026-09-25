@@ -133,6 +133,37 @@ export function customersBehind(boxId, overlay) {
 }
 
 /**
+ * The mid-span link of a cable as one readable line, or "" when it has none.
+ *
+ * `GET /api/cables` returns the fields whether the database records the link in
+ * `cables.continues_cable_id` or the app inferred it from cable naming, so this
+ * reads the same either way — and says when it is inferred, because a link
+ * nobody recorded is worth knowing about.
+ *
+ *   "Continues CBL-F1 through BOX-MID (inferred from cable naming)"
+ *   "Split into CBL-F1-B at BOX-MID"
+ *   "Continues CBL-F1 through BOX-MID · split into CBL-F1-B at BOX-MID"
+ */
+export function cableLinkText(cable) {
+  if (!cable) return "";
+  const parts = [];
+  if (cable.continues_cable_code) {
+    const where = cable.continues_at_box_code ? ` through ${cable.continues_at_box_code}` : "";
+    parts.push(`Continues ${cable.continues_cable_code}${where}`);
+  }
+  const children = cable.continued_by || [];
+  if (children.length) {
+    const named = children
+      .map((child) => (child.code || "an unnamed cable") + (child.at_box_code ? ` at ${child.at_box_code}` : ""))
+      .join(", ");
+    parts.push(`${children.length === 1 ? "Split into" : "Split into"} ${named}`);
+  }
+  if (!parts.length) return "";
+  const inferred = cable.continuation_inferred ? " (inferred from cable naming)" : "";
+  return parts.join(" · ") + inferred;
+}
+
+/**
  * What to call an affected customer leg.
  *
  * Documented premises carry a label; legs the analysis inferred from the

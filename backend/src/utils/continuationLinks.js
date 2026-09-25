@@ -120,9 +120,74 @@ async function loadContinuationLinks({ executor = null, capabilities = null, cab
   return { byId, childToParent, parentToChild, inferred, pairs };
 }
 
+/**
+ * The link fields every cable row can carry, whether or not the database has the
+ * column — so a client never has to know which case it is looking at.
+ *
+ *   continues_cable_id / continues_cable_code   the half this cable continues
+ *   continues_at_box_id / continues_at_box_code the closure the fibre runs on in
+ *   continuation_inferred                       came from the naming rule, not
+ *                                               from the column
+ *   continued_by[]                              the halves that continue this
+ *                                               one: { id, code, at_box_id,
+ *                                               at_box_code }
+ *
+ * Upstream is singular because a cable can only continue one other cable (the
+ * column is a single uuid, and `cables.code` is unique). Downstream is a list
+ * because a span can be split more than once, and pretending otherwise would be
+ * the kind of lie that shows up as a missing cable later.
+ *
+ * `boxCodes` is an optional Map of enclosure id → code; without it the box ids
+ * are still returned, just not their codes.
+ */
+function continuationFields(cable, links, { boxCodes = null } = {}) {
+  const codeOf = (boxId) => (boxId && boxCodes ? boxCodes.get(boxId) ?? null : null);
+  const parentId = links.childToParent.get(cable.id) ?? null;
+  const parent = parentId ? links.byId.get(parentId) ?? null : null;
+  // The joint sits where the downstream half starts — which is this cable's own
+  // from-box when this cable *is* the downstream half.
+  const atBoxId = parentId ? cable.from_enclosure_id ?? null : null;
+
+  const continuedBy = [];
+  for (const [childId, parentOfChild] of links.childToParent) {
+    if (parentOfChild !== cable.id) continue;
+    const child = links.byId.get(childId) ?? null;
+    const boxId = child?.from_enclosure_id ?? null;
+    continuedBy.push({
+      id: childId,
+      code: child?.code ?? null,
+      at_box_id: boxId,
+      at_box_code: codeOf(boxId),
+    });
+  }
+
+  return {
+    continues_cable_id: parentId,
+    continues_cable_code: parent?.code ?? null,
+    continues_at_box_id: atBoxId,
+    continues_at_box_code: codeOf(atBoxId),
+    continuation_inferred: Boolean((parentId || continuedBy.length) && links.inferred),
+    continued_by: continuedBy,
+  };
+}
+
+/** `continuationFields` applied to a list of cable rows. */
+function decorateCables(cables, links, options) {
+  return (cables || []).map((cable) => ({ ...cable, ...continuationFields(cable, links, options) }));
+}
+
+/** id → code for the boxes a continuation can sit in. */
+async function loadBoxCodes(executor) {
+  const rows = await executor('enclosures').select('id', 'code');
+  return new Map(rows.map((row) => [row.id, row.code]));
+}
+
 module.exports = {
   CABLE_FIELDS,
   inferredPairsSql,
   loadInferredPairs,
   loadContinuationLinks,
+  continuationFields,
+  decorateCables,
+  loadBoxCodes,
 };

@@ -12,6 +12,7 @@ import {
   spliceLossClass,
   splitterLabel,
 } from "../utils/lossView.js";
+import { cableLinkText } from "../utils/impactOverlay.js";
 
 function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
@@ -1592,6 +1593,15 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
           )}
         </div>
       </div>
+
+      {/* Mid-span link: which half this cable continues, and which halves
+          continue it. Present whether the database records the link or the app
+          inferred it from cable naming — the line says which. */}
+      {cableLinkText(full) && (
+        <p className={full.continuation_inferred ? "sub impact-inferred" : "sub"}>
+          {cableLinkText(full)}
+        </p>
+      )}
 
       {/* Inline cable editor — code is what shows on the map label */}
       {editingCable && (

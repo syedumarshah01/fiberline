@@ -92,6 +92,15 @@ same rule migration 14's backfill and `npm run db:link-splits` use (downstream n
 `<upstream code>-B`, starting where the upstream one ends, same type and core count, split
 points within 25 m), and every consumer reads its links from there.
 
+The link is part of the API, not just of the graph: `GET /api/cables`, `GET /api/cables/:id`
+and every `affected.cables` entry in a failure report carry `continues_cable_id` /
+`continues_cable_code` / `continues_at_box_id` / `continues_at_box_code` /
+`continuation_inferred` and a `continued_by[]` list — filled from the column when it exists,
+from the inferred pairs when it does not (`continuationFields()` / `decorateCables()` in
+`src/utils/continuationLinks.js`). The list route also only puts `c.continues_cable_id` in
+its SELECT when the probe says the column is there, so the query is valid on either
+database.
+
 Recorded links always win. With the column present the app never guesses: a `NULL` means
 "not a continuation". The fallback is only for a database that has no column at all, and
 when it finds links the outage report says so ("N mid-span cable links inferred from cable

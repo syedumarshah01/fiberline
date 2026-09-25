@@ -540,6 +540,12 @@ describe('a database that has not run migration 14 (the column is absent)', () =
 
     const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
 
+    // The cables in the report carry the link, and say where it came from.
+    const child = impact.affected.cables.find((c) => c.code === 'CBL-F1-B');
+    assert.equal(child.continues_cable_code, 'CBL-F1');
+    assert.equal(child.continues_at_box_code, 'BOX-MID');
+    assert.equal(child.continuation_inferred, true, 'inferred on this database');
+
     const notice = impact.warnings.find((w) => /inferred from cable naming/.test(w));
     assert.ok(notice, `expected an inference notice, got: ${JSON.stringify(impact.warnings)}`);
     assert.match(notice, /already include them/);
@@ -570,6 +576,21 @@ describe('a database that has not run migration 14 (the column is absent)', () =
       delete fakeDb.__failOnCableSelect;
       resetSchemaCache();
     }
+  });
+
+  test('a migrated database reports the same fields, flagged as recorded', async () => {
+    freshStore();
+    await insertMidSpanEnclosure();
+    const downstream = store.cables.find((c) => c.code === 'CBL-F1-B');
+    connectDropTo(coreOf(downstream.id, 1));
+
+    const impact = await simulateFailure({ kind: 'box', id: 'olt', boxIds: ['olt'] });
+
+    const child = impact.affected.cables.find((c) => c.code === 'CBL-F1-B');
+    assert.equal(child.continues_cable_id, downstream.continues_cable_id ?? child.continues_cable_id);
+    assert.equal(child.continues_cable_code, 'CBL-F1');
+    assert.equal(child.continues_at_box_code, 'BOX-MID');
+    assert.equal(child.continuation_inferred, false, 'recorded in the column, not guessed');
   });
 
   test('no inference notice when there is nothing to infer', async () => {

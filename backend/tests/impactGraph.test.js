@@ -251,6 +251,44 @@ describe('mid-span closures (a cable split in two by an inserted box)', () => {
     assert.deepEqual(impact.affected.boxes.map((b) => b.code).sort(), ['BOX-MID', 'BOX-NAP', 'BOX-OLT']);
   });
 
+  test('an affected cable says which half it continues, and through which box', () => {
+    const impact = analyzeImpact({
+      ...split(), boxIds: ['mid'], rootCoreIds: ['f1c1'], rootBoxIds: ['olt'],
+    });
+    const downstream = impact.affected.cables.find((c) => c.code === 'CBL-F1-B');
+    assert.equal(downstream.continues_cable_id, 'f1');
+    assert.equal(downstream.continues_cable_code, 'CBL-F1');
+    assert.deepEqual(downstream.continued_by, [], 'nothing continues the downstream half');
+    // The joint sits where the downstream half starts.
+    assert.equal(downstream.continues_at_box_id, 'mid');
+    assert.equal(downstream.continues_at_box_code, 'BOX-MID');
+    // The upstream half is not in this report (it still has light) — but when it
+    // is (a failure at the OLT), it names the half that continues it.
+    const atOlt = analyzeImpact({
+      ...split(), boxIds: ['olt'], rootCoreIds: ['f1c1'], rootBoxIds: ['olt'],
+    });
+    const upstream = atOlt.affected.cables.find((c) => c.code === 'CBL-F1');
+    assert.equal(upstream.continues_cable_id, null);
+    assert.deepEqual(upstream.continued_by, [
+      { id: 'f1b', code: 'CBL-F1-B', at_box_id: 'mid', at_box_code: 'BOX-MID' },
+    ]);
+  });
+
+  test('a cable with no link anywhere still carries the fields, empty', () => {
+    const impact = analyzeImpact({
+      ...split(), boxIds: ['nap'], rootCoreIds: ['f1c1'], rootBoxIds: ['olt'],
+    });
+    const drop = impact.affected.cables.find((c) => c.code === 'CBL-DROP-1');
+    for (const field of [
+      'continues_cable_id', 'continues_cable_code',
+      'continues_at_box_id', 'continues_at_box_code',
+    ]) {
+      assert.ok(field in drop, `${field} is present on every affected cable`);
+      assert.equal(drop[field], null, `${field} is null for a cable with no link`);
+    }
+    assert.deepEqual(drop.continued_by, []);
+  });
+
   test('the customer path shows the closure the fiber passes through', () => {
     const impact = analyzeImpact({
       ...split(), boxIds: ['olt'], rootCoreIds: ['f1c1'], rootBoxIds: ['olt'],
