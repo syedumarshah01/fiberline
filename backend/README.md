@@ -44,6 +44,13 @@ as it found it. Run `npm run migrate`; on a healthy database it changes nothing.
 
 ### What "dark" means in a failure simulation
 
+The public failure simulation is **box-only**: `GET /api/impact/simulate?kind=box&id=<uuid>`.
+The UI does not offer cable or pole failure buttons, and the route rejects those kinds.
+A cable is transport, not the failure surface. Failing a box removes the joints and
+splitters in that box, then reports only fibres that were connected and lit downstream;
+the cable entering the failed box remains live up to the box and is not coloured red.
+
+
 The whole analysis is built on one primitive, `reachableKeys()` in
 `src/utils/impactGraph.js`: **everything the light can reach from the headend's
 root cores.** Light travels splices (either way — a splice is physically

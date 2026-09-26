@@ -323,6 +323,33 @@ describe('mid-span closures (a cable split in two by an inserted box)', () => {
     assert.deepEqual(impact.affected.core_ids, ['drop1c1']);
   });
 
+  test('a box failure does not cascade through an unconnected output fibre', () => {
+    const disconnected = {
+      ...NET,
+      cables: [
+        ...CABLES,
+        { id: 'drop-unconnected', code: 'CBL-DROP-UNCONNECTED', cable_type: 'drop', from_enclosure_id: 'b', to_enclosure_id: null, customer_id: 'cust-unconnected', customer_label: 'CUST-UNCONNECTED' },
+      ],
+      cores: [
+        ...CORES,
+        { id: 'drop-unconnected-c1', cable_id: 'drop-unconnected', core_number: 1, status: 'terminated' },
+      ],
+      customers: [...CUSTOMERS, { id: 'cust-unconnected', customer_code: 'CUST-UNCONNECTED', name: 'Not lit' }],
+    };
+    const impact = analyzeImpact({
+      ...disconnected,
+      boxIds: ['b'],
+      rootCoreIds: ROOT_CORES,
+      rootBoxIds: ROOT_BOXES,
+    });
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2', 'CUST-3']);
+    assert.ok(
+      !impact.affected.cables.some((c) => c.code === 'CBL-DROP-UNCONNECTED'),
+      'a cable with no connected light path is not a downstream outage',
+    );
+    assert.ok(impact.warnings.some((w) => /not reachable from the network root/.test(w)));
+  });
+
   test('failing the inserted box itself paints only what is downstream of it', () => {
     // The mid joint: the cut is at the box. The fibre in CBL-F1 (OLT → box) is
     // still lit; everything that was fed through the box is not.
@@ -778,15 +805,15 @@ describe('analyzeImpact — no root configured', () => {
     assert.ok(!impact.warnings.some((w) => /not connected to a configured network root/.test(w)));
   });
 
-  test('a broken segment is reported without direction, and says so', () => {
-    // Remove the splice that feeds BOX-B: nothing at that failure point can
-    // trace back to the OLT any more, so the walk falls back to undirected and
-    // the warning has to admit the result may over-report.
+  test('a broken input fibre does not start a downstream cascade', () => {
+    // Remove the splice that feeds BOX-B: the splitter outputs are physically
+    // documented, but no light reaches their input from the root. A box failure
+    // must not paint them red merely because they touch the failed box.
     const severed = { ...NET, splices: SPLICES.filter((sp) => sp.id !== 's1') };
     const impact = analyzeImpact({ ...severed, boxIds: ['b'], rootCoreIds: ROOT_CORES });
-    assert.ok(impact.warnings.some((w) => /not connected to a configured network root/.test(w)));
-    assert.ok(impact.warnings.some((w) => /over-report/.test(w)));
-    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2', 'CUST-3']);
+    assert.ok(impact.warnings.some((w) => /not reachable from the network root/.test(w)));
+    assert.deepEqual(labels(impact), []);
+    assert.deepEqual(impact.affected.cables, []);
   });
 
   test('an unreachable-from-root core is flagged rather than silently ignored', () => {

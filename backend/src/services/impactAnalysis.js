@@ -321,10 +321,10 @@ function describeFailure({ kind, id, boxIds, cableIds, element, network }) {
 
 /**
  * @param {object} params
- * @param {'box'|'pole'|'cable'} params.kind  what failed
- * @param {string} params.id                  the failed element's id
- * @param {string[]} [params.boxIds]          boxes at the failure (pole → several)
- * @param {string[]} [params.cableIds]        cables at the failure (pole → nearby spans)
+ * @param {'box'} params.kind                 what failed — public simulation is box-only
+ * @param {string} params.id                  the failed box's id
+ * @param {string[]} [params.boxIds]          the failed box (one id)
+ * @param {string[]} [params.cableIds]        empty for public box failures
  * @param {object}   [params.element]         { code, name } for the response's label
  * @param {object}   [params.boxLocations]    id → { lat, lng }, for the no-path fallback
  */
@@ -337,6 +337,12 @@ async function simulateFailure({
   boxLocations = null,
   maxCustomers,
 } = {}) {
+  if (kind !== 'box') {
+    const error = new Error('Failure simulation supports boxes only');
+    error.statusCode = 400;
+    throw error;
+  }
+
   const network = await loadNetwork();
   const { rooted, inferred, rootBoxIds, rootCoreIds, source: directionSource } = resolveRoots(network);
 

@@ -2342,9 +2342,13 @@ export default function RightPanel({
   onSplitPointChange,
   onHoverCable,
 }) {
-  // Whatever is selected can be taken out of the network: a box, a cable, or a
-  // pole (which takes down the boxes on it and the spans running through it).
+  // Failure simulation is anchored at a box only. A cable is not a failure
+  // target: it is the span carrying the fibres, and the simulation must be able
+  // to keep the incoming span lit while cascading through connected outputs.
   const failureTarget = selectedEnclosure
+    ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
+    : null;
+  const fieldTarget = selectedEnclosure
     ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
     : selectedCable
       ? { kind: "cable", id: selectedCable.id, label: selectedCable.code }
@@ -2375,19 +2379,19 @@ export default function RightPanel({
         />
       )}
 
-      {failureTarget && mode === "view" && (
+      {fieldTarget && mode === "view" && (
         <div className="field-kit">
           <button
             className="btn"
-            onClick={() => setQrTarget(failureTarget)}
-            title={`Print a QR sticker for ${failureTarget.label} — scanning it opens the documentation`}
+            onClick={() => setQrTarget(fieldTarget)}
+            title={`Print a QR sticker for ${fieldTarget.label} — scanning it opens the documentation`}
           >
             QR tag
           </button>
-          {failureTarget.kind === "box" && (
+          {fieldTarget.kind === "box" && (
             <button
               className="btn"
-              onClick={() => setWorksheetFor(failureTarget)}
+              onClick={() => setWorksheetFor(fieldTarget)}
               title="A printable splice checklist generated from this box's documentation"
             >
               Splice worksheet

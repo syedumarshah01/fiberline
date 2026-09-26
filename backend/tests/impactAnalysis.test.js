@@ -333,22 +333,17 @@ describe('simulateFailure', () => {
     }
   });
 
-  test('cutting a cable keeps the box upstream of the cut lit', async () => {
-    const result = await simulateFailure({
-      kind: 'cable',
-      id: 'd1',
-      cableIds: ['d1'],
-      element: { code: 'CBL-D1' },
-      boxLocations: BOX_LOCATIONS,
-    });
-
-    assert.deepEqual(
-      result.affected.boxes.map((b) => b.code).sort(),
-      ['BOX-B', 'BOX-C'],
+  test('failure simulation rejects cable targets', async () => {
+    await assert.rejects(
+      () => simulateFailure({
+        kind: 'cable',
+        id: 'd1',
+        cableIds: ['d1'],
+        element: { code: 'CBL-D1' },
+        boxLocations: BOX_LOCATIONS,
+      }),
+      /supports boxes only/,
     );
-    // BOX-A still has light, so it is the source offered for the patch.
-    assert.equal(result.upstream_reroute_candidates[0].source_box_code, 'BOX-A');
-    assert.equal(result.affected.cables.find((c) => c.code === 'CBL-D1').is_failure, true);
   });
 
   test('without a headend the direction is inferred, so the feeding span is not painted', async () => {

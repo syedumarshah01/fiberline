@@ -1023,8 +1023,14 @@ function analyzeImpact({
     return keys;
   }
 
+  // A public failure is a box failure, not a cable cut. Do not turn an
+  // unconnected fibre merely landing at that box into a red downstream chain:
+  // without a live root path it carries no light. The old unrooted flood is kept
+  // for the lower-level cable/pole surface analysis, where the caller has
+  // explicitly supplied a cut and the undirected fallback is part of that API.
+  const boxFailureOnly = failureBoxIds.size > 0 && failureCableIds.size === 0;
   const unrootedFlood =
-    directed && unrootedSeeds.length
+    directed && unrootedSeeds.length && !boxFailureOnly
       ? floodUndirected(index, unrootedSeeds, { maxNodes })
       : null;
 
@@ -1052,11 +1058,13 @@ function analyzeImpact({
   const unrootedParents = unrootedFlood
     ? new Set([...unrootedFlood.parents.values()].map((parent) => parent.node))
     : new Set();
-  const strayUnrootedSeeds = unrootedSeeds.filter((seed) => {
-    if (unrootedParents.has(seed)) return true; // other fibers hang off it
-    const core = index.coreById.get(keyId(seed));
-    return core ? Boolean(servedCustomer(index, core)) : false;
-  });
+  const strayUnrootedSeeds = unrootedFlood
+    ? unrootedSeeds.filter((seed) => {
+        if (unrootedParents.has(seed)) return true; // other fibers hang off it
+        const core = index.coreById.get(keyId(seed));
+        return core ? Boolean(servedCustomer(index, core)) : false;
+      })
+    : [];
 
   // Either walk being capped means the answer is incomplete, and a silently
   // incomplete outage report is worse than a slow one.

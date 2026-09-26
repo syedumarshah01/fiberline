@@ -163,13 +163,7 @@ export default function ImpactPanel({
         <div>
           <span className="pill pill-damaged">Failure simulated</span>
           <div className="impact-title">{failureTitle(impact)}</div>
-          <div className="sub">
-            {failure.kind}
-            {failure.pole_radius_m ? ` · ${failure.pole_radius_m} m radius` : ""}
-            {failure.kind === "pole" && (failure.cable_ids?.length || failure.box_ids?.length)
-              ? ` · ${failure.box_ids?.length || 0} box(es), ${failure.cable_ids?.length || 0} span(s) on it`
-              : ""}
-          </div>
+          <div className="sub">Box failure · downstream connected fibres only</div>
         </div>
         <button className="btn" onClick={onClear} title="Clear the simulated failure">
           Clear

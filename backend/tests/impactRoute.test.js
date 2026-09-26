@@ -2,11 +2,10 @@
  * Route-level tests for GET /api/impact/simulate.
  *
  * The service is stubbed out here on purpose: this file is about the HTTP
- * contract the frontend consumes (validation, 404s, radius clamping, the shape
- * of the payload) and about the one piece the service cannot do for itself —
- * turning a *pole* failure into the boxes and spans it takes down. That
- * mapping is geometry, so the test asserts the SQL and parameters the route
- * issues, without needing a live PostGIS.
+ * contract the frontend consumes: only boxes are valid failure targets, the
+ * route returns 404s for unknown boxes, loads box coordinates for restoration,
+ * and relays the service payload. Cable and pole failure requests must be
+ * rejected before they can paint a span red.
  */
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -23,10 +22,6 @@ const ENCLOSURES = [
 const CABLES = [
   { id: 'cable-d1', code: 'CBL-D1' },
 ];
-const POLES = [
-  { id: 'pole-1', code: 'POLE-0001', name: null, pole_type: 'concrete' },
-];
-
 // What the stubbed service should hand back (trimmed to what the route relays).
 const SERVICE_RESULT = {
   failure: { kind: 'box', id: 'box-b', label: 'BOX-B', box_ids: ['box-b'], cable_ids: [] },
@@ -50,7 +45,7 @@ let serviceCall = null;
 
 function fakeDb(table) {
   const eq = [];
-  const rows = () => ({ enclosures: ENCLOSURES, cables: CABLES, poles: POLES }[table] || []).filter(
+  const rows = () => ({ enclosures: ENCLOSURES, cables: CABLES }[table] || []).filter(
     (row) => eq.every(([col, value]) => row[col] === value),
   );
   const builder = {
@@ -141,19 +136,25 @@ describe('GET /api/impact/simulate — validation', () => {
   test('an unknown kind is rejected by name', async () => {
     const res = await simulate({ kind: 'splice', id: 'x' });
     assert.equal(res.status, 400);
-    assert.match((await res.json()).error, /box, pole, cable/);
+    assert.match((await res.json()).error, /box.*only/i);
   });
 
-  test('an element that does not exist is a 404, not an empty outage', async () => {
-    for (const kind of ['box', 'cable', 'pole']) {
-      const res = await simulate({ kind, id: 'nope' });
-      assert.equal(res.status, 404);
-      assert.match((await res.json()).error, /not found/i);
+  test('an unknown box is a 404, not an empty outage', async () => {
+    const res = await simulate({ kind: 'box', id: 'nope' });
+    assert.equal(res.status, 404);
+    assert.match((await res.json()).error, /enclosure not found/i);
+  });
+
+  test('cables and poles are not failure targets', async () => {
+    for (const kind of ['cable', 'pole']) {
+      const res = await simulate({ kind, id: kind === 'cable' ? 'cable-d1' : 'pole-1' });
+      assert.equal(res.status, 400);
+      assert.match((await res.json()).error, /boxes only/i);
     }
   });
 });
 
-describe('GET /api/impact/simulate — box and cable', () => {
+describe('GET /api/impact/simulate — box only', () => {
   test('a box failure is handed to the service with just that box', async () => {
     const res = await simulate({ kind: 'box', id: 'box-b' });
     assert.equal(res.status, 200);
@@ -165,48 +166,6 @@ describe('GET /api/impact/simulate — box and cable', () => {
     assert.equal(serviceCall.element.code, 'BOX-B');
     // Box coordinates are loaded so the no-cable-path fallback can measure.
     assert.deepEqual(serviceCall.boxLocations, { 'box-b': { lat: 34.01, lng: 71.5 } });
-  });
-
-  test('a cut cable goes to the service as a cable failure', async () => {
-    const res = await simulate({ kind: 'cable', id: 'cable-d1' });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.deepEqual(serviceCall.cableIds, ['cable-d1']);
-    assert.deepEqual(serviceCall.boxIds, []);
-    assert.equal(body.failure.pole_radius_m, null);
-  });
-});
-
-describe('GET /api/impact/simulate — pole', () => {
-  test('a pole failure resolves the boxes on it and the spans through it', async () => {
-    rawCalls.length = 0;
-    const res = await simulate({ kind: 'pole', id: 'pole-1' });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-
-    assert.deepEqual(serviceCall.boxIds, ['box-b']); // the box mounted on the pole
-    assert.deepEqual(serviceCall.cableIds, ['cable-near', 'cable-far']); // spans within the radius
-    assert.equal(serviceCall.element.code, 'POLE-0001');
-    assert.equal(body.failure.pole_radius_m, 15); // default when the caller is silent
-
-    const spanQuery = rawCalls.find((call) => /ST_DWithin\(c\.route/.test(call.sql));
-    assert.ok(spanQuery, 'the span search should be a PostGIS distance query');
-    assert.deepEqual(spanQuery.params, ['pole-1', 15]);
-    assert.match(spanQuery.sql, /c\.route IS NOT NULL/);
-  });
-
-  test('the radius is clamped to a sane maximum', async () => {
-    rawCalls.length = 0;
-    await simulate({ kind: 'pole', id: 'pole-1', radius_m: '5000' });
-    const spanQuery = rawCalls.find((call) => /ST_DWithin\(c\.route/.test(call.sql));
-    assert.deepEqual(spanQuery.params, ['pole-1', 200]);
-  });
-
-  test('a nonsense radius falls back to the default instead of NaN', async () => {
-    rawCalls.length = 0;
-    await simulate({ kind: 'pole', id: 'pole-1', radius_m: 'wide' });
-    const spanQuery = rawCalls.find((call) => /ST_DWithin\(c\.route/.test(call.sql));
-    assert.deepEqual(spanQuery.params, ['pole-1', 15]);
   });
 });
 

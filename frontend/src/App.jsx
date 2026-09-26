@@ -216,18 +216,18 @@ export default function App() {
   }
 
   /**
-   * Take the selected element out of the network and report the fallout.
-   * `target` is { kind, id, label, radiusM } — a pole, box or cable.
+   * Take the selected box out of the network and report the downstream fallout.
+   * A failure is intentionally anchored at a box: the graph can then follow
+   * connected fibres and splitter ports away from that box without treating the
+   * input span as a failed cable.
    */
   async function handleSimulateFailure(target) {
-    if (!target) return;
+    if (!target || target.kind !== "box") return;
     setFailureTarget(target);
     setImpactLoading(true);
     setImpactError(null);
     try {
-      const result = await api.simulateImpact(target.kind, target.id, {
-        radiusM: target.radiusM,
-      });
+      const result = await api.simulateImpact(target.kind, target.id);
       setImpact(result);
     } catch (err) {
       setImpact(null);

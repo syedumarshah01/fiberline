@@ -253,10 +253,11 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  // Outage / impact analysis — "simulate failure" on a pole, box or cable
-  simulateImpact: (kind, id, options = {}) => {
+  // Outage / impact analysis — simulate a box failure only. The backend follows
+  // connected fibres and splitter ports downstream; it never treats the input
+  // cable as the failed element.
+  simulateImpact: (kind, id) => {
     const params = new URLSearchParams({ kind, id });
-    if (options.radiusM != null) params.set("radius_m", String(options.radiusM));
     return request(`/impact/simulate?${params.toString()}`);
   },
 
