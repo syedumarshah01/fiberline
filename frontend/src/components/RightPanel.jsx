@@ -2,6 +2,35 @@ import React, { useEffect, useState } from "react";
 import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
+import ImpactPanel from "./ImpactPanel.jsx";
+import WorkOrderSheet from "./WorkOrderSheet.jsx";
+import QrLabelSheet from "./QrLabelSheet.jsx";
+import {
+  OLT_TYPE_LABELS,
+  formatDb,
+  lossEntryClass,
+  lossSourceLabel,
+  budgetStatusClass,
+  spliceLossClass,
+  splitterLabel,
+} from "../utils/lossView.js";
+import { cableLinkText } from "../utils/impactOverlay.js";
+import {
+  splitterRatio,
+  splitterCapacityLine,
+  splitterLossText,
+  portUsageText,
+  portStatePill,
+  boxCapacityLine,
+} from "../utils/splitterView.js";
+import {
+  verdictView,
+  headline,
+  serviceabilityFacts,
+  highlightBoxId,
+  quoteClipboardText,
+  formatBand,
+} from "../utils/serviceabilityView.js";
 
 function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
@@ -78,7 +107,7 @@ function getFiberColorName(coreNumber) {
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
-function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCable }) {
+function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDeleteEnclosure, onHoverCable, onOpenWorksheet, onOpenQrTag }) {
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -129,7 +158,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
     setEditingSplice(null);
     load();
     loadSplitters();
-  }, [enclosureId]);
+  }, [enclosureId, networkRevision]);
 
   // Any cable spotlight from this form must not outlive the panel itself.
   useEffect(() => () => onHoverCable?.(null), [onHoverCable]);
@@ -163,17 +192,20 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   const availableInCores = inCores.filter((c) => c.status === "available").sort((a, b) => a.core_number - b.core_number);
   const availableOutCores = outCores.filter((c) => c.status === "available").sort((a, b) => a.core_number - b.core_number);
   const availableCores = allCores.filter((c) => c.status === "available").sort((a, b) => a.core_number - b.core_number);
-  // Spliced cores can be used for branching (adding splitter to an already-spliced core)
-  const splicedCores = allCores.filter((c) => c.status === "spliced").sort((a, b) => a.core_number - b.core_number);
+  // A spliced IN core can still be a valid branch source: it is the upstream
+  // fibre already arriving at this box. OUT cores are intentionally not included
+  // in this list.
 
-  // Build list of splitter output ports that are empty (available for splicing)
-  // — a port is NOT empty when a child splitter is cascaded onto it either.
+  // Build list of splitter output ports that are empty (available for splicing).
+  // "Empty" is the API's own verdict (`usage === 'free'`), so the dropdown can
+  // never offer a port the capacity count does not also count as free — and a
+  // damaged port, which is empty but will not carry light, is not offered.
   const splitterPorts = splitters.flatMap((s) => {
     // Every port row names its splitter so two same-size splitters (e.g. two
     // 1:4s — common once you cascade) are distinguishable in the dropdown.
-    const displayName = s.name || `1:${s.split_count} splitter`;
+    const displayName = s.name || `${splitterRatio(s) || `1:${s.split_count}`} splitter`;
     return (s.ports || [])
-      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .filter((p) => (p.available !== undefined ? p.available : !p.output_core_id && !p.output_splitter_id))
       .map((p) => ({
         id: `port-${s.id}-${p.port_number}`,
         splitter_id: s.id,
@@ -193,10 +225,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
       .filter((p) => p.output_core_id)
       .map((p) => p.output_core_id)
   );
-  
-  // Filter out cores that are already used by splitters
-  const splicedCoresForBranching = splicedCores.filter(
-    (c) => !splitterInputCoreIds.includes(c.id) && !splitterOutputCoreIds.includes(c.id)
+  const branchedInBoxCoreIds = new Set(
+    (doc.splices || []).flatMap((splice) => [splice.core_a_id, splice.core_b_id]).filter(Boolean),
+  );
+
+  const splicedInCores = inCores.filter((c) => c.status === "spliced");
+  const splicedInCoresForBranching = splicedInCores.filter(
+    (c) =>
+      !branchedInBoxCoreIds.has(c.id) &&
+      !splitterInputCoreIds.includes(c.id) &&
+      !splitterOutputCoreIds.includes(c.id),
   );
   const availableInCoresForBranching = availableInCores.filter(
     (c) => !splitterInputCoreIds.includes(c.id) && !splitterOutputCoreIds.includes(c.id)
@@ -209,7 +247,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   // (a splitter fed from another splitter's output port).
   const freePortsForCascade = splitters.flatMap((s) =>
     (s.ports || [])
-      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .filter((p) => (p.available !== undefined ? p.available : !p.output_core_id && !p.output_splitter_id))
       .map((p) => ({ splitter: s, port_number: p.port_number })),
   );
 
@@ -229,7 +267,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   });
   const coreAPickerGroups = [
     { label: "Available IN cores", options: availableInCoresForBranching.map(coreOption) },
-    { label: "Spliced IN cores (for branching)", options: splicedCoresForBranching.map(coreOption) },
+    { label: "Spliced IN cores (branchable)", options: splicedInCoresForBranching.map(coreOption) },
     { label: "Splitter ports", options: splitterPorts.map(portOption) },
   ];
   const coreBPickerGroups = [
@@ -477,6 +515,22 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
           </button>
           <button
             className="btn"
+            onClick={() => onOpenWorksheet?.(doc.enclosure)}
+            title="Generate a printable splice checklist from this box's documentation"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            Work order
+          </button>
+          <button
+            className="btn"
+            onClick={() => onOpenQrTag?.(doc.enclosure)}
+            title="Print a QR sticker that opens this box's documentation when scanned"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            QR tag
+          </button>
+          <button
+            className="btn"
             onClick={startEditBox}
             title="Edit box code / name"
             style={{ padding: "4px 12px", fontSize: 12 }}
@@ -497,6 +551,21 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
           )}
         </div>
       </div>
+
+      {/* QC: auto-flag any splice in this box whose recorded loss is
+          suspiciously high — a probable bad splice worth re-doing. */}
+      {!!doc.qc_flags?.bad_splices?.length && (
+        <div
+          className="qc-flag"
+          title={doc.qc_flags.bad_splices
+            .map((s) => `${s.core_a} ↔ ${s.core_b}: ${formatDb(s.loss_db)} dB${s.tray ? ` (tray ${s.tray})` : ""}`)
+            .join("\n")}
+        >
+          ⚠ {doc.qc_flags.bad_splices.length} bad splice
+          {doc.qc_flags.bad_splices.length === 1 ? "" : "s"} — recorded loss above{" "}
+          {formatDb(doc.qc_flags.bad_splice_threshold_db)} dB (see the Loss column below)
+        </div>
+      )}
 
       {/* Inline box editor — code is what shows on the map label */}
       {editingBox && (
@@ -667,6 +736,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               <th>In (from)</th>
               <th>Out (to)</th>
               <th>Type</th>
+              <th>Loss dB</th>
               <th>Note</th>
               <th></th>
             </tr>
@@ -681,6 +751,18 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   {s.cable_b_code} #{s.core_b_number}
                 </td>
                 <td>{s.splice_type}</td>
+                <td
+                  className={spliceLossClass(s.loss_db, doc.qc_flags?.bad_splice_threshold_db)}
+                  title={
+                    s.loss_db != null
+                      ? spliceLossClass(s.loss_db, doc.qc_flags?.bad_splice_threshold_db) === "loss-flagged"
+                        ? "Bad splice — recorded loss above the threshold, re-splice recommended"
+                        : "Measured loss (OTDR / power meter)"
+                      : "No loss recorded — the loss budget assumes a default"
+                  }
+                >
+                  {s.loss_db != null ? formatDb(s.loss_db) : "—"}
+                </td>
                 <td
                   style={{ maxWidth: 140, cursor: "pointer" }}
                   title="Click to edit this splice (incl. its note)"
@@ -821,7 +903,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             />
           </div>
           <div className="field">
-            <label>Loss (dB)</label>
+            <label>Measured loss (dB) — OTDR / power meter</label>
             <input
               type="number"
               step="0.01"
@@ -898,7 +980,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
       )}
 
       <p className="section-title">New splice</p>
-      {availableInCoresForBranching.length + availableOutCoresForBranching.length + splicedCoresForBranching.length + splitterPorts.length >= 1 ? (
+      {availableInCoresForBranching.length + splicedInCoresForBranching.length + availableOutCoresForBranching.length + splitterPorts.length >= 1 ? (
         <form onSubmit={handleSplice} style={{ marginBottom: 16 }}>
           <div className="field">
             <label>Core in (from upstream)</label>
@@ -947,12 +1029,26 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
         </p>
       )}
 
-      {/* Available splitter ports count */}
-      {splitterPorts.length > 0 && (
+      {/* Drop capacity in this box, counted once by the API (port_summary) */}
+      {splitters.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <p className="section-title">Available splitter ports</p>
+          <p className="section-title">Drop capacity here</p>
           <p className="empty-state" style={{ fontSize: 12 }}>
-            {splitterPorts.length} empty port{splitterPorts.length !== 1 ? "s" : ""} ready for assignment
+            {boxCapacityLine(
+              splitters.reduce(
+                (acc, s) => {
+                  const p = s.port_summary;
+                  if (!p) return acc;
+                  return {
+                    splitters: acc.splitters + 1,
+                    ports: acc.ports + p.total,
+                    free_ports: acc.free_ports + p.free,
+                  };
+                },
+                { splitters: 0, ports: 0, free_ports: 0 },
+              ),
+              splitters.length,
+            )}
           </p>
         </div>
       )}
@@ -967,14 +1063,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               style={{ marginBottom: 8 }}
             >
               <div style={{ fontWeight: 600 }}>{s.name}</div>
+              <div className="sub">{splitterCapacityLine(s)}</div>
               <div className="sub">
-                1:{s.split_count} · fed from{" "}
+                fed from{" "}
                 {s.parent
                   ? `${s.parent.name || `1:${s.parent.split_count} splitter`} — port ${s.parent.port_number}`
                   : s.input_core
                     ? `${s.input_core.cable_code} fiber #${s.input_core.core_number}`
                     : "—"}
                 {" "}· {s.splice_type}
+                {splitterLossText(s) ? ` · ${splitterLossText(s)}` : ""}
               </div>
               {s.notes ? (
                 <div className="sub" style={{ marginTop: 2 }}>📝 {s.notes}</div>
@@ -985,7 +1083,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                     <tr>
                       <th>Port</th>
                       <th>Core</th>
-                      <th>Cable</th>
+                      <th>Customer / feeds</th>
                       <th>Status</th>
                       <th></th>
                     </tr>
@@ -995,15 +1093,19 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                       <tr key={p.port_id}>
                         <td>{p.port_number}</td>
                         <td>{p.core_number ? `#${p.core_number}` : p.output_splitter_id ? "🔀" : "—"}</td>
-                        <td>{p.cable_code || (p.output_splitter_id ? `→ ${p.child_splitter_name || "splitter"}` : "—")}</td>
                         <td>
-                          {p.output_core_id ? (
-                            <Pill status={p.core_status} />
-                          ) : p.output_splitter_id ? (
-                            <span className="pill pill-reserved">cascaded</span>
-                          ) : (
-                            <span style={{ color: "var(--text-faint)", fontSize: 11 }}>empty</span>
-                          )}
+                          {portUsageText(p)}
+                          {p.customer_label && p.cable_code ? (
+                            <span className="sub" style={{ marginLeft: 6, fontSize: 10 }}>
+                              {p.cable_code}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td>
+                          {(() => {
+                            const pill = portStatePill(p);
+                            return <span className={pill.className}>{pill.text}</span>;
+                          })()}
                         </td>
                         <td>
                           {p.output_core_id ? (
@@ -1071,7 +1173,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                       onChange={(e) =>
                         setEditSplitterForm((f) => ({ ...f, name: e.target.value }))
                       }
-                      placeholder={`1:${s.split_count} splitter`}
+                      placeholder={`${splitterRatio(s)} splitter`}
                     />
                   </div>
                   <div className="field">
@@ -1174,6 +1276,8 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               <option value={2}>1:2</option>
               <option value={4}>1:4</option>
               <option value={8}>1:8</option>
+              <option value={16}>1:16</option>
+              <option value={32}>1:32</option>
             </select>
           </div>
           <div className="field">
@@ -1192,9 +1296,9 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   </option>
                 ))}
               </optgroup>
-              {splicedCoresForBranching.length > 0 && (
-                <optgroup label="Spliced cores (for branching)">
-                  {splicedCoresForBranching.map((c) => (
+              {splicedInCoresForBranching.length > 0 && (
+                <optgroup label="Spliced IN cores (branchable)">
+                  {splicedInCoresForBranching.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.cable_code} #{c.core_number} ({getFiberColorName(c.core_number)})
                     </option>
@@ -1302,6 +1406,8 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
 function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
   const [full, setFull] = useState(null);
   const [trace, setTrace] = useState(null);
+  const [budget, setBudget] = useState(null);
+  const [tracedCoreId, setTracedCoreId] = useState(null);
   const [insertForm, setInsertForm] = useState(null);
   const [splitInfo, setSplitInfo] = useState(null);
   const [splitRatio, setSplitRatio] = useState(0.5);
@@ -1313,6 +1419,8 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
   useEffect(() => {
     setTrace(null);
+    setBudget(null);
+    setTracedCoreId(null);
     setInsertForm(null);
     setSplitInfo(null);
     setSplitRatio(0.5);
@@ -1432,6 +1540,8 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       });
       setInsertForm(null);
       setTrace(null);
+      setBudget(null);
+      setTracedCoreId(null);
       setSplitLngLat(null);
       if (onSplitPointChange) onSplitPointChange(null, null);
       await api.getCable(cable.id).then(setFull);
@@ -1444,10 +1554,17 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
             `available in the new joint, ready to splice when needed.`
           : `No fibers were in use across the cut point, so nothing was spliced automatically — ` +
             `every core is available in the new joint, ready to splice when needed.`;
+      // The API reports here when it could not link the two halves (a database
+      // without migration 20260101000014) — the cut happened, but a failure
+      // simulation upstream of the new box will stop at it until that is fixed.
+      const warnings = result.warnings?.length
+        ? `\n\n⚠ ${result.warnings.join('\n')}`
+        : "";
       alert(
         `Done! New pole and enclosure "${result.enclosure.code}" placed.\n` +
         `Upstream: ${Math.round(result.split_info.upstream_length_m)}m → Box → Downstream: ${Math.round(result.split_info.downstream_length_m)}m\n` +
-        spliceLine
+        spliceLine +
+        warnings
       );
     } catch (err) {
       alert(err.message);
@@ -1461,8 +1578,21 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       code: full.code || "",
       name: full.name || "",
       customer_label: full.customer_label || "",
+      attenuation_db_per_km: full.attenuation_db_per_km ?? "",
     });
     setEditingCable(true);
+  }
+
+  // Switching OLT type persists the project-wide budget setting, then
+  // recomputes this trace's budget against the new budget constant.
+  async function handleOltTypeChange(oltType) {
+    if (!tracedCoreId) return;
+    try {
+      await api.updateSettings({ olt_type: oltType });
+      setBudget(await api.getLossBudget(tracedCoreId));
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   async function handleSaveCable(e) {
@@ -1473,6 +1603,10 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
         code: cableForm.code,
         name: cableForm.name.trim() ? cableForm.name.trim() : null,
         customer_label: cableForm.customer_label.trim() ? cableForm.customer_label.trim() : null,
+        attenuation_db_per_km:
+          cableForm.attenuation_db_per_km === "" || cableForm.attenuation_db_per_km == null
+            ? null
+            : Number(cableForm.attenuation_db_per_km),
       });
       setEditingCable(false);
       await api.getCable(cable.id).then(setFull);
@@ -1525,6 +1659,15 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
         </div>
       </div>
 
+      {/* Mid-span link: which half this cable continues, and which halves
+          continue it. Present whether the database records the link or the app
+          inferred it from cable naming — the line says which. */}
+      {cableLinkText(full) && (
+        <p className={full.continuation_inferred ? "sub impact-inferred" : "sub"}>
+          {cableLinkText(full)}
+        </p>
+      )}
+
       {/* Inline cable editor — code is what shows on the map label */}
       {editingCable && (
         <form onSubmit={handleSaveCable} className="inline-edit-card" style={{ marginBottom: 12 }}>
@@ -1549,6 +1692,19 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
             <input
               value={cableForm.customer_label}
               onChange={(e) => setCableForm((f) => ({ ...f, customer_label: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label>Attenuation (dB/km) — blank = 0.35 singlemode default</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={cableForm.attenuation_db_per_km}
+              onChange={(e) =>
+                setCableForm((f) => ({ ...f, attenuation_db_per_km: e.target.value }))
+              }
+              placeholder="0.35"
             />
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -1593,7 +1749,11 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                 <button
                   className="btn"
                   style={{ padding: "3px 8px", fontSize: 11 }}
-                  onClick={() => api.traceFiber(c.id).then(setTrace)}
+                  onClick={() => {
+                    setTracedCoreId(c.id);
+                    api.traceFiber(c.id).then(setTrace).catch(() => setTrace(null));
+                    api.getLossBudget(c.id).then(setBudget).catch(() => setBudget(null));
+                  }}
                 >
                   Trace
                 </button>
@@ -1604,8 +1764,13 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                     onClick={async () => {
                       if (!confirm(`Unsplice core #${c.core_number}? It will return to available.`)) return;
                       try {
-                        await api.unspliceCore(c.id);
+                        // For an inserted span, target the splice at this cable's
+                        // downstream endpoint (the middle enclosure). A core can
+                        // also have an older splice elsewhere, so selecting by
+                        // core alone can remove the wrong connection.
+                        await api.unspliceCore(c.id, full.to_enclosure_id);
                         await api.getCable(cable.id).then(setFull);
+                        onChanged?.();
                         alert(`Core #${c.core_number} unspliced successfully`);
                       } catch (err) {
                         alert(err.message);
@@ -1769,24 +1934,129 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
       {trace && (
         <div>
-          <p className="section-title">Fiber path (req #6)</p>
-          {trace.hops.map((hop, i) =>
-            hop.cable_code ? (
-              <div className="list-item" key={i}>
-                <div className="code">
-                  {hop.cable_code} · core #{hop.core_number}
+          <p className="section-title">Fiber path &amp; loss budget</p>
+
+          {/* Budget summary: total vs OLT budget, with margin & verdict */}
+          {budget && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="summary-grid cols-3">
+                <div className="summary-card">
+                  <div className="n">{formatDb(budget.total_loss_db)} dB</div>
+                  <div className="l">Path loss</div>
                 </div>
-                <div className="sub">
-                  {hop.cable_type}
-                  <Pill status={hop.core_status} />
+                <div className="summary-card">
+                  <div className="n">{formatDb(budget.budget_db)} dB</div>
+                  <div className="l">{OLT_TYPE_LABELS[budget.olt_type] || budget.olt_type} budget</div>
+                </div>
+                <div className="summary-card">
+                  <div className={`n ${budgetStatusClass(budget.status)}`}>
+                    {formatDb(budget.margin_db)} dB
+                  </div>
+                  <div className="l">Margin — {budget.status}</div>
                 </div>
               </div>
-            ) : (
-              <div className="empty-state" key={i} style={{ paddingLeft: 8 }}>
-                ↓ spliced ({hop.splice_type})
+              <div className="loss-controls">
+                <label htmlFor="olt-type-select">OLT type</label>
+                <select
+                  id="olt-type-select"
+                  value={budget.olt_type}
+                  onChange={(e) => handleOltTypeChange(e.target.value)}
+                  title="Project-wide setting: which OLT/transport budget to compare against"
+                >
+                  {Object.entries(OLT_TYPE_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="loss-legend">
+                  <span className="loss-measured">✓ measured</span>
+                  {" · "}
+                  <span className="loss-assumed">~ assumed (default)</span>
+                  {!!budget.counts?.flagged_bad_splices && (
+                    <>
+                      {" · "}
+                      <span className="loss-flagged">⚠ bad splice</span>
+                    </>
+                  )}
+                </span>
               </div>
-            ),
+              {!!budget.warnings?.length && (
+                <div className="loss-warnings">
+                  {budget.warnings.map((w, i) => (
+                    <div key={i}>⚠ {w}</div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
+
+          {/* The path itself, annotated with per-segment loss + running total.
+              With a budget we render its breakdown (same order as the hops,
+              plus splitter crossings); without one we fall back to raw hops. */}
+          {(budget ? budget.breakdown : trace.hops).map((hop, i) => {
+            if (hop.type === "splitter") {
+              return (
+                <div className="empty-state loss-row" key={i}>
+                  <span>
+                    ◇ splitter {splitterLabel(hop)}
+                  </span>
+                  {budget && (
+                    <span className={`loss-col ${lossEntryClass(hop)}`}>
+                      <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>
+                      <span className="loss-src">{lossSourceLabel(hop)}</span>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            if (hop.core_id) {
+              return (
+                <div className="list-item loss-row" key={i}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="code">
+                      {hop.cable_code} · core #{hop.core_number}
+                    </div>
+                    <div className="sub">
+                      {hop.cable_type}
+                      <Pill status={hop.core_status} />
+                    </div>
+                  </div>
+                  {budget && (
+                    <span className={`loss-col ${lossEntryClass(hop)}`}>
+                      <span>
+                        {hop.loss_db == null ? "—" : `+${formatDb(hop.loss_db)} dB`} · Σ{" "}
+                        {formatDb(hop.running_db)}
+                      </span>
+                      <span className="loss-src">
+                        {hop.length_missing
+                          ? "length unknown"
+                          : hop.duplicate_cable
+                            ? "same cable — not re-counted"
+                            : `${Math.round(hop.length_m)} m × ${formatDb(hop.attenuation_db_per_km)} dB/km`}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            const through = hop.splice_type === "continuation";
+            return (
+              <div className="empty-state loss-row" key={i}>
+                <span>
+                  {through
+                    ? `↓ through ${hop.continues_to_cable_code || "the inserted closure"} (fusion splice)`
+                    : `↓ spliced (${hop.splice_type})`}
+                </span>
+                {budget && (
+                  <span className={`loss-col ${lossEntryClass(hop)}`}>
+                    <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>
+                    <span className="loss-src">{lossSourceLabel(hop)}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1796,9 +2066,15 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 // ---------------------------------------------------------------------------
 // CustomerLookupPanel — shown in locate-customer mode
 // ---------------------------------------------------------------------------
-function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreateCustomer }) {
-  const [result, setResult] = useState(null);
-  const [route, setRoute] = useState(null);
+function CustomerLookupPanel({
+  customerPoint,
+  customers,
+  serviceability,
+  serviceabilityLoading,
+  serviceabilityError,
+  onShowServiceabilityBox,
+  onCreateCustomer,
+}) {
   const [form, setForm] = useState({
     customer_code: "",
     name: "",
@@ -1806,37 +2082,53 @@ function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreate
     email: "",
     address: "",
   });
+  const [copied, setCopied] = useState(false);
+
+  // A new customer's address is the address that was checked, so prefill it from
+  // the match the check resolved (the CSR has already typed it once).
+  useEffect(() => {
+    const matched = serviceability?.query?.address;
+    if (matched) setForm((f) => (f.address ? f : { ...f, address: matched }));
+  }, [serviceability?.query?.address]);
 
   useEffect(() => {
-    if (!customerPoint) {
-      setResult(null);
-      setRoute(null);
-      return;
-    }
-    api
-      .customerLookup(customerPoint.lat, customerPoint.lng)
-      .then((lookupResult) => {
-        setResult(lookupResult);
-        // If we have a recommended box, fetch the route
-        if (lookupResult.recommended_box) {
-          return api.getCustomerRoute(
-            customerPoint.lat,
-            customerPoint.lng,
-            lookupResult.recommended_box.id
-          );
-        }
-        return null;
-      })
-      .then((routeResult) => {
-        if (routeResult) {
-          setRoute(routeResult);
-        }
-      })
-      .catch(() => {
-        setResult(null);
-        setRoute(null);
-      });
+    setCopied(false);
   }, [customerPoint]);
+
+  const view = serviceability ? verdictView(serviceability.verdict) : null;
+  const facts = serviceability ? serviceabilityFacts(serviceability) : [];
+  const band = formatBand(serviceability?.quote?.band, serviceability?.quote?.currency);
+  const boxId = highlightBoxId(serviceability);
+
+  async function handleCopy() {
+    const text = quoteClipboardText(serviceability);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      // Clipboard blocked (http, or a denied permission): the printable sheet is
+      // the fallback, so say so rather than failing silently.
+      setCopied(false);
+      alert("Could not copy — use \"Printable quote\" instead.");
+    }
+  }
+
+  function openTextSheet() {
+    const url = api.serviceabilityTextUrl({
+      lat: customerPoint?.lat,
+      lng: customerPoint?.lng,
+    });
+    window.open(url, "_blank", "noopener");
+  }
+
+  function openInstallSheet() {
+    const url = api.serviceabilitySheetUrl({
+      lat: customerPoint?.lat,
+      lng: customerPoint?.lng,
+    });
+    window.open(url, "_blank", "noopener");
+  }
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -1862,38 +2154,123 @@ function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreate
 
   return (
     <div>
-      <p className="section-title">Customer lookup</p>
+      <p className="section-title">Serviceability check</p>
       {!customerPoint ? (
-        <p className="empty-state">Click the map at the customer's location.</p>
+        <p className="empty-state">
+          Click the map at the customer&rsquo;s location to answer &ldquo;can we serve
+          this address?&rdquo; — the box, the run and the drop cost.
+        </p>
       ) : (
         <>
-          {result && (
-            <div style={{ marginBottom: 16 }}>
-              <p className="empty-state">
-                Nearby boxes: {result.nearby_boxes.length}
-              </p>
-              {result.recommended_box && (
-                <p className="empty-state">
-                  Recommended: <b>{result.recommended_box.code}</b> (
-                  {result.recommended_box.available_cores} free,{" "}
-                  {Math.round(result.recommended_box.distance_m)}m away)
-                </p>
+          {serviceabilityLoading && !serviceability && (
+            <p className="empty-state">Checking the network…</p>
+          )}
+          {serviceabilityError && (
+            <p className="empty-state serviceability-error">{serviceabilityError}</p>
+          )}
+
+          {serviceability && (
+            <div className="serviceability" style={{ marginBottom: 16 }}>
+              <div className={`serviceability-verdict tone-${view.tone}`}>
+                <span className="serviceability-verdict-label">{view.label}</span>
+                {band && <span className="serviceability-price">{band}</span>}
+              </div>
+              <p className="serviceability-headline">{headline(serviceability)}</p>
+
+              <div className="serviceability-facts">
+                {facts.map((fact) => (
+                  <div key={fact.label} className="serviceability-fact">
+                    <div className="l">{fact.label}</div>
+                    <div className="v">{fact.value}</div>
+                    {fact.detail && <div className="sub">{fact.detail}</div>}
+                  </div>
+                ))}
+              </div>
+
+              {serviceability.next_steps?.length > 0 && (
+                <div className="serviceability-steps">
+                  <p className="section-title">Next steps</p>
+                  <ol>
+                    {serviceability.next_steps.map((step, index) => (
+                      <li key={index}>{step}</li>
+                    ))}
+                  </ol>
+                </div>
               )}
-              {result.suggested_source && (
-                <p className="empty-state">
-                  Suggested source: {result.suggested_source.source_enclosure_id.slice(0, 8)}… (
-                  {result.suggested_source.available_cores} free,{" "}
-                  {result.suggested_source.hops} hops)
-                </p>
+
+              {serviceability.warnings?.length > 0 && (
+                <div className="impact-warnings">
+                  {serviceability.warnings.map((warning, index) => (
+                    <p key={index} className="impact-warning">
+                      {warning}
+                    </p>
+                  ))}
+                </div>
               )}
-              {route && (
-                <p className="empty-state" style={{ marginTop: 8, color: "var(--teal)" }}>
-                  Route distance: {Math.round(route.length_m)}m along the street
+
+              <div className="serviceability-actions">
+                {boxId && (
+                  <button className="btn" type="button" onClick={() => onShowServiceabilityBox?.(boxId)}>
+                    Show {serviceability.recommended_box?.code || serviceability.nearest_box?.code} on map
+                  </button>
+                )}
+                <button className="btn" type="button" onClick={handleCopy}>
+                  {copied ? "Copied" : "Copy quote"}
+                </button>
+                <button className="btn" type="button" onClick={openTextSheet}>
+                  Printable quote
+                </button>
+                {serviceability.recommended_box && (
+                  <button className="btn" type="button" onClick={openInstallSheet}>
+                    Install sheet
+                  </button>
+                )}
+              </div>
+
+              {serviceability.alternatives?.length > 0 && (
+                <details className="serviceability-alternatives">
+                  <summary>
+                    {serviceability.alternatives.length} other box
+                    {serviceability.alternatives.length === 1 ? "" : "es"} nearby
+                  </summary>
+                  <ul>
+                    {serviceability.alternatives.map((box) => (
+                      <li key={box.id}>
+                        <button
+                          className="linklike"
+                          type="button"
+                          onClick={() => onShowServiceabilityBox?.(box.id)}
+                        >
+                          {box.code}
+                        </button>{" "}
+                        — {box.distance_m} m,{" "}
+                        {box.free_ports > 0
+                          ? `${box.free_ports} free port${box.free_ports === 1 ? "" : "s"}`
+                          : box.available_cores > 0
+                            ? `${box.available_cores} spare fibre${box.available_cores === 1 ? "" : "s"}`
+                            : "full"}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {serviceability.query && (
+                <p className="sub serviceability-resolved">
+                  {serviceability.query.source === "coordinates"
+                    ? "Checked at the point you clicked."
+                    : `Matched ${serviceability.query.label || serviceability.query.address} (${String(
+                        serviceability.query.source || "",
+                      ).replace(/_/g, " ")})${
+                        serviceability.query.confidence ? ` · ${serviceability.query.confidence} confidence` : ""
+                      }.`}
                 </p>
               )}
             </div>
           )}
+
           <form onSubmit={handleCreate} style={{ marginBottom: 16 }}>
+            <p className="section-title">Register the customer</p>
             <div className="field">
               <label>Customer code</label>
               <input
@@ -1956,18 +2333,108 @@ export default function RightPanel({
   mode,
   selectedEnclosure,
   selectedCable,
+  selectedPole,
   customerPoint,
+  serviceability,
+  serviceabilityLoading,
+  serviceabilityError,
+  onShowServiceabilityBox,
   customers,
+  impact,
+  impactLoading,
+  impactError,
+  headends,
+  onSimulateFailure,
+  onClearImpact,
+  onSetNetworkRoot,
   onCreateCustomer,
   onChanged,
+  networkRevision = 0,
   onDeleteEnclosure,
   onDeleteCable,
   onSplitPointChange,
   onHoverCable,
 }) {
+  // Failure simulation is anchored at a box only. A cable is not a failure
+  // target: it is the span carrying the fibres, and the simulation must be able
+  // to keep the incoming span lit while cascading through connected outputs.
+  const failureTarget = selectedEnclosure
+    ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
+    : null;
+  const fieldTarget = selectedEnclosure
+    ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
+    : selectedCable
+      ? { kind: "cable", id: selectedCable.id, label: selectedCable.code }
+      : selectedPole
+        ? { kind: "pole", id: selectedPole.id, label: selectedPole.code }
+        : null;
+
+  // Field work, for whatever is selected: a sticker that opens this thing's
+  // documentation when scanned, and (for a box) the splice worksheet.
+  const [qrTarget, setQrTarget] = useState(null);
+  const [worksheetFor, setWorksheetFor] = useState(null);
+
   return (
     <>
-      {mode === "view" && !selectedEnclosure && !selectedCable && (
+      {qrTarget && (
+        <QrLabelSheet
+          kind={qrTarget.kind}
+          id={qrTarget.id}
+          label={qrTarget.label}
+          onClose={() => setQrTarget(null)}
+        />
+      )}
+      {worksheetFor && (
+        <WorkOrderSheet
+          boxId={worksheetFor.id}
+          boxCode={worksheetFor.label}
+          onClose={() => setWorksheetFor(null)}
+        />
+      )}
+
+      {fieldTarget && mode === "view" && (
+        <div className="field-kit">
+          <button
+            className="btn"
+            onClick={() => setQrTarget(fieldTarget)}
+            title={`Print a QR sticker for ${fieldTarget.label} — scanning it opens the documentation`}
+          >
+            QR tag
+          </button>
+          {fieldTarget.kind === "box" && (
+            <button
+              className="btn"
+              onClick={() => setWorksheetFor(fieldTarget)}
+              title="A printable splice checklist generated from this box's documentation"
+            >
+              Splice worksheet
+            </button>
+          )}
+        </div>
+      )}
+      {impact || impactLoading || impactError ? (
+        <ImpactPanel
+          impact={impact}
+          loading={impactLoading}
+          error={impactError}
+          headends={headends}
+          onClear={onClearImpact}
+          onSimulate={() => failureTarget && onSimulateFailure?.(failureTarget)}
+          onSetNetworkRoot={onSetNetworkRoot}
+        />
+      ) : (
+        failureTarget && (
+          <button
+            className="btn btn-block btn-danger impact-simulate"
+            onClick={() => onSimulateFailure?.(failureTarget)}
+            title="Take this element out of the network and see who goes dark"
+          >
+            Simulate failure of {failureTarget.label}
+          </button>
+        )
+      )}
+
+      {mode === "view" && !selectedEnclosure && !selectedCable && !failureTarget && (
         <p className="empty-state">Select a box or cable to see details.</p>
       )}
 
@@ -1975,8 +2442,11 @@ export default function RightPanel({
         <BoxDocumentation
           enclosureId={selectedEnclosure.id}
           onChanged={onChanged}
+          networkRevision={networkRevision}
           onDeleteEnclosure={onDeleteEnclosure}
           onHoverCable={onHoverCable}
+          onOpenWorksheet={(box) => setWorksheetFor({ id: box.id, label: box.code })}
+          onOpenQrTag={(box) => setQrTarget({ kind: "box", id: box.id, label: box.code })}
         />
       )}
 
@@ -1993,6 +2463,10 @@ export default function RightPanel({
         <CustomerLookupPanel
           customerPoint={customerPoint}
           customers={customers}
+          serviceability={serviceability}
+          serviceabilityLoading={serviceabilityLoading}
+          serviceabilityError={serviceabilityError}
+          onShowServiceabilityBox={onShowServiceabilityBox}
           onCreateCustomer={onCreateCustomer}
         />
       )}

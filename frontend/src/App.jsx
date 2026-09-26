@@ -1,11 +1,13 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import MapView from "./components/MapView.jsx";
 import MapViewGoogle from "./components/MapViewGoogle.jsx";
 import MapViewMapbox from "./components/MapViewMapbox.jsx";
 import LeftPanel from "./components/LeftPanel.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import { parseDeepLink, syncLocation } from "./utils/deepLink.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
+import { impactOverlay, overlayHeadline, failureTitle } from "./utils/impactOverlay.js";
 import { LoadScript } from "@react-google-maps/api";
 import { LocateFixed, Sun, Moon, Type } from "lucide-react";
 
@@ -58,6 +60,14 @@ export default function App() {
   const [selectedEnclosure, setSelectedEnclosure] = useState(null);
   const [selectedCable, setSelectedCable] = useState(null);
   // Cable spotlighted because one of its fibers is hovered in the splice form
+  // Outage simulation: the result of /api/impact/simulate, the request that
+  // produced it (kept so it can be re-run after fixing the network root), and
+  // the network roots themselves.
+  const [impact, setImpact] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState(null);
+  const [failureTarget, setFailureTarget] = useState(null);
+  const [headends, setHeadends] = useState([]);
   const [highlightCableId, setHighlightCableId] = useState(null);
   const [splitPointLngLat, setSplitPointLngLat] = useState(null);
   const [splitRatio, setSplitRatio] = useState(null);
@@ -76,23 +86,44 @@ export default function App() {
     return Number.isFinite(saved) ? Math.min(1, Math.max(0.2, saved)) : 1;
   });
   
-  // Customer route (for locate-customer mode)
+  // Locate-customer mode: the serviceability check is the answer to the whole
+  // question ("can we serve them, from which box, what will the drop cost"), so
+  // the panel and the map line are rendered from ONE call — the same numbers in
+  // both places, and no chance of the two disagreeing.
   const [customerRoute, setCustomerRoute] = useState(null);
+  const [serviceability, setServiceability] = useState(null);
+  const [serviceabilityLoading, setServiceabilityLoading] = useState(false);
+  const [serviceabilityError, setServiceabilityError] = useState(null);
   
   // Theme state
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("fiberline-theme") || "dark";
   });
   
+  // A scanned QR code lands here with `?box=…` (or pole/cable/customer). State
+  // for what was requested, so it opens once the network has loaded.
+  const [qrNotice, setQrNotice] = useState(null);
+
   // Resizable right panel state
   const [rightPanelWidth, setRightPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
+  // Bump this whenever network data changes so an already-open documentation
+  // panel refetches after operations such as inserting a mid-span enclosure.
+  const [networkRevision, setNetworkRevision] = useState(0);
 
   const reloadAll = useCallback(() => {
+    setNetworkRevision((revision) => revision + 1);
     api.listPoles().then(setPoles).catch(console.error);
     api.listEnclosures().then(setEnclosures).catch(console.error);
     api.listCables().then(setCables).catch(console.error);
     api.listCustomers().then(setCustomers).catch(console.error);
+    // Root list drives the "is this network rooted?" affordances. A database
+    // that has not run the headends migration answers 404 — treat that as
+    // "no roots yet" rather than an error.
+    api
+      .listHeadends()
+      .then(setHeadends)
+      .catch(() => setHeadends([]));
     api
       .capacityByEnclosure()
       .then((rows) =>
@@ -106,6 +137,48 @@ export default function App() {
   useEffect(() => {
     reloadAll();
   }, [reloadAll]);
+
+  /**
+   * Open whatever a scanned tag asked for. Runs when the network finishes
+   * loading (and once more if the target arrives late), because a QR link is
+   * often the very first request this browser ever made to the app.
+   *
+   * A tag whose thing has since been deleted says so instead of opening an empty
+   * panel — the sticker on the pole outlives the records.
+   */
+  const deepLink = useRef(parseDeepLink(typeof window === "undefined" ? "" : window.location.search));
+  useEffect(() => {
+    const target = deepLink.current;
+    if (!target) return;
+    const table = { pole: poles, box: enclosures, cable: cables, customer: customers }[target.kind] || [];
+    if (!table.length) return; // still loading
+    const match = table.find((row) => String(row.id) === String(target.id));
+    if (!match) {
+      setQrNotice(`That ${target.kind === "box" ? "box" : target.kind} (${target.id.slice(0, 8)}…) is not in this network any more.`);
+      deepLink.current = null;
+      return;
+    }
+    if (target.kind === "pole") handleSelectPole(match);
+    else if (target.kind === "box") handleSelectEnclosure(match);
+    else if (target.kind === "cable") handleSelectCable(match);
+    else {
+      // A customer's tag lives on their drop: what a technician needs from it is
+      // the box serving them, so open that box and say why.
+      const serving = enclosures.find((enc) => String(enc.id) === String(match.enclosure_id));
+      if (serving) {
+        handleSelectEnclosure(serving);
+        setQrNotice(`${match.code ? `${match.code} — ` : ""}served from ${serving.code}.`);
+        deepLink.current = null;
+        return;
+      }
+      setQrNotice(`Customer ${match.code || match.id.slice(0, 8)} has no box recorded.`);
+      deepLink.current = null;
+      return;
+    }
+    setQrNotice(null);
+    deepLink.current = null; // open it once, not on every reload
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poles, enclosures, cables, customers]);
 
   // Save theme preference
   useEffect(() => {
@@ -136,6 +209,56 @@ export default function App() {
   function handleModeChange(next) {
     setMode(next);
     resetPending();
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  function clearImpact() {
+    setImpact(null);
+    setImpactError(null);
+    setImpactLoading(false);
+  }
+
+  /**
+   * Take the selected box out of the network and report the downstream fallout.
+   * A failure is intentionally anchored at a box: the graph can then follow
+   * connected fibres and splitter ports away from that box without treating the
+   * input span as a failed cable.
+   */
+  async function handleSimulateFailure(target) {
+    if (!target || target.kind !== "box") return;
+    setFailureTarget(target);
+    setImpactLoading(true);
+    setImpactError(null);
+    try {
+      const result = await api.simulateImpact(target.kind, target.id);
+      setImpact(result);
+    } catch (err) {
+      setImpact(null);
+      setImpactError(err.message);
+    } finally {
+      setImpactLoading(false);
+    }
+  }
+
+  function handleClearImpact() {
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  /**
+   * Root the segment at a box (the OLT/CO the feeder lands in) and immediately
+   * re-run the simulation that was blocked on it — the point of setting the
+   * root is to make that answer trustworthy.
+   */
+  async function handleSetNetworkRoot(boxId) {
+    try {
+      await api.createHeadend({ root_enclosure_id: boxId, site_type: "olt" });
+      reloadAll();
+      if (failureTarget) await handleSimulateFailure(failureTarget);
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   function handleMapClick(latlng) {
@@ -148,7 +271,9 @@ export default function App() {
         return { ...draft, routePoints: [...draft.routePoints, latlng] };
       });
     }
-    // In view mode, clicking on the map clears any selection
+    // In view mode, clicking on the map clears any selection — but a simulated
+    // outage stays on screen until it is cleared, so the user can pan around
+    // the dark area without losing the analysis.
     if (mode === "view") {
       setSelectedPole(null);
       setSelectedEnclosure(null);
@@ -159,7 +284,11 @@ export default function App() {
   }
 
   function handlePoleClick(pole) {
-    if (mode === "add-enclosure") setPendingEnclosurePole(pole);
+    if (mode === "add-enclosure") {
+      setPendingEnclosurePole(pole);
+      return;
+    }
+    if (mode === "view") handleSelectPole(pole);
   }
 
   function handleEnclosureClick(enc) {
@@ -172,6 +301,7 @@ export default function App() {
       });
       return;
     }
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedCable(null);
   }
@@ -195,27 +325,48 @@ export default function App() {
   }
 
   function handleSelectPole(pole) {
+    if (selectedPole?.id !== pole.id) clearImpact();
     setSelectedPole(pole);
     setSelectedEnclosure(null);
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("pole", pole?.id);
+  }
+
+  /**
+   * Bring a box the serviceability check picked onto the map: select it, so the
+   * existing fly-to/selection styling points the CSR at the right box.
+   */
+  function handleShowServiceabilityBox(boxId) {
+    const match = enclosures.find((enc) => String(enc.id) === String(boxId));
+    if (!match) {
+      // A box that is on the map but not in the loaded list (filtered out, or
+      // just added by somebody else) — refresh and let the next click find it.
+      reloadAll();
+      return;
+    }
+    handleSelectEnclosure(match);
   }
 
   function handleSelectEnclosure(enc) {
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedPole(null);
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("box", enc?.id);
   }
 
   function handleSelectCable(cable) {
+    if (selectedCable?.id !== cable.id) clearImpact();
     setSelectedCable(cable);
     setSelectedPole(null);
     setSelectedEnclosure(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("cable", cable?.id);
   }
 
   async function handleCreatePole(data) {
@@ -339,6 +490,9 @@ export default function App() {
     setTimeout(() => setIsTracking(false), 1000);
   }
 
+  // What the map paints red — one derivation shared by all three providers.
+  const overlay = useMemo(() => impactOverlay(impact), [impact]);
+
   const pendingCableRoute = cableDraft.from
     ? [
         [cableDraft.from.lat, cableDraft.from.lng],
@@ -371,33 +525,48 @@ export default function App() {
     };
   }, [isResizing]);
 
-  // Fetch customer route when customer point is set
+  // Run the serviceability check when a customer point is dropped: the answer,
+  // the box to serve from, the price, and the street route the map draws.
+  // Reloads when the network changes (a box added at the gate changes the
+  // answer), which is why `enclosures` is in the deps.
   useEffect(() => {
-    if (customerPoint && mode === "locate-customer") {
-      api.customerLookup(customerPoint.lat, customerPoint.lng)
-        .then((result) => {
-          if (result.recommended_box) {
-            return api.getCustomerRoute(
-              customerPoint.lat,
-              customerPoint.lng,
-              result.recommended_box.id
-            );
-          }
-          return null;
-        })
-        .then((route) => {
-          if (route) {
-            setCustomerRoute(route);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to fetch customer route:", err);
-          setCustomerRoute(null);
-        });
-    } else {
+    if (!customerPoint || mode !== "locate-customer") {
       setCustomerRoute(null);
+      setServiceability(null);
+      setServiceabilityError(null);
+      return undefined;
     }
-  }, [customerPoint, mode]);
+    let cancelled = false;
+    setServiceabilityLoading(true);
+    setServiceabilityError(null);
+    api
+      .checkServiceability({ lat: customerPoint.lat, lng: customerPoint.lng })
+      .then((result) => {
+        if (cancelled) return;
+        setServiceability(result);
+        setServiceabilityError(null);
+        // The maps already know how to draw `{ route, length_m }`.
+        setCustomerRoute(
+          result?.drop?.route?.length >= 2
+            ? { route: result.drop.route, length_m: result.distance?.run_m ?? result.drop.length_m }
+            : null
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("Serviceability check failed:", err);
+        setServiceability(null);
+        setServiceabilityError(err.message || "Serviceability check failed");
+        setCustomerRoute(null);
+      })
+      .finally(() => {
+        if (!cancelled) setServiceabilityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerPoint, mode, enclosures.length]);
 
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
@@ -467,6 +636,13 @@ export default function App() {
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>
 
+      {qrNotice && (
+        <div className="qr-notice">
+          <span>{qrNotice}</span>
+          <button className="btn" onClick={() => setQrNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className="main-flex">
         <div className="panel left">
           <ErrorBoundary fallbackMessage="The side panel hit a rendering error.">
@@ -519,6 +695,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
@@ -548,6 +726,8 @@ export default function App() {
                 selectedPoleId={selectedPole?.id}
                 selectedCableId={selectedCable?.id}
                 highlightCableId={highlightCableId}
+                overlay={overlay}
+                impact={impact}
                 locateNonce={locateNonce}
                 labelOpacity={labelOpacity}
                 splitPointLngLat={splitPointLngLat}
@@ -577,6 +757,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
@@ -589,6 +771,18 @@ export default function App() {
             />
           )}
           </ErrorBoundary>
+
+          {impact && (
+            <div className="impact-banner">
+              <span className="pill pill-damaged">Failure simulated</span>
+              <span className="impact-banner-text">
+                {failureTitle(impact)} — {overlayHeadline(impact)}
+              </span>
+              <button className="btn btn-danger" onClick={handleClearImpact}>
+                Clear
+              </button>
+            </div>
+          )}
         </div>
 
         <div
@@ -608,10 +802,23 @@ export default function App() {
             mode={mode}
             selectedEnclosure={selectedEnclosure}
             selectedCable={selectedCable}
+            selectedPole={selectedPole}
+            impact={impact}
+            impactLoading={impactLoading}
+            impactError={impactError}
+            headends={headends}
+            onSimulateFailure={handleSimulateFailure}
+            onClearImpact={handleClearImpact}
+            onSetNetworkRoot={handleSetNetworkRoot}
             customerPoint={customerPoint}
+            serviceability={serviceability}
+            serviceabilityLoading={serviceabilityLoading}
+            serviceabilityError={serviceabilityError}
+            onShowServiceabilityBox={handleShowServiceabilityBox}
             customers={customers}
             onCreateCustomer={handleCreateCustomer}
             onChanged={reloadAll}
+            networkRevision={networkRevision}
             onDeleteEnclosure={handleDeleteEnclosure}
             onDeleteCable={handleDeleteCable}
             onSplitPointChange={handleSplitPointChange}
