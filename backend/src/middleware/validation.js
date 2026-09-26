@@ -6,6 +6,8 @@
  * silently breaks whole UI workflows with 400s, so keep them in sync.
  */
 
+const { SUPPORTED_SPLIT_COUNTS } = require('../utils/splitters');
+
 function sanitizeString(str) {
   if (typeof str !== 'string') return str;
   let sanitized = str.replace(/<[^>]*>/g, '');
@@ -234,8 +236,10 @@ function validateSplitterData(req, res, next) {
       return res.status(400).json({ error: 'input_port must be { splitter_id, port_number }' });
     }
   }
-  if (split_count !== undefined && ![2, 4, 8].includes(Number(split_count))) {
-    return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
+  if (split_count !== undefined && !SUPPORTED_SPLIT_COUNTS.includes(Number(split_count))) {
+    return res.status(400).json({
+      error: `split_count must be one of ${SUPPORTED_SPLIT_COUNTS.join(', ')}`,
+    });
   }
   if (splice_type !== undefined && !['fusion', 'mechanical'].includes(splice_type)) {
     return res.status(400).json({ error: "splice_type must be 'fusion' or 'mechanical'" });
