@@ -364,6 +364,12 @@ code, .mono { font-family: var(--font-mono); }
 .cable-line-active {
   animation: pulse-dash 1.1s linear infinite;
 }
+/* Out (or partly out) spans are drawn from impactCableStyle; they must not
+   march. This is the hook for that, kept next to the live classes it replaces. */
+.cable-line-out {
+  animation: none;
+}
+
 /* Drop legs (the customer hop) march faster. */
 .cable-line-active.cable-line-drop {
   animation-duration: 0.6s;
@@ -792,4 +798,493 @@ code, .mono { font-family: var(--font-mono); }
   .vdoc-legend { font-size: 10px; gap: 4px 10px; }
   .vdoc-upstream { padding-left: 20px; }
   .summary-grid, .summary-grid.cols-3 { grid-template-columns: 1fr; }
+}
+
+/* ---------- Loss budget (trace panel + box documentation) ---------- */
+/* Path rows lay out as [segment …………… loss + running total]. */
+.loss-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.loss-row.list-item { padding: 7px 8px; }
+.loss-col {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  flex: none;
+}
+.loss-col .loss-src {
+  font-family: var(--font-body);
+  font-size: 9.5px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+/* Verified vs assumed vs flagged — the whole point of the coloring is that a
+   tech can see at a glance which dB numbers are measurements and which are
+   planning defaults. */
+.loss-measured { color: var(--teal); }
+.loss-assumed { color: var(--amber); }
+.loss-flagged { color: var(--red); font-weight: 700; }
+.loss-neutral { color: var(--text-muted); }
+.loss-status-ok { color: var(--teal); }
+.loss-status-marginal { color: var(--amber); }
+.loss-status-fail { color: var(--red); }
+.loss-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.loss-controls label { color: var(--text-muted); }
+.loss-legend { font-size: 10px; color: var(--text-faint); }
+.loss-warnings {
+  background: rgba(240, 180, 41, 0.08);
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--amber);
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+/* Auto-flagged bad splices in the box documentation */
+.qc-flag {
+  background: rgba(239, 83, 80, 0.1);
+  border: 1px solid rgba(239, 83, 80, 0.4);
+  color: var(--red);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 11px;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Simulated failure (outage overlay) ---------- */
+/* Everything downstream of the simulated failure is painted red; the rest of
+   the network recedes (each map provider dims it inline, since Leaflet /
+   Google / Mapbox express opacity differently). */
+
+/* Leaflet dark box marker + the failed element at the centre of the outage */
+.enclosure-marker.dark {
+  background: var(--red);
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.25);
+}
+.enclosure-marker.failure-point {
+  box-shadow: 0 0 0 4px rgba(239, 83, 80, 0.5), 0 0 12px rgba(239, 83, 80, 0.85);
+}
+.pole-marker.failed-pole-marker {
+  width: 18px; height: 18px;
+  background: var(--red);
+  border: 3px solid var(--bg);
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.45);
+}
+
+/* "N customers are dark behind this box" badge, anchored to the marker */
+.enclosure-badge {
+  position: absolute;
+  top: -9px; right: -11px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--bg);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.leaflet-div-icon .enclosure-badge { position: absolute; }
+
+/* Mapbox box markers: dark boxes keep their label visible ("BOX-B · 3 dark") */
+.enc-dot-marker.is-dark .enc-dot-label,
+.enc-dot-marker.is-failure-point .enc-dot-label { display: block; }
+.enc-dot-marker.is-dark { box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.35); }
+.enc-dot-marker.is-failure-point { box-shadow: 0 0 0 4px rgba(239, 83, 80, 0.55); }
+
+/* Banner over the map while a simulation is displayed */
+.impact-banner {
+  position: absolute;
+  z-index: 1100; /* above Leaflet panes and map controls */
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.impact-banner-text {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The report in the right panel */
+.impact-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--red);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+.impact-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.impact-title {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+.impact-head .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
+.impact-root { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.impact-root b { color: var(--text); }
+.impact-root-missing {
+  padding: 8px 10px;
+  border: 1px solid rgba(240, 180, 41, 0.4);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.08);
+}
+.impact-root-missing p { margin: 0 0 8px; color: var(--amber); font-size: 11.5px; line-height: 1.5; }
+.impact-warning {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.08);
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.impact-error { color: var(--red); font-size: 12px; }
+.impact-customer {
+  margin-bottom: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+}
+.impact-customer summary { cursor: pointer; }
+.impact-customer .code { font-family: var(--font-mono); color: var(--red); }
+.impact-customer .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+.impact-option { cursor: default; }
+.impact-actions { display: flex; gap: 8px; margin-top: 12px; }
+.impact-simulate { margin-bottom: 16px; }
+/* A customer the analysis inferred rather than read from a label — kept muted
+   so it never looks like a data problem, just an unnamed leg. */
+.impact-inferred {
+  color: var(--amber);
+  font-style: italic;
+}
+
+/* ----------------------------------------------------------------------------
+   Field work: splice worksheets and QR tags.
+
+   Both are meant to leave the screen. On screen they are overlays over the map;
+   on paper they are the sheet a technician carries and the stickers they stick
+   on the pole — so the print rules below throw away the app chrome entirely and
+   keep only the sheet, in black on white (no dark-theme background swallowing
+   the ink, no scrollbars clipping the last steps).
+   ---------------------------------------------------------------------------- */
+.field-kit {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 10, 12, 0.66);
+  z-index: 4000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px 16px 60px;
+}
+
+.sheet-panel {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  width: 100%;
+  max-width: 760px;
+  padding: 16px;
+}
+
+.sheet-panel-wide { max-width: 940px; }
+
+.sheet-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.sheet-title { font-weight: 600; margin-right: auto; }
+.sheet-field { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); }
+.sheet-field input,
+.sheet-field select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.sheet-field input:focus,
+.sheet-field select:focus { outline: 1px solid var(--teal); }
+.sheet-link { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); word-break: break-all; }
+.sheet-footnote { color: var(--text-faint); font-size: 11px; margin-top: 12px; }
+.loading-row { color: var(--text-muted); font-size: 12.5px; }
+
+/* Notification for a scanned tag that no longer resolves. */
+.qr-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(240, 180, 41, 0.12);
+  color: var(--amber);
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* --- the worksheet ------------------------------------------------------- */
+.worksheet { font-size: 13px; line-height: 1.55; }
+.worksheet h2 { font-size: 17px; margin: 0 0 2px; }
+.worksheet h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 20px 0 8px;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 4px;
+}
+.worksheet-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.worksheet-meta { color: var(--text-muted); font-size: 12px; margin: 2px 0 0; }
+.worksheet-progress { text-align: right; white-space: nowrap; }
+.worksheet-progress strong { display: block; font-size: 18px; font-family: var(--font-mono); }
+.worksheet-progress span { font-size: 11px; color: var(--text-muted); }
+.worksheet-summary { color: var(--text-muted); font-size: 12.5px; margin: 10px 0 0; }
+
+.worksheet-steps { list-style: none; margin: 0; padding: 0; }
+.worksheet-steps > li { border-bottom: 1px solid var(--border-soft); padding: 9px 2px; }
+.worksheet-step { display: flex; gap: 9px; align-items: flex-start; cursor: pointer; }
+.worksheet-step input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--teal); }
+.worksheet-step-body { display: block; }
+.worksheet-step-task { font-weight: 600; }
+.worksheet-step-number { font-family: var(--font-mono); color: var(--text-muted); }
+.worksheet-step-detail { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.worksheet-done .worksheet-step-task { text-decoration: line-through; color: var(--text-faint); font-weight: 500; }
+.worksheet-info { display: flex; gap: 9px; align-items: flex-start; color: var(--text-muted); }
+.worksheet-info p { margin: 2px 0 0; font-size: 12px; }
+.worksheet-info-mark {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1px solid var(--border-soft);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.worksheet-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.worksheet-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 4px 6px;
+}
+.worksheet-table td { border-bottom: 1px solid var(--border-soft); padding: 5px 6px; vertical-align: top; }
+.worksheet-fibres td { font-family: var(--font-mono); font-size: 12px; }
+.worksheet-bad td { color: var(--red); }
+.worksheet-signoff { margin-top: 22px; border-top: 1px solid var(--border-soft); padding-top: 10px; font-size: 12.5px; }
+
+/* --- QR sticker cards ---------------------------------------------------- */
+.qr-labels { display: flex; flex-wrap: wrap; gap: 10px; }
+.qr-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius);
+  break-inside: avoid;
+}
+.qr-label img { display: block; background: #fff; }
+.qr-label-text { display: flex; flex-direction: column; gap: 2px; max-width: 140px; }
+.qr-label-text strong { font-size: 13.5px; }
+.qr-label-kind { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.qr-label-hint { font-size: 11px; color: var(--text-muted); }
+
+/* --- on paper ------------------------------------------------------------ */
+@media print {
+  /* Only the sheet: the map, both panels, the topbar and the resize handle are
+     chrome, and printing them wastes the page and hides the checklist. */
+  body { background: #fff; }
+  .topbar,
+  .panel.left,
+  .panel.right,
+  .map-container,
+  .resize-handle,
+  .impact-banner,
+  .qr-notice,
+  .no-print { display: none !important; }
+
+  .sheet-overlay {
+    position: static;
+    display: block;
+    overflow: visible;
+    padding: 0;
+    background: none;
+  }
+  .sheet-panel,
+  .sheet-panel-wide {
+    max-width: none;
+    width: auto;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    background: #fff;
+    color: #000;
+  }
+  .print-area { display: block !important; }
+
+  /* Print in ink, not in theme colours. */
+  .worksheet,
+  .worksheet * { color: #000 !important; background: none !important; }
+  .worksheet-bad td { color: #b00020 !important; font-weight: 600; }
+  .worksheet-table th,
+  .worksheet-table td,
+  .worksheet h3,
+  .worksheet-steps > li { border-color: #999 !important; }
+  .worksheet-steps > li { break-inside: avoid; }
+  .worksheet-step input { accent-color: #000; }
+  .worksheet-signoff { border-top-color: #999 !important; }
+  .qr-label { border-color: #999; }
+  .qr-label img { width: 120px; height: 120px; }
+
+  @page { margin: 12mm; }
+}
+
+/* ---------------------------------------------------------------------------
+   Serviceability check (locate-customer mode)
+
+   This panel is read out loud to a customer by someone who is not looking at
+   the map, so the verdict and the price are the two things that have to be
+   findable in one glance. Everything else is a fact underneath them.
+--------------------------------------------------------------------------- */
+
+.serviceability {
+  border: 1px solid var(--line, #2b3242);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.serviceability-verdict {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  border-left: 4px solid transparent;
+}
+
+.serviceability-verdict-label { font-weight: 600; }
+
+/* The price sits beside the verdict because together they are the answer. */
+.serviceability-price { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.serviceability-verdict.tone-ok { background: rgba(63, 208, 201, 0.12); border-left-color: #3fd0c9; }
+.serviceability-verdict.tone-warn { background: rgba(240, 180, 41, 0.14); border-left-color: #f0b429; }
+.serviceability-verdict.tone-bad { background: rgba(239, 83, 80, 0.14); border-left-color: #ef5350; }
+
+.serviceability-headline {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.serviceability-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.serviceability-fact .l {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+
+.serviceability-fact .v { font-size: 13px; }
+.serviceability-fact .sub { font-size: 11px; opacity: 0.75; margin-top: 1px; }
+
+.serviceability-steps ol { margin: 4px 0 0 18px; padding: 0; font-size: 12px; line-height: 1.5; }
+.serviceability-steps li { margin-bottom: 3px; }
+
+.serviceability-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.serviceability-actions .btn { font-size: 11px; padding: 4px 8px; }
+
+.serviceability-alternatives { margin-top: 10px; font-size: 12px; }
+.serviceability-alternatives summary { cursor: pointer; opacity: 0.85; }
+.serviceability-alternatives ul { margin: 6px 0 0 16px; padding: 0; }
+.serviceability-alternatives li { margin-bottom: 3px; }
+
+.serviceability-resolved { margin-top: 8px; font-size: 11px; opacity: 0.7; }
+.serviceability-error { color: #ef5350; }
+
+/* A button that reads as a link: used where the action is "show me that box". */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--teal, #3fd0c9);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline dotted;
+}
+
+.linklike:hover { text-decoration: underline; }
+
+@media print {
+  .serviceability-actions { display: none !important; }
 }

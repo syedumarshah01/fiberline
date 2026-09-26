@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { validateSpliceData } = require('../middleware/validation');
+const { canBranchFromCore } = require('../utils/branching');
 const router = express.Router();
 
 // GET /api/splices/:id
@@ -60,8 +61,9 @@ async function releaseCoreIfOrphaned(trx, coreId, excludeSpliceId) {
 
 // ---------------------------------------------------------------------------
 // POST /api/splices
-// Joins core_a to core_b inside an enclosure. Both cores must currently be
-// 'available' (or 'reserved'). On success both flip to 'spliced'.
+// Joins core_a to core_b inside an enclosure. The OUT core must be available
+// (or reserved); the IN core may also already be spliced when it is arriving
+// from upstream, because that is a valid branching point. Both remain spliced.
 // ---------------------------------------------------------------------------
 router.post('/', validateSpliceData, async (req, res, next) => {
   const trx = await db.transaction();
@@ -82,25 +84,54 @@ router.post('/', validateSpliceData, async (req, res, next) => {
     // This enables further branching of fibers
     const coreA = cores.find((c) => c.id === core_a_id);
     const coreB = cores.find((c) => c.id === core_b_id);
+    const coreCables = await trx('cables')
+      .whereIn('id', cores.map((core) => core.cable_id))
+      .select('id', 'from_enclosure_id', 'to_enclosure_id');
+    const cableById = new Map(coreCables.map((cable) => [cable.id, cable]));
+    const coreACable = cableById.get(coreA.cable_id);
+    const existingBranch = await trx('splices')
+      .where({ enclosure_id })
+      .where(function () {
+        this.where('core_a_id', coreA.id).orWhere('core_b_id', coreA.id);
+      })
+      .first();
+    const existingSplitter = await trx('splitters')
+      .where({ enclosure_id, input_core_id: coreA.id })
+      .first();
 
-    // Validate: coreA (IN) can be available, reserved, or spliced; coreB (OUT) must be available or reserved
-    const canSplice = (coreA.status === 'available' || coreA.status === 'reserved' || coreA.status === 'spliced') &&
-                     (coreB.status === 'available' || coreB.status === 'reserved');
-
-    if (!canSplice) {
+    // An already-spliced IN fibre is a valid branch source once at this
+    // enclosure. It cannot be selected again after a splice or splitter in this
+    // same enclosure has already used it as a branch point.
+    if (
+      !canBranchFromCore(coreA, {
+        cable: coreACable,
+        enclosureId: enclosure_id,
+        alreadyBranched: Boolean(existingBranch || existingSplitter),
+      }) ||
+      !['available', 'reserved'].includes(coreB.status)
+    ) {
       await trx.rollback();
       return res.status(409).json({
-        error: 'One or both cores are not available to splice',
+        error: existingBranch || existingSplitter
+          ? 'This IN core has already been branched in this enclosure'
+          : coreA.status === 'spliced' && coreACable?.to_enclosure_id !== enclosure_id
+            ? 'Only a spliced IN core coming from upstream can be used for branching'
+            : 'One or both cores are not available to splice',
         cores: cores.map((c) => ({ id: c.id, status: c.status })),
       });
     }
 
-    // If coreA is spliced, we allow chaining - the original splice remains intact
-    // This allows branching: one fiber can be spliced to multiple downstream fibers
-    // The spliced core stays spliced, and we create a new splice record for the branch
+    // Measured loss is numeric-or-null; anything else gets a clean 400 instead
+    // of a Postgres error (the form submits '' for "no reading yet").
+    if (loss_db !== undefined && loss_db !== null && loss_db !== '') {
+      const lossValue = Number(loss_db);
+      if (Number.isNaN(lossValue) || lossValue < 0) {
+        await trx.rollback();
+        return res.status(400).json({ error: 'loss_db must be a non-negative number' });
+      }
+    }
 
-    // Only update coreB to spliced (coreA is already spliced if it was spliced)
-    const coresToUpdate = coreA.status === 'spliced' ? [core_b_id] : [core_a_id, core_b_id];
+    const coresToUpdate = [core_a_id, core_b_id];
 
     const [splice] = await trx('splices')
       .insert({
@@ -140,8 +171,17 @@ router.patch('/:id', async (req, res, next) => {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
     }
     // The edit form submits loss_db as '' when blank — Postgres rejects an empty
-    // string for a numeric column (500). Normalize to null.
+    // string for a numeric column (500). Normalize to null, and reject anything
+    // else non-numeric (e.g. "lots") with a clean 400 instead of a 23505-style
+    // crash from the database.
     if (updates.loss_db === '') updates.loss_db = null;
+    if (updates.loss_db !== undefined && updates.loss_db !== null) {
+      const n = Number(updates.loss_db);
+      if (Number.isNaN(n) || n < 0) {
+        await trx.rollback();
+        return res.status(400).json({ error: 'loss_db must be a non-negative number' });
+      }
+    }
     if (updates.notes !== undefined && updates.notes !== null && typeof updates.notes !== 'string') {
       await trx.rollback();
       return res.status(400).json({ error: "notes must be a string" });

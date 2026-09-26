@@ -8,6 +8,24 @@ const {
   splitRouteAtDistance,
 } = require("../services/streetRoute");
 const { validateCableData } = require("../middleware/validation");
+const { sanitizeAttenuationDbPerKm } = require("../utils/lossBudget");
+const { hasContinuationLinks, schemaCapabilities } = require("../utils/schemaCapabilities");
+const {
+  loadContinuationLinks,
+  decorateCables,
+  loadBoxCodes,
+} = require("../utils/continuationLinks");
+
+// Shown in the insert-enclosure response (and the UI alert) when the database is
+// missing cables.continues_cable_id. The split is still walkable — the app infers
+// the link from this naming convention — so this explains how the halves are
+// known, rather than warning that something is broken.
+const UNLINKED_SPLIT_WARNING =
+  "This database has no cables.continues_cable_id column, so the link between " +
+  'the two halves is not recorded. Failure simulation and fiber traces still ' +
+  'walk across it, by matching the downstream name "<upstream code>-B" and the ' +
+  'shared split box. Run "npm run db:schema" in backend/ when you want the link ' +
+  'recorded — it names the step for this database (migration 20260101000014).';
 const router = express.Router();
 
 // GET /api/cables — includes route as [ [lng,lat], [lng,lat] ] for map drawing
@@ -18,10 +36,17 @@ const router = express.Router();
 // bookkeeping quirks — port-assigned cores always dash the cable).
 router.get("/", async (req, res, next) => {
   try {
+    // The recorded column when the database has it, the naming rule when it does
+    // not (utils/continuationLinks.js) — so a client can see that two cable rows
+    // are one fibre without caring which kind of database it is talking to.
+    const capabilities = await schemaCapabilities();
+    const withColumn = capabilities.columns.continues_cable_id === true;
+
     const rows = await db.raw(`
       SELECT c.id, c.code, c.name, c.cable_type, c.core_count, c.status,
              c.from_enclosure_id, c.to_enclosure_id, c.customer_id, c.customer_label,
-             c.length_m,
+             c.length_m, c.attenuation_db_per_km,
+             ${withColumn ? "c.continues_cable_id," : ""}
              (SELECT COUNT(*) FROM fiber_cores fc
               WHERE fc.cable_id = c.id AND (
                 fc.status = 'spliced'
@@ -31,12 +56,17 @@ router.get("/", async (req, res, next) => {
       FROM cables c
       ORDER BY c.created_at DESC
     `);
-    const cables = rows.rows.map((c) => ({
+    const cableRows = rows.rows.map((c) => ({
       ...c,
       route: c.route_geojson ? JSON.parse(c.route_geojson).coordinates : null,
       route_geojson: undefined,
     }));
-    res.json(cables);
+
+    const links = await loadContinuationLinks({ capabilities, cables: cableRows });
+    const boxCodes = links.childToParent.size || links.parentToChild.size
+      ? await loadBoxCodes(db)
+      : null;
+    res.json(decorateCables(cableRows, links, { boxCodes }));
   } catch (err) {
     next(err);
   }
@@ -50,7 +80,15 @@ router.get("/:id", async (req, res, next) => {
     const cores = await db("fiber_cores")
       .where({ cable_id: req.params.id })
       .orderBy("core_number");
-    res.json({ ...cable, cores });
+
+    // The whole network's links, so the code of the half this one continues is
+    // known even when only this cable was fetched.
+    const links = await loadContinuationLinks();
+    const boxCodes = links.childToParent.size || links.parentToChild.size
+      ? await loadBoxCodes(db)
+      : null;
+    const [decorated] = decorateCables([cable], links, { boxCodes });
+    res.json({ ...decorated, cores });
   } catch (err) {
     next(err);
   }
@@ -240,7 +278,7 @@ async function loadCableWithRoute(trx, cableId) {
   const dbInstance = trx || db;
   const result = await dbInstance.raw(
     `SELECT id, code, name, cable_type, core_count, status, from_enclosure_id, to_enclosure_id,
-            customer_id, customer_label, length_m, notes,
+            customer_id, customer_label, length_m, attenuation_db_per_km, notes,
             ST_AsGeoJSON(route::geometry) AS route_geojson
      FROM cables
      WHERE id = ?`,
@@ -327,6 +365,10 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
       split_ratio,       // 0-1, e.g. 0.3 = 30% from the start
       split_distance_m,  // absolute distance in meters from the start
     } = req.body;
+
+    // Can this database record that the two halves are one fiber? If not, the
+    // cut still happens — it just cannot be linked (migration 20260101000014).
+    const canLinkContinuation = await hasContinuationLinks();
 
     const cable = await loadCableWithRoute(trx, cableId);
     if (!cable) {
@@ -441,10 +483,19 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         core_count: cable.core_count,
         from_enclosure_id: enclosure.id,
         to_enclosure_id: cable.to_enclosure_id,
+        // The two halves are one fiber: core #n of the parent continues as
+        // core #n here. Without this, every trace that walks joints stops at
+        // the new box (see migration 20260101000014) — so on a database that
+        // predates the column the row is written without it, and the response
+        // says the link was not recorded.
+        ...(canLinkContinuation ? { continues_cable_id: cable.id } : {}),
         customer_id: cable.customer_id,
         customer_label: cable.customer_label,
         status: cable.status,
         length_m: split.downstream_length_m,
+        // The downstream half is the same fiber — keep its attenuation
+        // override (null = project default) so budgets stay accurate.
+        attenuation_db_per_km: cable.attenuation_db_per_km,
         notes: cable.notes,
         route: trx.raw("ST_SetSRID(ST_GeomFromText(?), 4326)::geography", [
           coordinatesToWkt(split.downstream),
@@ -534,12 +585,17 @@ router.post("/:id/insert-enclosure", async (req, res, next) => {
         length_m: split.upstream_length_m,
       },
       downstream_cable: downstreamCable,
+      warnings: canLinkContinuation ? [] : [UNLINKED_SPLIT_WARNING],
       summary: {
         total_cores: originalCores.length,
         auto_spliced_pairs: autoSplicedPairs,
         live_cores: liveCores.length,
         pass_through_cores: passThroughCores.length,
         left_available_cores: plainAvailableCores.length,
+        // False means this database cannot record the parent/child link; the app
+        // falls back to inferring it from the naming convention.
+        continuation_recorded: canLinkContinuation,
+        continuation_inferred: !canLinkContinuation,
       },
     });
   } catch (err) {
@@ -584,6 +640,7 @@ router.post("/", validateCableData, async (req, res, next) => {
       route_geometry,
       status,
       length_m,
+      attenuation_db_per_km,
       notes,
     } = req.body;
 
@@ -623,6 +680,14 @@ router.post("/", validateCableData, async (req, res, next) => {
     }
 
     const normalizedName = name ?? null;
+    // Optional per-cable attenuation override; null → project default at
+    // loss-budget time (0.35 dB/km singlemode @ 1310 nm).
+    const attenuationResult = sanitizeAttenuationDbPerKm(attenuation_db_per_km);
+    if (attenuationResult.error) {
+      await trx.rollback();
+      return res.status(400).json({ error: attenuationResult.error });
+    }
+    const normalizedAttenuation = attenuationResult.value ?? null;
     // For drop cables, to_enclosure_id can be set (for customer enclosures)
     // or customer_id can be set (for registered customers)
     const normalizedToEnclosureId =
@@ -646,6 +711,7 @@ router.post("/", validateCableData, async (req, res, next) => {
         customer_label: normalizedCustomerLabel,
         status: normalizedStatus,
         length_m: normalizedLength,
+        attenuation_db_per_km: normalizedAttenuation,
         notes: normalizedNotes,
         route: trx.raw("ST_SetSRID(ST_GeomFromText(?), 4326)::geography", [
           coordinatesToWkt(streetRoute.route),
@@ -672,10 +738,27 @@ router.post("/", validateCableData, async (req, res, next) => {
 // PATCH /api/cables/:id
 router.patch("/:id", async (req, res, next) => {
   try {
-    const fields = ["name", "status", "length_m", "notes", "customer_label"];
+    const fields = [
+      "name",
+      "status",
+      "length_m",
+      "notes",
+      "customer_label",
+      "attenuation_db_per_km",
+    ];
     const updates = { updated_at: db.fn.now() };
     for (const f of fields)
       if (req.body[f] !== undefined) updates[f] = req.body[f];
+
+    // Attenuation is numeric-or-null; the edit form submits '' when blank,
+    // which Postgres would reject for a decimal column.
+    if (updates.attenuation_db_per_km !== undefined) {
+      const { value, error } = sanitizeAttenuationDbPerKm(
+        updates.attenuation_db_per_km,
+      );
+      if (error) return res.status(400).json({ error });
+      updates.attenuation_db_per_km = value ?? null;
+    }
 
     // `code` is the identifier users see everywhere — it's editable, but must
     // stay non-empty and unique (the column is UNIQUE; pre-check for a clear
