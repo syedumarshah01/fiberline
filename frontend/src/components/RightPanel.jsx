@@ -16,6 +16,14 @@ import {
 } from "../utils/lossView.js";
 import { cableLinkText } from "../utils/impactOverlay.js";
 import {
+  splitterRatio,
+  splitterCapacityLine,
+  splitterLossText,
+  portUsageText,
+  portStatePill,
+  boxCapacityLine,
+} from "../utils/splitterView.js";
+import {
   verdictView,
   headline,
   serviceabilityFacts,
@@ -187,14 +195,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   // Spliced cores can be used for branching (adding splitter to an already-spliced core)
   const splicedCores = allCores.filter((c) => c.status === "spliced").sort((a, b) => a.core_number - b.core_number);
 
-  // Build list of splitter output ports that are empty (available for splicing)
-  // — a port is NOT empty when a child splitter is cascaded onto it either.
+  // Build list of splitter output ports that are empty (available for splicing).
+  // "Empty" is the API's own verdict (`usage === 'free'`), so the dropdown can
+  // never offer a port the capacity count does not also count as free — and a
+  // damaged port, which is empty but will not carry light, is not offered.
   const splitterPorts = splitters.flatMap((s) => {
     // Every port row names its splitter so two same-size splitters (e.g. two
     // 1:4s — common once you cascade) are distinguishable in the dropdown.
-    const displayName = s.name || `1:${s.split_count} splitter`;
+    const displayName = s.name || `${splitterRatio(s) || `1:${s.split_count}`} splitter`;
     return (s.ports || [])
-      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .filter((p) => (p.available !== undefined ? p.available : !p.output_core_id && !p.output_splitter_id))
       .map((p) => ({
         id: `port-${s.id}-${p.port_number}`,
         splitter_id: s.id,
@@ -230,7 +240,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   // (a splitter fed from another splitter's output port).
   const freePortsForCascade = splitters.flatMap((s) =>
     (s.ports || [])
-      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .filter((p) => (p.available !== undefined ? p.available : !p.output_core_id && !p.output_splitter_id))
       .map((p) => ({ splitter: s, port_number: p.port_number })),
   );
 
@@ -1012,12 +1022,26 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
         </p>
       )}
 
-      {/* Available splitter ports count */}
-      {splitterPorts.length > 0 && (
+      {/* Drop capacity in this box, counted once by the API (port_summary) */}
+      {splitters.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <p className="section-title">Available splitter ports</p>
+          <p className="section-title">Drop capacity here</p>
           <p className="empty-state" style={{ fontSize: 12 }}>
-            {splitterPorts.length} empty port{splitterPorts.length !== 1 ? "s" : ""} ready for assignment
+            {boxCapacityLine(
+              splitters.reduce(
+                (acc, s) => {
+                  const p = s.port_summary;
+                  if (!p) return acc;
+                  return {
+                    splitters: acc.splitters + 1,
+                    ports: acc.ports + p.total,
+                    free_ports: acc.free_ports + p.free,
+                  };
+                },
+                { splitters: 0, ports: 0, free_ports: 0 },
+              ),
+              splitters.length,
+            )}
           </p>
         </div>
       )}
@@ -1032,14 +1056,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               style={{ marginBottom: 8 }}
             >
               <div style={{ fontWeight: 600 }}>{s.name}</div>
+              <div className="sub">{splitterCapacityLine(s)}</div>
               <div className="sub">
-                1:{s.split_count} · fed from{" "}
+                fed from{" "}
                 {s.parent
                   ? `${s.parent.name || `1:${s.parent.split_count} splitter`} — port ${s.parent.port_number}`
                   : s.input_core
                     ? `${s.input_core.cable_code} fiber #${s.input_core.core_number}`
                     : "—"}
                 {" "}· {s.splice_type}
+                {splitterLossText(s) ? ` · ${splitterLossText(s)}` : ""}
               </div>
               {s.notes ? (
                 <div className="sub" style={{ marginTop: 2 }}>📝 {s.notes}</div>
@@ -1050,7 +1076,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                     <tr>
                       <th>Port</th>
                       <th>Core</th>
-                      <th>Cable</th>
+                      <th>Customer / feeds</th>
                       <th>Status</th>
                       <th></th>
                     </tr>
@@ -1060,15 +1086,19 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                       <tr key={p.port_id}>
                         <td>{p.port_number}</td>
                         <td>{p.core_number ? `#${p.core_number}` : p.output_splitter_id ? "🔀" : "—"}</td>
-                        <td>{p.cable_code || (p.output_splitter_id ? `→ ${p.child_splitter_name || "splitter"}` : "—")}</td>
                         <td>
-                          {p.output_core_id ? (
-                            <Pill status={p.core_status} />
-                          ) : p.output_splitter_id ? (
-                            <span className="pill pill-reserved">cascaded</span>
-                          ) : (
-                            <span style={{ color: "var(--text-faint)", fontSize: 11 }}>empty</span>
-                          )}
+                          {portUsageText(p)}
+                          {p.customer_label && p.cable_code ? (
+                            <span className="sub" style={{ marginLeft: 6, fontSize: 10 }}>
+                              {p.cable_code}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td>
+                          {(() => {
+                            const pill = portStatePill(p);
+                            return <span className={pill.className}>{pill.text}</span>;
+                          })()}
                         </td>
                         <td>
                           {p.output_core_id ? (
@@ -1136,7 +1166,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                       onChange={(e) =>
                         setEditSplitterForm((f) => ({ ...f, name: e.target.value }))
                       }
-                      placeholder={`1:${s.split_count} splitter`}
+                      placeholder={`${splitterRatio(s)} splitter`}
                     />
                   </div>
                   <div className="field">
@@ -1239,6 +1269,8 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               <option value={2}>1:2</option>
               <option value={4}>1:4</option>
               <option value={8}>1:8</option>
+              <option value={16}>1:16</option>
+              <option value={32}>1:32</option>
             </select>
           </div>
           <div className="field">

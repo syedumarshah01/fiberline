@@ -12,6 +12,7 @@
  */
 const db = require('../db');
 const { BAD_SPLICE_LOSS_DB } = require('../utils/lossBudget');
+const { enrichSplitters } = require('../utils/splitters');
 
 async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
   const enclosure = await executor('enclosures').where({ id: enclosureId }).first();
@@ -188,6 +189,7 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
           'fiber_cores.core_number',
           'fiber_cores.status as core_status',
           'cables.code as cable_code',
+          'cables.customer_label as cable_customer_label',
           'child.name as child_splitter_name',
           'child.split_count as child_split_count',
         )
@@ -214,11 +216,17 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
     ]),
   );
 
-  const splittersWithPorts = splitters.map((s) => ({
-    ...s,
-    parent: parentByChild[s.id] || null,
-    ports: splitterPorts.filter((p) => p.splitter_id === s.id),
-  }));
+  // Splitters get the same enrichment the panel's own route applies (ratio
+  // label, per-port usage + customer label, free/used counts, the insertion
+  // loss the budget will charge) — one definition of "free port", shared.
+  const portsBySplitterId = Object.fromEntries(
+    splitters.map((s) => [s.id, splitterPorts.filter((p) => p.splitter_id === s.id)]),
+  );
+  const { splitters: splittersWithPorts, totals: splitterTotals } = enrichSplitters(
+    splitters,
+    portsBySplitterId,
+    parentByChild,
+  );
 
   const availableCores = cores.filter((c) => c.status === 'available');
 
@@ -241,6 +249,7 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
     cables_landing_here: Object.values(coresByCable),
     splices: splices.rows,
     splitters: splittersWithPorts,
+    splitter_totals: splitterTotals,
     qc_flags: {
       bad_splice_threshold_db: BAD_SPLICE_LOSS_DB,
       bad_splices: badSplices,
@@ -254,6 +263,9 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
       reserved_cores: cores.filter((c) => c.status === 'reserved').length,
       damaged_cores: cores.filter((c) => c.status === 'damaged').length,
       bad_splices: badSplices.length,
+      splitters: splitterTotals.splitters,
+      splitter_ports: splitterTotals.ports,
+      free_splitter_ports: splitterTotals.free_ports,
     },
   };
 }
