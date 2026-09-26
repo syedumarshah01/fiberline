@@ -8,6 +8,8 @@ const {
   splitterUnassignNote,
   portIsOccupied,
   sanitizeSplitterPatch,
+  enrichSplitters,
+  SUPPORTED_SPLIT_COUNTS,
 } = require('../utils/splitters');
 const router = express.Router();
 
@@ -25,6 +27,7 @@ const PORT_SELECT = [
   'fiber_cores.status as core_status',
   'cables.code as cable_code',
   'cables.cable_type',
+  'cables.customer_label as cable_customer_label',
   'child.name as child_splitter_name',
   'child.split_count as child_split_count',
   'child.enclosure_id as child_splitter_enclosure_id',
@@ -75,14 +78,32 @@ router.get('/', async (req, res, next) => {
       : [];
     const inputById = Object.fromEntries(inputRows.map((r) => [r.id, r]));
 
-    // Attach ports + cascade parent + input core info to each splitter
+    // Attach ports + cascade parent + input core info to each splitter.
+    //
+    // The enrichment (ratio label, per-port usage + customer label, free/used
+    // counts, the insertion loss the budget will charge) lives in
+    // utils/splitters.js so this route and the box documentation cannot drift
+    // apart: both count "free ports" with the same function.
+    const portsBySplitterId = {};
     for (const s of splitters) {
-      s.ports = await portsFor(s.id);
-      s.parent = await parentInfo(s.id);
+      portsBySplitterId[s.id] = await portsFor(s.id);
+    }
+    const parents = {};
+    for (const s of splitters) {
+      const parent = await parentInfo(s.id);
+      if (parent) parents[s.id] = parent;
+    }
+    const { splitters: enriched, totals } = enrichSplitters(splitters, portsBySplitterId, parents);
+    for (const s of enriched) {
       s.input_core = s.input_core_id ? inputById[s.input_core_id] || null : null;
     }
 
-    res.json(splitters);
+    // `?summary=1` asks for the counts only — the capacity checks read a box's
+    // port headroom without dragging every port row across the wire.
+    if (enclosureId && ['1', 'true'].includes(String(req.query.summary))) {
+      return res.json({ enclosure_id: enclosureId, splitters: enriched, totals });
+    }
+    res.json(enriched);
   } catch (err) {
     next(err);
   }
@@ -120,7 +141,7 @@ router.post('/', validateSplitterData, async (req, res, next) => {
     const {
       enclosure_id,
       name,
-      split_count = 4, // 2, 4, or 8
+      split_count = 4, // see SUPPORTED_SPLIT_COUNTS in utils/splitters.js
       input_core_id,
       input_port, // { splitter_id, port_number } — cascade onto a free port
       splice_type = 'fusion',
@@ -129,10 +150,11 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       notes,
     } = req.body;
 
-    const validSplits = [2, 4, 8];
-    if (!validSplits.includes(Number(split_count))) {
+    if (!SUPPORTED_SPLIT_COUNTS.includes(Number(split_count))) {
       await trx.rollback();
-      return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
+      return res.status(400).json({
+        error: `split_count must be one of ${SUPPORTED_SPLIT_COUNTS.join(', ')}`,
+      });
     }
 
     let inputCore = null;
