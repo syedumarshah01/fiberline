@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { validateSpliceData } = require('../middleware/validation');
+const { canBranchFromCore } = require('../utils/branching');
 const router = express.Router();
 
 // GET /api/splices/:id
@@ -58,10 +59,74 @@ async function releaseCoreIfOrphaned(trx, coreId, excludeSpliceId) {
   return true;
 }
 
+/**
+ * Repair rows created by older mid-span insertions. Before endpoint migration
+ * was added to the insertion route, the old downstream splice could remain
+ * attached to the upstream half as well as the automatic pass-through splice.
+ * Removing the pass-through then quite correctly saw another reference and
+ * kept the upstream core spliced. Move only references at the downstream cable's
+ * far enclosure onto the downstream half; a genuine upstream splice is left
+ * alone.
+ */
+async function repairLegacyPassThroughReferences(trx, passThrough) {
+  if (!String(passThrough.notes || '').startsWith('Live fiber carried through automatically')) {
+    return;
+  }
+
+  const cores = await trx('fiber_cores')
+    .whereIn('id', [passThrough.core_a_id, passThrough.core_b_id])
+    .select('id', 'cable_id');
+  const coreById = new Map(cores.map((core) => [core.id, core]));
+  const coreA = coreById.get(passThrough.core_a_id);
+  const coreB = coreById.get(passThrough.core_b_id);
+  if (!coreA || !coreB) return;
+
+  const cables = await trx('cables')
+    .whereIn('id', [coreA.cable_id, coreB.cable_id])
+    .select('id', 'from_enclosure_id', 'to_enclosure_id');
+  const cableById = new Map(cables.map((cable) => [cable.id, cable]));
+  const aCable = cableById.get(coreA.cable_id);
+  const bCable = cableById.get(coreB.cable_id);
+  const upstreamCore = aCable?.from_enclosure_id === passThrough.enclosure_id
+    ? coreB
+    : coreA;
+  const downstreamCore = upstreamCore.id === coreA.id ? coreB : coreA;
+  const downstreamCable = cableById.get(downstreamCore.cable_id);
+  const downstreamBoxId = downstreamCable?.to_enclosure_id;
+  if (!downstreamBoxId) return;
+
+  const endpointSplices = await trx('splices').where({ enclosure_id: downstreamBoxId });
+  for (const splice of endpointSplices) {
+    const updates = {};
+    if (splice.core_a_id === upstreamCore.id) updates.core_a_id = downstreamCore.id;
+    if (splice.core_b_id === upstreamCore.id) updates.core_b_id = downstreamCore.id;
+    if (Object.keys(updates).length) {
+      await trx('splices').where({ id: splice.id }).update(updates);
+    }
+  }
+
+  const endpointSplitters = await trx('splitters').where({ enclosure_id: downstreamBoxId });
+  for (const splitter of endpointSplitters) {
+    if (splitter.input_core_id === upstreamCore.id) {
+      await trx('splitters').where({ id: splitter.id }).update({ input_core_id: downstreamCore.id });
+    }
+  }
+  const splitterIds = endpointSplitters.map((splitter) => splitter.id);
+  if (splitterIds.length) {
+    const endpointPorts = await trx('splitter_ports').whereIn('splitter_id', splitterIds);
+    for (const port of endpointPorts) {
+      if (port.output_core_id === upstreamCore.id) {
+        await trx('splitter_ports').where({ id: port.id }).update({ output_core_id: downstreamCore.id });
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/splices
-// Joins core_a to core_b inside an enclosure. Both cores must currently be
-// 'available' (or 'reserved'). On success both flip to 'spliced'.
+// Joins core_a to core_b inside an enclosure. The OUT core must be available
+// (or reserved); the IN core may also already be spliced when it is arriving
+// from upstream, because that is a valid branching point. Both remain spliced.
 // ---------------------------------------------------------------------------
 router.post('/', validateSpliceData, async (req, res, next) => {
   const trx = await db.transaction();
@@ -82,25 +147,54 @@ router.post('/', validateSpliceData, async (req, res, next) => {
     // This enables further branching of fibers
     const coreA = cores.find((c) => c.id === core_a_id);
     const coreB = cores.find((c) => c.id === core_b_id);
+    const coreCables = await trx('cables')
+      .whereIn('id', cores.map((core) => core.cable_id))
+      .select('id', 'from_enclosure_id', 'to_enclosure_id');
+    const cableById = new Map(coreCables.map((cable) => [cable.id, cable]));
+    const coreACable = cableById.get(coreA.cable_id);
+    const existingBranch = await trx('splices')
+      .where({ enclosure_id })
+      .where(function () {
+        this.where('core_a_id', coreA.id).orWhere('core_b_id', coreA.id);
+      })
+      .first();
+    const existingSplitter = await trx('splitters')
+      .where({ enclosure_id, input_core_id: coreA.id })
+      .first();
 
-    // Validate: coreA (IN) can be available, reserved, or spliced; coreB (OUT) must be available or reserved
-    const canSplice = (coreA.status === 'available' || coreA.status === 'reserved' || coreA.status === 'spliced') &&
-                     (coreB.status === 'available' || coreB.status === 'reserved');
-
-    if (!canSplice) {
+    // An already-spliced IN fibre is a valid branch source once at this
+    // enclosure. It cannot be selected again after a splice or splitter in this
+    // same enclosure has already used it as a branch point.
+    if (
+      !canBranchFromCore(coreA, {
+        cable: coreACable,
+        enclosureId: enclosure_id,
+        alreadyBranched: Boolean(existingBranch || existingSplitter),
+      }) ||
+      !['available', 'reserved'].includes(coreB.status)
+    ) {
       await trx.rollback();
       return res.status(409).json({
-        error: 'One or both cores are not available to splice',
+        error: existingBranch || existingSplitter
+          ? 'This IN core has already been branched in this enclosure'
+          : coreA.status === 'spliced' && coreACable?.to_enclosure_id !== enclosure_id
+            ? 'Only a spliced IN core coming from upstream can be used for branching'
+            : 'One or both cores are not available to splice',
         cores: cores.map((c) => ({ id: c.id, status: c.status })),
       });
     }
 
-    // If coreA is spliced, we allow chaining - the original splice remains intact
-    // This allows branching: one fiber can be spliced to multiple downstream fibers
-    // The spliced core stays spliced, and we create a new splice record for the branch
+    // Measured loss is numeric-or-null; anything else gets a clean 400 instead
+    // of a Postgres error (the form submits '' for "no reading yet").
+    if (loss_db !== undefined && loss_db !== null && loss_db !== '') {
+      const lossValue = Number(loss_db);
+      if (Number.isNaN(lossValue) || lossValue < 0) {
+        await trx.rollback();
+        return res.status(400).json({ error: 'loss_db must be a non-negative number' });
+      }
+    }
 
-    // Only update coreB to spliced (coreA is already spliced if it was spliced)
-    const coresToUpdate = coreA.status === 'spliced' ? [core_b_id] : [core_a_id, core_b_id];
+    const coresToUpdate = [core_a_id, core_b_id];
 
     const [splice] = await trx('splices')
       .insert({
@@ -140,8 +234,17 @@ router.patch('/:id', async (req, res, next) => {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
     }
     // The edit form submits loss_db as '' when blank — Postgres rejects an empty
-    // string for a numeric column (500). Normalize to null.
+    // string for a numeric column (500). Normalize to null, and reject anything
+    // else non-numeric (e.g. "lots") with a clean 400 instead of a 23505-style
+    // crash from the database.
     if (updates.loss_db === '') updates.loss_db = null;
+    if (updates.loss_db !== undefined && updates.loss_db !== null) {
+      const n = Number(updates.loss_db);
+      if (Number.isNaN(n) || n < 0) {
+        await trx.rollback();
+        return res.status(400).json({ error: 'loss_db must be a non-negative number' });
+      }
+    }
     if (updates.notes !== undefined && updates.notes !== null && typeof updates.notes !== 'string') {
       await trx.rollback();
       return res.status(400).json({ error: "notes must be a string" });
@@ -225,17 +328,25 @@ router.patch('/:id', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/splices/by-core/:coreId
-// Find and delete the splice involving this core. Cores are only returned to
-// 'available' when no other splice still references them (chains survive).
+// DELETE /api/splices/by-core/:coreId[?enclosure_id=<box>]
+// Find and delete the splice involving this core. When enclosure_id is given,
+// target that box's splice — important for an inserted-span pass-through core
+// that also has a splice elsewhere. Cores are only returned to 'available' when
+// no other splice still references them (chains survive).
 // ---------------------------------------------------------------------------
 router.delete('/by-core/:coreId', async (req, res, next) => {
   const trx = await db.transaction();
   try {
-    const splice = await trx('splices')
+    const { enclosure_id: enclosureId } = req.query;
+    const spliceQuery = trx('splices')
       .where(function () {
         this.where('core_a_id', req.params.coreId).orWhere('core_b_id', req.params.coreId);
-      })
+      });
+    // A core may participate in more than one splice. Cable detail passes the
+    // downstream endpoint enclosure so an inserted-span pass-through splice is
+    // removed, rather than whichever older splice happens to sort first.
+    if (enclosureId) spliceQuery.where({ enclosure_id: enclosureId });
+    const splice = await spliceQuery
       .orderBy([{ column: 'splice_date' }, { column: 'created_at' }])
       .first();
 
@@ -244,6 +355,7 @@ router.delete('/by-core/:coreId', async (req, res, next) => {
       return res.status(404).json({ error: 'No splice found for this core' });
     }
 
+    await repairLegacyPassThroughReferences(trx, splice);
     await releaseCoreIfOrphaned(trx, splice.core_a_id, splice.id);
     await releaseCoreIfOrphaned(trx, splice.core_b_id, splice.id);
     await trx('splices').where({ id: splice.id }).del();
@@ -267,6 +379,7 @@ router.delete('/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Splice not found' });
     }
 
+    await repairLegacyPassThroughReferences(trx, splice);
     await releaseCoreIfOrphaned(trx, splice.core_a_id, splice.id);
     await releaseCoreIfOrphaned(trx, splice.core_b_id, splice.id);
     await trx('splices').where({ id: req.params.id }).del();
