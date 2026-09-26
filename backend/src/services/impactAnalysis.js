@@ -7,6 +7,8 @@ const {
   analyzeImpact,
   groupRestorationCandidates,
   haversineMeters,
+  inferSourceBoxes,
+  rootCoreIdsForBoxes,
 } = require('../utils/impactGraph');
 
 /**
@@ -133,26 +135,45 @@ async function loadNetworkRows(cableFields = CABLE_FIELDS) {
 }
 
 /**
- * The root cores: every core of a cable landing at a headend's root box. Light
- * enters those two ways — it is fed from the OLT there, or it is the far end of
- * an incoming feeder. Either way, everything reachable from them is downstream.
+ * Where the light enters the network — the input that gives the graph a top.
+ *
+ * A `headends` row is the answer whenever one points at a real box: a person
+ * said so, and the analysis says so back. The fallback matters more than it
+ * looks. Without a root the walk goes both ways from the failure, and the span
+ * that *feeds* the failed box comes back painted red even though it still has
+ * light on it — a map that sends a technician to the wrong cable. So when no
+ * headend is rooted, the shape of the network is asked instead
+ * (utils/impactGraph.inferSourceBoxes): the boxes no cable feeds are where light
+ * can enter.
+ *
+ * The result is labelled either way (`direction_source`), because an inferred
+ * direction is an assumption the reader is entitled to see — and to overrule by
+ * pointing a headend at the right box.
  */
 function resolveRoots({ headends, enclosures, cables, cores }) {
   const boxIds = new Set(enclosures.map((e) => e.id));
   const rooted = headends.filter((h) => h.root_enclosure_id && boxIds.has(h.root_enclosure_id));
-  const rootBoxIds = new Set(rooted.map((h) => h.root_enclosure_id));
 
-  const cableById = new Map(cables.map((c) => [c.id, c]));
-  const rootCoreIds = [];
-  for (const core of cores) {
-    const cable = cableById.get(core.cable_id);
-    if (!cable) continue;
-    if (rootBoxIds.has(cable.from_enclosure_id) || rootBoxIds.has(cable.to_enclosure_id)) {
-      rootCoreIds.push(core.id);
-    }
+  if (rooted.length) {
+    const rootBoxIds = [...new Set(rooted.map((h) => h.root_enclosure_id))];
+    return {
+      rooted,
+      inferred: [],
+      rootBoxIds,
+      rootCoreIds: rootCoreIdsForBoxes({ cables, cores }, rootBoxIds),
+      source: 'headend',
+    };
   }
 
-  return { rooted, rootBoxIds: [...rootBoxIds], rootCoreIds };
+  const inferred = inferSourceBoxes({ enclosures, cables });
+  const inferredBoxIds = inferred.map((box) => box.id);
+  return {
+    rooted,
+    inferred,
+    rootBoxIds: inferredBoxIds,
+    rootCoreIds: rootCoreIdsForBoxes({ cables, cores }, inferredBoxIds),
+    source: inferred.length ? 'inferred' : 'none',
+  };
 }
 
 // --- restoration planning --------------------------------------------------------
@@ -317,7 +338,7 @@ async function simulateFailure({
   maxCustomers,
 } = {}) {
   const network = await loadNetwork();
-  const { rooted, rootBoxIds, rootCoreIds } = resolveRoots(network);
+  const { rooted, inferred, rootBoxIds, rootCoreIds, source: directionSource } = resolveRoots(network);
 
   const analysis = analyzeImpact({
     ...network,
@@ -347,16 +368,48 @@ async function simulateFailure({
     boxCodes: new Map(network.enclosures.map((e) => [e.id, e.code])),
   });
 
+  // The direction the analysis actually used, and how it knows. A source box
+  // without any documented cores is only a suggestion, not a usable light root,
+  // so do not label an undirected walk as inferred.
+  const inferredBoxes = inferred.map((box) => ({ id: box.id, code: box.code }));
+  const effectiveDirectionSource = analysis.directed ? directionSource : 'none';
+
+  let warnings = [...(network.schema_warnings || []), ...analysis.warnings];
+
+  if (effectiveDirectionSource === 'inferred') {
+    // Say what was assumed, and how to make it a fact — an inferred direction is
+    // almost always right for a distribution network, but the reader is the only
+    // one who can confirm it.
+    const names = inferredBoxes.map((box) => box.code || box.id.slice(0, 8)).join(', ');
+    warnings.push(
+      'No headend is configured, so the direction was inferred from the network shape: ' +
+        `light is assumed to enter at ${names} (no cable feeds ${inferredBoxes.length === 1 ? 'it' : 'them'}). ` +
+        'Everything downstream of the failure is reported and the span that feeds it is left alone. ' +
+        'Set a headend on the OLT box to make this explicit.',
+    );
+  } else if (effectiveDirectionSource === 'none') {
+    warnings.push(
+      'No headend is configured and the network shape does not say where the light enters ' +
+        '(every box has a cable arriving at it, or the boxes nothing feeds only hand out drops), ' +
+        'so the walk goes both ways from the failure and may include the span that feeds it. ' +
+        'Set a headend on the OLT box for direction-aware results.',
+    );
+  }
+
   // "No root configured" is the wrong diagnosis when every headend row is
   // simply not wired to a box yet.
-  let warnings = [...(network.schema_warnings || []), ...analysis.warnings];
   if (network.headends.length && !rooted.length) {
+    const inferredHint = inferredBoxes.length
+      ? ' The shape of the network suggests ' +
+        inferredBoxes.map((box) => box.code || box.id.slice(0, 8)).join(', ') +
+        ' — point the headend there if that is the OLT.'
+      : '';
     warnings = warnings
       .filter((w) => !/network root .*is configured/i.test(w))
       .concat(
         `${network.headends.length} headend record${network.headends.length === 1 ? '' : 's'} ` +
           'exist but none point at an existing enclosure — set headends.root_enclosure_id ' +
-          'so the analysis knows which way is downstream.',
+          `so the analysis knows which way is downstream.${inferredHint}`,
       );
   }
 
@@ -368,6 +421,11 @@ async function simulateFailure({
   return {
     failure: describeFailure({ kind, id, boxIds, cableIds, element, network }),
     direction_resolved: analysis.directed,
+    // 'headend' — a person said where the light enters; 'inferred' — the shape of
+    // the network said it (no cable feeds that box); 'none' — nobody said and the
+    // shape does not, so the walk is undirected and the warnings say so.
+    direction_source: effectiveDirectionSource,
+    inferred_root_boxes: effectiveDirectionSource === 'inferred' ? inferredBoxes : [],
     headend: primaryHeadend
       ? {
           id: primaryHeadend.id,

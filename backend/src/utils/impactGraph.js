@@ -29,6 +29,72 @@ const DEFAULT_MAX_NODES = 5000;
 const DEFAULT_MAX_CUSTOMERS = 500;
 const MAX_RESTORABLE_LISTED = 50;
 
+/**
+ * Which boxes does the light enter at, when nobody has said?
+ *
+ * A `headends` row is the authoritative answer and always wins (see
+ * services/impactAnalysis.js). But the common case is a network where nobody has
+ * pointed at the OLT, and the previous answer to that — walk the graph both ways
+ * from the failure — paints the span that *feeds* the failed box red, which is
+ * wrong in a way the reader cannot see: that span still has light on it as far as
+ * the break. A technician sent to a fault reads that map and is told the cable
+ * they are standing on is out.
+ *
+ * The network's own shape usually says where the light comes from: every cable is
+ * recorded with a `from` and a `to` end, so the boxes a cable *leaves* and the
+ * boxes a cable *arrives at* are known. The boxes nothing feeds are the places
+ * light can enter — in a distribution network that is the OLT, and taking all of
+ * them covers a network with several OLTs (each gets its own source, which is
+ * exactly right) or one drawn as several islands.
+ *
+ * Two guards keep the inference honest:
+ *   - a box that only hands out drop cables is a distribution point whose feeder
+ *     nobody recorded, not a light source, so it is not treated as one;
+ *   - a box a cable arrives at is downstream of something by definition.
+ *
+ * Callers must report the result as inferred rather than known (the analysis
+ * does: `direction_source: 'inferred'`, naming the boxes), because a network
+ * drawn end-to-end backwards would invert the answer — and the one thing worse
+ * than "we could not tell which way is downstream" is a confident wrong answer.
+ */
+function inferSourceBoxes({ enclosures = [], cables = [] } = {}) {
+  const boxIds = new Set(enclosures.map((e) => e.id));
+  const arrivesAt = new Map(); // boxId → number of cables ending there
+  const leavesFrom = new Map(); // boxId → cable rows leaving there
+
+  for (const cable of cables) {
+    const from = cable.from_enclosure_id;
+    const to = cable.to_enclosure_id;
+    if (from && boxIds.has(from)) push(leavesFrom, from, cable);
+    if (to && boxIds.has(to)) arrivesAt.set(to, (arrivesAt.get(to) || 0) + 1);
+  }
+
+  const sources = [];
+  for (const box of enclosures) {
+    if ((arrivesAt.get(box.id) || 0) > 0) continue; // something feeds it
+    const leaving = leavesFrom.get(box.id) || [];
+    if (!leaving.length) continue; // a leaf (a customer's box) feeds nothing
+    // A box that only hands out drops distributes, it does not source: its
+    // feeder is simply missing from the documentation.
+    if (!leaving.some((cable) => cable.cable_type !== 'drop')) continue;
+    sources.push({ id: box.id, code: box.code ?? null, out_degree: leaving.length });
+  }
+  return sources;
+}
+
+/** Every core of every cable landing at one of `boxIds` — where light enters. */
+function rootCoreIdsForBoxes({ cables = [], cores = [] }, boxIds = []) {
+  const wanted = new Set(boxIds.filter(Boolean));
+  if (!wanted.size) return [];
+  const landsAtRoot = new Set();
+  for (const cable of cables) {
+    if (wanted.has(cable.from_enclosure_id) || wanted.has(cable.to_enclosure_id)) {
+      landsAtRoot.add(cable.id);
+    }
+  }
+  return cores.filter((core) => landsAtRoot.has(core.cable_id)).map((core) => core.id);
+}
+
 function coreKey(id) {
   return `core:${id}`;
 }
@@ -1357,6 +1423,8 @@ module.exports = {
   keyKind,
   keyId,
   indexNetwork,
+  inferSourceBoxes,
+  rootCoreIdsForBoxes,
   lightEdges,
   reachableKeys,
   orientLightPath,

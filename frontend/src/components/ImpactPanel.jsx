@@ -12,7 +12,29 @@ import { failureTitle, pathText, customerTitle, customerNote } from "../utils/im
  */
 
 function RootStatus({ impact, headends, onSetNetworkRoot }) {
-  const { headend, direction_resolved: resolved, failure } = impact;
+  const {
+    headend,
+    direction_resolved: resolved,
+    direction_source: source,
+    inferred_root_boxes: inferredRoots = [],
+    failure,
+  } = impact;
+
+  if (resolved && source === "inferred") {
+    const roots = inferredRoots.map((root) => root.code || root.id).filter(Boolean).join(", ");
+    return (
+      <div className="impact-root impact-root-inferred">
+        <p>
+          <b>Light direction inferred</b> from {roots || "the network shape"} —
+          everything downstream of the failure is reported; the span that feeds it
+          and every other branch are left alone.
+        </p>
+        <p className="sub">
+          Set a headend/OLT root to make this direction explicit.
+        </p>
+      </div>
+    );
+  }
 
   if (resolved) {
     return (

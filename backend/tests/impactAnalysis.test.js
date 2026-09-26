@@ -188,7 +188,7 @@ describe('resolveRoots', () => {
   });
 
   test('a headend with no root box or a deleted box is ignored', () => {
-    const { rooted, rootCoreIds } = resolveRoots({
+    const { rooted, inferred, rootCoreIds, source } = resolveRoots({
       headends: [
         { id: 'h2', code: 'OLT-02', root_enclosure_id: null },
         { id: 'h3', code: 'OLT-03', root_enclosure_id: 'gone' },
@@ -198,6 +198,38 @@ describe('resolveRoots', () => {
       cores: CORES,
     });
     assert.equal(rooted.length, 0);
+    // A headend row that points nowhere used to leave the analysis directionless.
+    // The shape of the network can still answer, so it does — and says it did.
+    assert.equal(source, 'inferred');
+    assert.deepEqual(inferred.map((b) => b.code), ['BOX-OLT']);
+    assert.deepEqual(rootCoreIds, ['f1c1']);
+  });
+
+  test('the declared headend always beats the inferred one', () => {
+    // BOX-C is a nap with only drops leaving it; the declared root is a box the
+    // shape would not have picked, and it must win outright — an inference is a
+    // fallback, never an override.
+    const { source, rootBoxIds, rootCoreIds } = resolveRoots({
+      headends: [{ id: 'h9', code: 'OLT-09', root_enclosure_id: 'a' }],
+      enclosures: ENCLOSURES,
+      cables: CABLES,
+      cores: CORES,
+    });
+    assert.equal(source, 'headend');
+    assert.deepEqual(rootBoxIds, ['a']);
+    assert.deepEqual(rootCoreIds.sort(), ['d1c1', 'd1c2', 'd2c1', 'f1c1']);
+  });
+
+  test('a network that does not say where the light enters stays undirected', () => {
+    // A backhaul cable arriving at the OLT box means no box is unfed any more,
+    // so the shape has no answer and the analysis must not invent one.
+    const { source, rootCoreIds } = resolveRoots({
+      headends: [],
+      enclosures: ENCLOSURES,
+      cables: [...CABLES, { id: 'bh', code: 'CBL-BH', cable_type: 'distribution', from_enclosure_id: 'e', to_enclosure_id: 'olt' }],
+      cores: CORES,
+    });
+    assert.equal(source, 'none');
     assert.deepEqual(rootCoreIds, []);
   });
 });
@@ -319,7 +351,9 @@ describe('simulateFailure', () => {
     assert.equal(result.affected.cables.find((c) => c.code === 'CBL-D1').is_failure, true);
   });
 
-  test('without a headend the result is directionless and offers no patch plan', async () => {
+  test('without a headend the direction is inferred, so the feeding span is not painted', async () => {
+    // The reported bug: with no headend the walk went both ways and reported the
+    // feeder that supplies BOX-B as out. The shape of the network knows better.
     HEADEND_ROWS = [];
     try {
       const result = await simulateFailure({
@@ -328,24 +362,56 @@ describe('simulateFailure', () => {
         boxIds: ['b'],
         boxLocations: BOX_LOCATIONS,
       });
-      assert.equal(result.direction_resolved, false);
-      assert.equal(result.headend, null);
-      assert.equal(result.affected_count, 4); // the undirected over-approximation
-      assert.deepEqual(result.upstream_reroute_candidates, []);
-      assert.ok(result.warnings.some((w) => /network root .*is configured/i.test(w)));
+      assert.equal(result.direction_resolved, true);
+      assert.equal(result.direction_source, 'inferred');
+      assert.deepEqual(result.inferred_root_boxes.map((b) => b.code), ['BOX-OLT']);
+      assert.equal(result.headend, null, 'nothing was configured, so there is no headend to report');
+      assert.equal(result.affected_count, 3, 'CUST-1, CUST-2 and CUST-3 hang off BOX-B');
+      // CBL-D1 and CBL-D2 feed BOX-B and BOX-D and still have light on them.
+      assert.ok(
+        !result.affected.cables.some((c) => c.code === 'CBL-D1'),
+        'the span feeding BOX-B must not be reported out',
+      );
+      assert.ok(result.warnings.some((w) => /direction was inferred/.test(w) && /BOX-OLT/.test(w)));
+      assert.ok(!result.warnings.some((w) => /network root .*is configured/i.test(w)));
     } finally {
       HEADEND_ROWS = HEADENDS;
     }
   });
 
-  test('a headend row that points nowhere is called out, not misdiagnosed', async () => {
+  test('a headend row that points nowhere is called out, and the inference fills in', async () => {
     HEADEND_ROWS = [{ id: 'h2', code: 'OLT-02', name: 'New OLT', site_type: 'olt', root_enclosure_id: null }];
     try {
       const result = await simulateFailure({ kind: 'box', id: 'b', boxIds: ['b'], boxLocations: BOX_LOCATIONS });
-      assert.equal(result.direction_resolved, false);
-      assert.ok(result.warnings.some((w) => /none point at an existing enclosure/.test(w)));
+      assert.equal(result.direction_resolved, true, 'the shape still orients the analysis');
+      assert.equal(result.direction_source, 'inferred');
+      const warned = result.warnings.find((w) => /none point at an existing enclosure/.test(w));
+      assert.ok(warned, 'the broken headend row is still reported');
+      assert.match(warned, /BOX-OLT/, 'and it names the box the shape suggests');
       assert.ok(!result.warnings.some((w) => /network root .*is configured/i.test(w)));
     } finally {
+      HEADEND_ROWS = HEADENDS;
+    }
+  });
+
+  test('a genuinely directionless network says so instead of guessing', async () => {
+    // No headend, and a backhaul arriving at the OLT box: no box is unfed, so
+    // there is nothing to infer from. This is the case the old warning described.
+    HEADEND_ROWS = [];
+    const backhaul = {
+      id: 'bh', code: 'CBL-BH', cable_type: 'distribution',
+      from_enclosure_id: 'e', to_enclosure_id: 'olt', customer_id: null, customer_label: null,
+    };
+    CABLES.push(backhaul);
+    try {
+      const result = await simulateFailure({ kind: 'box', id: 'b', boxIds: ['b'], boxLocations: BOX_LOCATIONS });
+      assert.equal(result.direction_resolved, false);
+      assert.equal(result.direction_source, 'none');
+      assert.equal(result.affected_count, 4, 'the undirected over-approximation');
+      assert.deepEqual(result.upstream_reroute_candidates, []);
+      assert.ok(result.warnings.some((w) => /does not say where the light enters/.test(w)));
+    } finally {
+      CABLES.pop();
       HEADEND_ROWS = HEADENDS;
     }
   });
