@@ -143,6 +143,31 @@ describe('analyzeImpact — direction', () => {
     assert.ok(boxIds(impact).includes('e'));
   });
 
+  test('an upstream box fans out through every splitter port and every later box', () => {
+    const impact = impactFor({ boxIds: ['a'] });
+    assert.deepEqual(
+      impact.affected.cables.map((c) => c.code).sort(),
+      [
+        'CBL-D1', 'CBL-D2', 'CBL-D3',
+        'CBL-DROP-1', 'CBL-DROP-2', 'CBL-DROP-3', 'CBL-DROP-9',
+      ],
+    );
+    assert.ok(
+      !impact.affected.cables.some((c) => c.code === 'CBL-F1'),
+      'the feeder into BOX-A remains live',
+    );
+  });
+
+  test('failing the splitter box stops the sibling branch and keeps its IN cable live', () => {
+    const impact = impactFor({ boxIds: ['b'] });
+    assert.deepEqual(
+      impact.affected.cables.map((c) => c.code).sort(),
+      ['CBL-DROP-1', 'CBL-DROP-2', 'CBL-DROP-3'],
+    );
+    assert.ok(!impact.affected.cables.some((c) => c.code === 'CBL-D1'));
+    assert.ok(!impact.affected.cables.some((c) => c.code === 'CBL-D2'));
+  });
+
   test('a failure below the splitter leaves the customers on the other ports alone', () => {
     // Cut only the first drop: CUST-2/CUST-3 stay up.
     const impact = impactFor({ cableIds: ['drop1'] });
