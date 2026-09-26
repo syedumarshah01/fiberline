@@ -1213,6 +1213,45 @@ describe('a splitter port\'s downstream cable — out-ness is measured in light,
   });
   const cable = (impact, id) => impact.affected.cables.find((c) => c.id === id) || null;
 
+  test('a failed joint fans out through a splitter port and a direct splice', () => {
+    const net = shaped();
+    net.enclosures.push({ id: 'c', code: 'BOX-C', type: 'nap' });
+    net.cables.push(
+      { id: 'd2', code: 'CBL-D2', cable_type: 'distribution', from_enclosure_id: 'a', to_enclosure_id: 'c' },
+      { id: 'drop2', code: 'CBL-DROP-2', cable_type: 'drop', from_enclosure_id: 'c', customer_id: 'cust2', customer_label: 'CUST-2' },
+    );
+    net.cores.push(
+      { id: 'f1c2', cable_id: 'f1', core_number: 2, status: 'spliced' },
+      { id: 'd2c1', cable_id: 'd2', core_number: 1, status: 'spliced' },
+      { id: 'drop2c1', cable_id: 'drop2', core_number: 1, status: 'terminated' },
+    );
+    net.splices.push(
+      { id: 's2', enclosure_id: 'a', core_a_id: 'f1c2', core_b_id: 'd2c1' },
+      { id: 's3', enclosure_id: 'c', core_a_id: 'd2c1', core_b_id: 'drop2c1' },
+    );
+    net.customers.push({ id: 'cust2', customer_code: 'CUST-2', name: 'Grace' });
+    const impact = analyzeImpact({
+      ...net,
+      rootCoreIds: ['f1c1', 'f1c2'],
+      rootBoxIds: ['olt'],
+      boxIds: ['a'],
+    });
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2']);
+    assert.deepEqual(
+      impact.affected.cables.map((c) => c.code).sort(),
+      ['CBL-D1', 'CBL-D2', 'CBL-DROP-1', 'CBL-DROP-2'],
+    );
+    assert.ok(!impact.affected.cables.some((c) => c.code === 'CBL-F1'));
+
+    const withoutRoot = analyzeImpact({ ...net, boxIds: ['a'] });
+    assert.deepEqual(
+      withoutRoot.affected.cables.map((c) => c.code).sort(),
+      ['CBL-D1', 'CBL-D2', 'CBL-DROP-1', 'CBL-DROP-2'],
+      'the endpoint fallback must preserve both direct and splitter fan-out paths',
+    );
+    assert.ok(!withoutRoot.affected.cables.some((c) => c.code === 'CBL-F1'));
+  });
+
   test('the span the port feeds is out in full, not partly out', () => {
     const impact = failBoxA();
     const d1 = cable(impact, 'd1');

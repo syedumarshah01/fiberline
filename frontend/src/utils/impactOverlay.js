@@ -40,7 +40,22 @@ export function impactOverlay(impact) {
     ? affected.boxes.map((box) => box.id)
     : affected.box_ids || [];
   const cableDetails = affected.cables?.length ? affected.cables : null;
-  const cableIds = cableDetails ? cableDetails.map((cable) => cable.id) : affected.cable_ids || [];
+  const responseCableIds = cableDetails
+    ? cableDetails.map((cable) => cable.id)
+    : affected.cable_ids || [];
+
+  // The customer path is a second, downstream-only source of truth. It protects
+  // the map from a partially documented splitter response where the customer
+  // was found through a port but the port's cable was omitted from the compact
+  // affected.cables list. A path starts at the failure and never walks back
+  // into the IN span, so adding these IDs cannot reintroduce the upstream-red
+  // bug.
+  const pathCableIds = (affected.customers || []).flatMap((customer) =>
+    (customer.path_through_failure || [])
+      .filter((item) => item.kind === "fiber" && item.cable_id)
+      .map((item) => item.cable_id),
+  );
+  const cableIds = [...new Set([...responseCableIds, ...pathCableIds])];
   const partialCableIds = cableDetails
     ? cableDetails.filter((cable) => cable.partially_dark).map((cable) => cable.id)
     : [];
@@ -81,10 +96,19 @@ export function overlayHeadline(impact) {
   // enough to count, so accept whichever one is present.
   const boxes = affected.boxes?.length ?? affected.box_ids?.length ?? 0;
   const details = affected.cables?.length ? affected.cables : null;
+  const pathCableIds = (affected.customers || []).flatMap((customer) =>
+    (customer.path_through_failure || [])
+      .filter((item) => item.kind === "fiber" && item.cable_id)
+      .map((item) => item.cable_id),
+  );
   const partial = details ? details.filter((cable) => cable.partially_dark).length : 0;
   const cables = details
-    ? details.length - partial
-    : affected.cables?.length ?? affected.cable_ids?.length ?? 0;
+    ? new Set([...details.map((cable) => cable.id), ...pathCableIds]).size - partial
+    : new Set([
+        ...(affected.cables || []).map((cable) => cable.id || cable),
+        ...(affected.cable_ids || []),
+        ...pathCableIds,
+      ]).size;
   if (boxes) parts.push(plural(boxes, "box"));
   if (cables) parts.push(plural(cables, "cable"));
   if (partial) parts.push(`${partial} partly out`);

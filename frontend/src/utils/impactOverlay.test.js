@@ -132,6 +132,29 @@ describe('impactOverlay', () => {
     assert.equal(customersBehind('b', overlay), 1);
   });
 
+  it('paints a splitter-port cable named by the downstream customer path', () => {
+    const impact = {
+      failure: { kind: 'box', id: 'joint', box_ids: ['joint'], cable_ids: [] },
+      affected: {
+        customer_count: 1,
+        boxes: [{ id: 'joint' }],
+        // Simulate a compact backend payload that found the customer but omitted
+        // the port cable from affected.cables.
+        cables: [{ id: 'direct', code: 'CBL-DIRECT' }],
+        customers: [{
+          customer_label: 'CUST-PORT',
+          serving_box_id: 'downstream',
+          path_through_failure: [
+            { kind: 'fiber', cable_id: 'port-cable', cable_code: 'CBL-PORT' },
+            { kind: 'fiber', cable_id: 'drop-port', cable_code: 'CBL-DROP-PORT' },
+          ],
+        }],
+      },
+    };
+    const overlay = impactOverlay(impact);
+    assert.deepEqual([...overlay.darkCableIds].sort(), ['direct', 'drop-port', 'port-cable']);
+  });
+
   it('tolerates a response that lost its arrays', () => {
     const overlay = impactOverlay({ failure: {}, affected: {} });
     assert.equal(overlay.active, true);
