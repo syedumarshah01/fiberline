@@ -10,7 +10,13 @@ const splicesRouter = require('./routes/splices');
 const fiberCoresRouter = require('./routes/fiberCores');
 const splittersRouter = require('./routes/splitters');
 const capacityRouter = require('./routes/capacity');
-
+const settingsRouter = require('./routes/settings');
+const impactRouter = require('./routes/impact');
+const headendsRouter = require('./routes/headends');
+const qrRouter = require('./routes/qr');
+const workOrdersRouter = require('./routes/workOrders');
+const serviceabilityRouter = require('./routes/serviceability');
+const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -25,7 +31,14 @@ app.use('/api/splices', splicesRouter);
 app.use('/api/fiber-cores', fiberCoresRouter);
 app.use('/api/splitters', splittersRouter);
 app.use('/api/capacity', capacityRouter);
-
+app.use('/api/settings', settingsRouter);
+app.use('/api/impact', impactRouter);
+app.use('/api/headends', headendsRouter);
+// Field work: QR tags that open a box's documentation, and the worksheet a
+// technician works through inside it.
+app.use('/api/qr', qrRouter);
+app.use('/api/work-orders', workOrdersRouter);
+app.use('/api/serviceability', serviceabilityRouter);
 // Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err);
@@ -33,6 +46,41 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Fiber network API listening on port ${PORT}`);
+  // Before reporting what the database is missing, try to make it not missing:
+  // apply the migrations this build has that the database does not (see
+  // utils/schemaBootstrap.js). Then report whatever is genuinely left.
+  await bootstrapSchemaNow();
+  await reportSchema();
 });
+
+/**
+ * Say up front when this database is behind the code, instead of letting the
+ * first click on *Simulate failure* discover it. Not fatal — the features that
+ * need the missing column turn themselves off and say so in their own
+ * warnings (see utils/schemaCapabilities.js).
+ */
+async function reportSchema() {
+  try {
+    const { schemaCapabilities } = require('./utils/schemaCapabilities');
+    // refresh: true — the bootstrap a moment ago may have added exactly the
+    // column this would otherwise report as missing for the next 30 seconds.
+    const capabilities = await schemaCapabilities({ refresh: true });
+    if (!capabilities.gaps.length) return;
+    console.warn('---');
+    console.warn(`Schema check — database "${capabilities.database}" on ${capabilities.target}`);
+    for (const gap of capabilities.gaps) {
+      // ! for something broken, · for something the app is working around.
+      console.warn(`  ${gap.severity === 'notice' ? '·' : '!'} ${gap.message}`);
+    }
+    console.warn('---');
+  } catch (err) {
+    // The database may simply not be up yet; the API is still listening and the
+    // usual connection error will surface on the first real request. A knex
+    // connection failure is an AggregateError, which often carries no message
+    // text at all — name it rather than logging a blank line.
+    const reason = err.message?.trim() || err.code || err.name || 'unknown error';
+    console.warn(`Schema check skipped: ${reason}`);
+  }
+}
