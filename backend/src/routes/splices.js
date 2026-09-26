@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { validateSpliceData } = require('../middleware/validation');
+const { canBranchFromCore } = require('../utils/branching');
 const router = express.Router();
 
 // GET /api/splices/:id
@@ -83,24 +84,31 @@ router.post('/', validateSpliceData, async (req, res, next) => {
     const coreA = cores.find((c) => c.id === core_a_id);
     const coreB = cores.find((c) => c.id === core_b_id);
 
-    // Validate: coreA (IN) can be available, reserved, or spliced; coreB (OUT) must be available or reserved
-    const canSplice = (coreA.status === 'available' || coreA.status === 'reserved' || coreA.status === 'spliced') &&
-                     (coreB.status === 'available' || coreB.status === 'reserved');
-
-    if (!canSplice) {
+    // An IN core is a single branch point. Once it has been spliced to an OUT
+    // core, its `spliced` status means that branch is already consumed; allowing
+    // it back as core A would create a second physical branch from the same IN
+    // fibre. Both sides must therefore be free/reserved for a new splice.
+    if (!canBranchFromCore(coreA) || !canBranchFromCore(coreB)) {
       await trx.rollback();
       return res.status(409).json({
-        error: 'One or both cores are not available to splice',
+        error: coreA.status === 'spliced'
+          ? 'IN core is already spliced and is not available for branching'
+          : 'One or both cores are not available to splice',
         cores: cores.map((c) => ({ id: c.id, status: c.status })),
       });
     }
 
-    // If coreA is spliced, we allow chaining - the original splice remains intact
-    // This allows branching: one fiber can be spliced to multiple downstream fibers
-    // The spliced core stays spliced, and we create a new splice record for the branch
+    // Measured loss is numeric-or-null; anything else gets a clean 400 instead
+    // of a Postgres error (the form submits '' for "no reading yet").
+    if (loss_db !== undefined && loss_db !== null && loss_db !== '') {
+      const lossValue = Number(loss_db);
+      if (Number.isNaN(lossValue) || lossValue < 0) {
+        await trx.rollback();
+        return res.status(400).json({ error: 'loss_db must be a non-negative number' });
+      }
+    }
 
-    // Only update coreB to spliced (coreA is already spliced if it was spliced)
-    const coresToUpdate = coreA.status === 'spliced' ? [core_b_id] : [core_a_id, core_b_id];
+    const coresToUpdate = [core_a_id, core_b_id];
 
     const [splice] = await trx('splices')
       .insert({
@@ -140,8 +148,17 @@ router.patch('/:id', async (req, res, next) => {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
     }
     // The edit form submits loss_db as '' when blank — Postgres rejects an empty
-    // string for a numeric column (500). Normalize to null.
+    // string for a numeric column (500). Normalize to null, and reject anything
+    // else non-numeric (e.g. "lots") with a clean 400 instead of a 23505-style
+    // crash from the database.
     if (updates.loss_db === '') updates.loss_db = null;
+    if (updates.loss_db !== undefined && updates.loss_db !== null) {
+      const n = Number(updates.loss_db);
+      if (Number.isNaN(n) || n < 0) {
+        await trx.rollback();
+        return res.status(400).json({ error: 'loss_db must be a non-negative number' });
+      }
+    }
     if (updates.notes !== undefined && updates.notes !== null && typeof updates.notes !== 'string') {
       await trx.rollback();
       return res.status(400).json({ error: "notes must be a string" });
