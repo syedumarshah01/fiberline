@@ -97,9 +97,11 @@ while a box with only customer drops is not treated as an OLT). The response mar
 this as `direction_source: "inferred"`, lists `inferred_root_boxes`, and warns that
 a headend should be set to make the direction explicit. This keeps the span that
 feeds a failed box out of the affected cables — it still carries light up to the
-break. If the network shape has no source (for example, every box is fed), the
-walk remains undirected, marks `direction_source: "none"`, and says plainly that
-it may include the feeding span and branches that are still lit.
+break. If the network shape has no source (for example, every box is fed), a box
+failure still uses the box endpoint fallback — connected output fibres only, with
+the IN cable excluded — and marks the response `direction_source: "box_endpoints"`.
+A lower-level directionless analysis is marked `direction_source: "none"` and
+warns plainly that it may include the feeding span and branches that are still lit.
 
 ### Mid-span links without the column (the inference fallback)
 

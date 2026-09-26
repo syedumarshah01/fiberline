@@ -324,14 +324,18 @@ describe('a box failure paints only what lost light', () => {
         });
       }
 
-      test('undirected: over-reports, and says so', () => {
+      test('without a root, a box failure still follows connected outputs only', () => {
         const built = unreadableScene(topology);
         const analysis = analyzeImpact({ ...built, boxIds: [topology.root.id] });
         assert.equal(analysis.directed, false);
         assert.ok(
-          analysis.warnings.some((w) => /direction could not be resolved/i.test(w)),
-          'the undirected walk must announce itself',
+          analysis.warnings.some((w) => /IN cable is not included|direction could not be resolved/i.test(w)),
+          'the box-local fallback must announce its limited direction',
         );
+        const feeder = topology.feeds[topology.root.id];
+        if (feeder) {
+          assert.ok(!analysis.affected.cables.some((c) => c.code === feeder));
+        }
       });
     });
   }

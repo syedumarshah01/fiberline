@@ -628,6 +628,101 @@ function floodUndirected(index, seeds, { maxNodes = DEFAULT_MAX_NODES } = {}) {
   return { keys: order, visited, parents, depths, truncated };
 }
 
+/**
+ * Walk only away from a failed box when the light root cannot reach the failure
+ * surface. This is deliberately narrower than `floodUndirected`: it starts at
+ * connected output cores and splitter ports, follows splitter edges, crosses a
+ * splice only from a cable arriving at a box to a cable leaving that box, and
+ * follows a continuation from its parent half to its child half. It can recover
+ * the useful downstream report for a partially documented segment without ever
+ * walking back into the cable that feeds the failed box.
+ */
+function floodBoxDownstream(index, seeds, failureBoxIds, { maxNodes = DEFAULT_MAX_NODES } = {}) {
+  const parents = new Map();
+  const depths = new Map();
+  const visited = new Set();
+  const queue = [];
+  const order = [];
+  let truncated = false;
+
+  const outgoingCore = (key) => {
+    if (keyKind(key) !== 'core') return false;
+    const core = index.coreById.get(keyId(key));
+    const cable = core ? index.cableById.get(core.cable_id) : null;
+    return Boolean(core && cable && failureBoxIds.has(cable.from_enclosure_id) && index.joinedCoreIds.has(core.id));
+  };
+
+  const startable = (key) => {
+    if (keyKind(key) === 'splitter') {
+      return failureBoxIds.has(index.splitterById.get(keyId(key))?.enclosure_id);
+    }
+    return outgoingCore(key);
+  };
+
+  const edgesAway = (key) => {
+    const edges = [...(index.downEdges.get(key) || [])];
+    if (keyKind(key) !== 'core') return edges;
+
+    const core = index.coreById.get(keyId(key));
+    const cable = core ? index.cableById.get(core.cable_id) : null;
+    if (!core || !cable) return edges;
+
+    // A splice carries light from the cable arriving at this enclosure to the
+    // cable leaving it. The reverse edge is the IN path and is intentionally not
+    // followed.
+    for (const edge of index.spliceEdges.get(key) || []) {
+      const next = index.coreById.get(keyId(edge.node));
+      const nextCable = next ? index.cableById.get(next.cable_id) : null;
+      const boxId = edge.via?.box_id;
+      if (
+        boxId &&
+        cable.to_enclosure_id === boxId &&
+        nextCable?.from_enclosure_id === boxId
+      ) {
+        edges.push(edge);
+      }
+    }
+
+    // A continuation is directional in the cable model: parent half → child
+    // half. `continuationEdges` also exposes the reverse edge, so keep only the
+    // one that leaves this cable's downstream endpoint.
+    for (const edge of continuationEdges(index, key)) {
+      if (edge.via?.from_cable_id !== core.cable_id) continue;
+      const next = index.coreById.get(keyId(edge.node));
+      const nextCable = next ? index.cableById.get(next.cable_id) : null;
+      if (nextCable?.from_enclosure_id === cable.to_enclosure_id) edges.push(edge);
+    }
+    return edges;
+  };
+
+  for (const seed of uniq(seeds)) {
+    if (!seed || visited.has(seed) || !nodeExists(index, seed) || !startable(seed)) continue;
+    visited.add(seed);
+    depths.set(seed, 0);
+    queue.push(seed);
+    order.push(seed);
+  }
+
+  while (queue.length) {
+    const key = queue.shift();
+    for (const edge of edgesAway(key)) {
+      if (visited.has(edge.node)) continue;
+      visited.add(edge.node);
+      parents.set(edge.node, { node: key, via: edge.via });
+      depths.set(edge.node, (depths.get(key) ?? 0) + 1);
+      order.push(edge.node);
+      queue.push(edge.node);
+      if (order.length >= maxNodes) {
+        truncated = true;
+        break;
+      }
+    }
+    if (truncated) break;
+  }
+
+  return { keys: order, visited, parents, depths, truncated };
+}
+
 /** Combine several floods (rooted + unrooted seeds) into one result set. */
 function mergeFloods(parts) {
   const keys = [];
@@ -1023,16 +1118,24 @@ function analyzeImpact({
     return keys;
   }
 
-  // A public failure is a box failure, not a cable cut. Do not turn an
-  // unconnected fibre merely landing at that box into a red downstream chain:
-  // without a live root path it carries no light. The old unrooted flood is kept
-  // for the lower-level cable/pole surface analysis, where the caller has
-  // explicitly supplied a cut and the undirected fallback is part of that API.
+  // A public failure is a box failure, not a cable cut. If the root cannot
+  // reach the failure surface, recover only the connected output side — never
+  // by flooding back through the IN cable. The old undirected fallback remains
+  // for lower-level cable/pole surface analysis, where the caller explicitly
+  // supplied a cut and that fallback is part of the graph API.
   const boxFailureOnly = failureBoxIds.size > 0 && failureCableIds.size === 0;
-  const unrootedFlood =
-    directed && unrootedSeeds.length && !boxFailureOnly
-      ? floodUndirected(index, unrootedSeeds, { maxNodes })
-      : null;
+  const boxOutputFlood = boxFailureOnly
+    ? floodBoxDownstream(index, surface.seedKeys, failureBoxIds, { maxNodes })
+    : null;
+  const unrootedFlood = directed
+    ? boxFailureOnly
+      ? boxOutputFlood?.keys.length
+        ? boxOutputFlood
+        : null
+      : unrootedSeeds.length
+        ? floodUndirected(index, unrootedSeeds, { maxNodes })
+        : null
+    : null;
 
   const flood = directed
     ? mergeFloods([
@@ -1041,7 +1144,9 @@ function analyzeImpact({
           : null,
         unrootedFlood,
       ].filter(Boolean))
-    : floodUndirected(index, surface.seedKeys, { maxNodes });
+    : boxFailureOnly && boxOutputFlood?.keys.length
+      ? boxOutputFlood
+      : floodUndirected(index, surface.seedKeys, { maxNodes });
 
   // What the outage took out. Directed: everything that had light and no longer
   // does — the walk's own keys (which carry the paths, and cover a failure point
@@ -1081,10 +1186,14 @@ function analyzeImpact({
   }
   if (!directed) {
     warnings.push(
-      'No network root (headend/OLT) is configured, so direction could not be resolved: the ' +
-        'report walks both ways from the failure point. It may include the span that feeds the ' +
-        'failure (which still has light on it) and branches that are still lit, and it may paint ' +
-        'them red — set a headend root on the OLT box for direction-aware results.',
+      boxFailureOnly && boxOutputFlood?.keys.length
+        ? 'No network root (headend/OLT) is configured. The report uses the box and cable endpoints ' +
+          'to follow connected output fibres only; the IN cable is not included. Set a headend root ' +
+          'on the OLT box to validate light reachability.'
+        : 'No network root (headend/OLT) is configured, so direction could not be resolved: the ' +
+          'report walks both ways from the failure point. It may include the span that feeds the ' +
+          'failure (which still has light on it) and branches that are still lit, and it may paint ' +
+          'them red — set a headend root on the OLT box for direction-aware results.',
     );
   } else {
     if (strayUnrootedSeeds.length) {

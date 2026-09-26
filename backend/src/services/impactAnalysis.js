@@ -378,7 +378,11 @@ async function simulateFailure({
   // without any documented cores is only a suggestion, not a usable light root,
   // so do not label an undirected walk as inferred.
   const inferredBoxes = inferred.map((box) => ({ id: box.id, code: box.code }));
-  const effectiveDirectionSource = analysis.directed ? directionSource : 'none';
+  const effectiveDirectionSource = analysis.directed
+    ? directionSource
+    : kind === 'box'
+      ? 'box_endpoints'
+      : 'none';
 
   let warnings = [...(network.schema_warnings || []), ...analysis.warnings];
 
@@ -392,6 +396,12 @@ async function simulateFailure({
         `light is assumed to enter at ${names} (no cable feeds ${inferredBoxes.length === 1 ? 'it' : 'them'}). ` +
         'Everything downstream of the failure is reported and the span that feeds it is left alone. ' +
         'Set a headend on the OLT box to make this explicit.',
+    );
+  } else if (effectiveDirectionSource === 'box_endpoints') {
+    warnings.push(
+      'No headend is configured. For this box failure the report follows connected output fibres ' +
+        'from the box endpoints only; the IN cable is not included. Set a headend on the OLT box ' +
+        'to validate light reachability and restoration paths.',
     );
   } else if (effectiveDirectionSource === 'none') {
     warnings.push(
@@ -428,8 +438,8 @@ async function simulateFailure({
     failure: describeFailure({ kind, id, boxIds, cableIds, element, network }),
     direction_resolved: analysis.directed,
     // 'headend' — a person said where the light enters; 'inferred' — the shape of
-    // the network said it (no cable feeds that box); 'none' — nobody said and the
-    // shape does not, so the walk is undirected and the warnings say so.
+    // the network said it; 'box_endpoints' — a box-only fallback kept the IN
+    // cable out without claiming a root; 'none' — no directional answer exists.
     direction_source: effectiveDirectionSource,
     inferred_root_boxes: effectiveDirectionSource === 'inferred' ? inferredBoxes : [],
     headend: primaryHeadend

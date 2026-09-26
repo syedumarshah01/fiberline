@@ -787,14 +787,13 @@ describe('a fibre joined in the failed box is out, whatever its status column sa
 });
 
 describe('analyzeImpact — no root configured', () => {
-  test('without a headend the analysis says so and over-reports', () => {
+  test('without a headend a box failure still reports connected outputs, not the IN cable', () => {
     const impact = analyzeImpact({ ...NET, boxIds: ['b'] });
     assert.equal(impact.direction, 'undirected');
     assert.equal(impact.directed, false);
     assert.ok(impact.warnings.some((w) => /network root .*is configured/i.test(w)));
-    // Undirected: the walk climbs back through BOX-A and reports the sibling
-    // branch too — the over-approximation the root exists to prevent.
-    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2', 'CUST-3', 'CUST-9']);
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2', 'CUST-3']);
+    assert.ok(!impact.affected.cables.some((c) => c.code === 'CBL-D1'));
   });
 
   test('a spare core in the failed element does not raise an unrooted warning', () => {
@@ -805,15 +804,19 @@ describe('analyzeImpact — no root configured', () => {
     assert.ok(!impact.warnings.some((w) => /not connected to a configured network root/.test(w)));
   });
 
-  test('a broken input fibre does not start a downstream cascade', () => {
-    // Remove the splice that feeds BOX-B: the splitter outputs are physically
-    // documented, but no light reaches their input from the root. A box failure
-    // must not paint them red merely because they touch the failed box.
+  test('documented splitter outputs still cascade when the root path is incomplete', () => {
+    // Remove the splice that feeds BOX-B. The splitter input and its output
+    // ports are still documented connections at the failed box, so the
+    // downstream customer fibres are the useful failure report; the missing
+    // root path is warned about separately.
     const severed = { ...NET, splices: SPLICES.filter((sp) => sp.id !== 's1') };
     const impact = analyzeImpact({ ...severed, boxIds: ['b'], rootCoreIds: ROOT_CORES });
     assert.ok(impact.warnings.some((w) => /not reachable from the network root/.test(w)));
-    assert.deepEqual(labels(impact), []);
-    assert.deepEqual(impact.affected.cables, []);
+    assert.deepEqual(labels(impact), ['CUST-1', 'CUST-2', 'CUST-3']);
+    assert.deepEqual(
+      impact.affected.cables.map((c) => c.code).sort(),
+      ['CBL-DROP-1', 'CBL-DROP-2', 'CBL-DROP-3'],
+    );
   });
 
   test('an unreachable-from-root core is flagged rather than silently ignored', () => {

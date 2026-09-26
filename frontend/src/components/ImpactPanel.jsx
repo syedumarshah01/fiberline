@@ -47,6 +47,18 @@ function RootStatus({ impact, headends, onSetNetworkRoot }) {
     );
   }
 
+  if (source === "box_endpoints") {
+    return (
+      <div className="impact-root impact-root-inferred">
+        <p>
+          <b>No configured network root.</b> This box failure follows connected
+          output fibres only; the IN cable is left lit and out of the red set.
+        </p>
+        <p className="sub">Set a headend/OLT root to validate light reachability and restoration paths.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="impact-root impact-root-missing">
       <p>

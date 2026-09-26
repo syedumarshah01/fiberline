@@ -401,10 +401,10 @@ describe('simulateFailure', () => {
     try {
       const result = await simulateFailure({ kind: 'box', id: 'b', boxIds: ['b'], boxLocations: BOX_LOCATIONS });
       assert.equal(result.direction_resolved, false);
-      assert.equal(result.direction_source, 'none');
-      assert.equal(result.affected_count, 4, 'the undirected over-approximation');
+      assert.equal(result.direction_source, 'box_endpoints');
+      assert.equal(result.affected_count, 3, 'box failures still report only the connected downstream outputs');
       assert.deepEqual(result.upstream_reroute_candidates, []);
-      assert.ok(result.warnings.some((w) => /does not say where the light enters/.test(w)));
+      assert.ok(result.warnings.some((w) => /IN cable is not included/.test(w)));
     } finally {
       CABLES.pop();
       HEADEND_ROWS = HEADENDS;
