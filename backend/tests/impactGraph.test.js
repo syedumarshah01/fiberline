@@ -308,6 +308,16 @@ describe('mid-span closures (a cable split in two by an inserted box)', () => {
     assert.deepEqual(impact.affected.boxes.map((b) => b.code).sort(), ['BOX-MID', 'BOX-NAP']);
   });
 
+  test('a middle enclosure still cascades without a root, but never paints its IN half', () => {
+    const impact = analyzeImpact({ ...split(), boxIds: ['mid'] });
+    assert.deepEqual(labels(impact), ['CUST-1']);
+    assert.deepEqual(
+      impact.affected.cables.map((c) => c.code).sort(),
+      ['CBL-DROP-1', 'CBL-F1-B'],
+    );
+    assert.ok(!impact.affected.cables.some((c) => c.code === 'CBL-F1'));
+  });
+
   test('failing the NAP paints the drop, not the span that feeds the NAP', () => {
     // Red means "there is no light in it". The span from the closure to the NAP
     // still carries light right up to the NAP, so it is not part of the outage —

@@ -649,7 +649,9 @@ function floodBoxDownstream(index, seeds, failureBoxIds, { maxNodes = DEFAULT_MA
     if (keyKind(key) !== 'core') return false;
     const core = index.coreById.get(keyId(key));
     const cable = core ? index.cableById.get(core.cable_id) : null;
-    return Boolean(core && cable && failureBoxIds.has(cable.from_enclosure_id) && index.joinedCoreIds.has(core.id));
+    const connected =
+      index.joinedCoreIds.has(core.id) || index.continuationByChild.has(cable?.id);
+    return Boolean(core && cable && failureBoxIds.has(cable.from_enclosure_id) && connected);
   };
 
   const startable = (key) => {
