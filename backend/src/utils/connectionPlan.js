@@ -161,55 +161,37 @@ function chooseConnection({
   };
 }
 
-function orderedSteps({ connection, enclosure, route, customerPoint }) {
+function orderedSteps({ connection, enclosure, route }) {
   const boxLabel = enclosure?.code || enclosure?.name || enclosure?.id || 'the nearest enclosure';
+  const drop = `${formatDistance(route.length_m)} ${route.is_street_route ? 'street route' : 'direct only — verify road path'}`;
   const steps = [];
 
   if (connection.type === 'splitter_port') {
-    steps.push(
-      `At ${boxLabel}, assign splitter ${connection.splitter.name || connection.splitter.id || 'the identified splitter'} output port ${connection.port.port_number} to the customer.`,
-    );
-    steps.push(
-      `Run and secure the customer drop from ${boxLabel} to the customer point (${formatDistance(route.length_m)} ${route.is_street_route ? 'along the street route' : 'direct distance only; verify the street path before installation'}).`,
-    );
-    steps.push(`Splice/terminate the drop at splitter port ${connection.port.port_number}, test optical power, and record the customer cable.`);
+    const splitter = connection.splitter.name || connection.splitter.id || 'identified splitter';
+    steps.push(`At ${boxLabel}, assign ${splitter}, port ${connection.port.port_number}.`);
+    steps.push(`Run the customer drop: ${drop}.`);
+    steps.push(`Splice the drop to port ${connection.port.port_number}; test and record loss.`);
   } else if (connection.type === 'install_splitter_on_core') {
-    steps.push(
-      `Reserve fiber core ${connection.core.core_number} on cable ${connection.core.cable_code || connection.core.cable_id} at ${boxLabel}.`,
-    );
-    steps.push(
-      `Install the planned ${connection.splitter.name} on that core; the existing splitter has no usable output port.`,
-    );
-    steps.push(`Assign new splitter output port ${connection.port.port_number} to this customer.`);
-    steps.push(
-      `Run and secure the customer drop (${formatDistance(route.length_m)} ${route.is_street_route ? 'along the street route' : 'direct distance only; verify the street path before installation'}), then splice/terminate it on port ${connection.port.port_number}.`,
-    );
+    steps.push(`At ${boxLabel}, reserve core ${connection.core.core_number} on ${connection.core.cable_code || connection.core.cable_id}.`);
+    steps.push(`Install ${connection.splitter.name} on that core.`);
+    steps.push(`Use new splitter port ${connection.port.port_number} for this customer.`);
+    steps.push(`Run the drop: ${drop}; splice to port ${connection.port.port_number} and test.`);
   } else {
     const source = connection.source;
     if (source?.source_enclosure) {
-      steps.push(
-        `Reserve source core ${source.source_core?.core_number ?? 'identified spare core'} on ${source.source_core?.cable_code || 'the source cable'} at ${source.source_enclosure.code || source.source_enclosure.id}.`,
-      );
+      steps.push(`At ${source.source_enclosure.code || source.source_enclosure.id}, reserve core ${source.source_core?.core_number ?? 'identified spare'} on ${source.source_core?.cable_code || 'the source cable'}.`);
     } else {
-      steps.push('Have network planning identify and reserve a spare source core before construction.');
+      steps.push('Identify and reserve a spare source core before construction.');
     }
     if (source?.path?.length) {
       for (const edge of source.path) {
-        steps.push(
-          `Bring the reserved capacity over cable ${edge.cable_code || edge.cable_id} from ${edge.from_code || edge.from_enclosure_id} to ${edge.to_code || edge.to_enclosure_id}.`,
-        );
+        steps.push(`Splice via ${edge.cable_code || edge.cable_id}: ${edge.from_code || edge.from_enclosure_id} → ${edge.to_code || edge.to_enclosure_id}.`);
       }
     } else {
-      steps.push('Design and document the connected enclosure/cable path from the source to the target enclosure.');
+      steps.push(`Document the connected cable path to ${boxLabel}.`);
     }
-    steps.push(`At ${boxLabel}, install the planned ${connection.splitter.name} and splice it to the brought-in core.`);
-    steps.push(`Assign new splitter output port ${connection.port.port_number}, run the customer drop (${formatDistance(route.length_m)}), and test optical power.`);
-  }
-
-  // Keep the customer point in the structured plan even when the text step is
-  // intentionally short; this is useful to field crews copying the plan.
-  if (customerPoint?.lat != null && customerPoint?.lng != null) {
-    steps.push(`Record the customer point at ${customerPoint.lat}, ${customerPoint.lng} and attach the completed test results.`);
+    steps.push(`At ${boxLabel}, install ${connection.splitter.name} and splice it to the brought-in core.`);
+    steps.push(`Use port ${connection.port.port_number}; run the drop: ${drop}; test.`);
   }
   return steps;
 }
@@ -370,7 +352,7 @@ function buildConnectionPlan({
         },
     connection,
     optical_budget: opticalBudget,
-    steps: orderedSteps({ connection, enclosure, route, customerPoint: point }),
+    steps: orderedSteps({ connection, enclosure, route }),
     warnings: [
       ...(route.is_street_route ? [] : ['No street route was returned. The displayed line is a direct haversine distance, not a road path.']),
       ...(enclosure.outside_search_radius ? ['The nearest enclosure is outside the requested search radius.'] : []),

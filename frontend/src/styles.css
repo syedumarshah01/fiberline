@@ -1229,8 +1229,11 @@ code, .mono { font-family: var(--font-mono); }
 .customer-plan-fact .l { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; }
 .customer-plan-fact .v { font-size: 13px; line-height: 1.35; }
 .customer-plan-fact .sub, .customer-plan-assumption { font-size: 11px; opacity: 0.75; margin-top: 2px; }
-.customer-plan-source, .customer-plan-budget { border-top: 1px solid var(--line, #2b3242); padding-top: 8px; margin-top: 10px; font-size: 12px; line-height: 1.45; }
-.customer-plan-source p { margin: 4px 0; }
+.customer-plan-source, .customer-plan-budget { border-top: 1px solid var(--line, #2b3242); padding-top: 7px; margin-top: 8px; font-size: 12px; line-height: 1.4; }
+.customer-plan-source p { margin: 3px 0; }
+.customer-plan-warnings { margin-top: 8px; font-size: 11px; }
+.customer-plan-warnings summary { cursor: pointer; opacity: 0.8; }
+.customer-plan-warnings .impact-warnings { margin-top: 5px; }
 .customer-plan-source ol, .customer-plan-steps ol { margin: 4px 0 0 18px; padding: 0; }
 .customer-plan-source li, .customer-plan-steps li { margin-bottom: 5px; }
 .customer-plan-budget-summary { font-weight: 600; margin: 4px 0 8px; }

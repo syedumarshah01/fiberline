@@ -33,7 +33,7 @@ const plan = (overrides = {}) => ({
 test('distance and route labels distinguish a street route from a direct fallback', () => {
   assert.equal(formatPlanDistance(42), '42 m');
   assert.equal(formatPlanDistance(1200), '1.2 km');
-  assert.match(routeBasis({ source: 'street_route', length_m: 62 }), /along the street route/);
+  assert.match(routeBasis({ source: 'street_route', length_m: 62 }), /62 m street route/);
   assert.match(routeBasis({ source: 'direct_haversine', length_m: 62 }), /not a street route/);
 });
 

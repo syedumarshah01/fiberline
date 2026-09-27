@@ -107,6 +107,9 @@ describe('connection plan optical budget', () => {
     assert.equal(plan.optical_budget.budget_db, 28);
     assert.equal(plan.optical_budget.required_margin_db, 3);
     assert.ok(plan.steps.length >= 3);
+    assert.match(plan.steps[0], /core 9 on D-1/);
+    assert.match(plan.steps[1], /New 1:8 splitter/);
+    assert.match(plan.steps.at(-1), /port 1/);
   });
 
   test('does not claim a safe result when the existing OLT path is unknown', () => {

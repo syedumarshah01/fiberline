@@ -2133,72 +2133,66 @@ function CustomerLookupPanel({
           {customerPlan && (
             <div className="customer-plan" style={{ marginBottom: 16 }}>
               <div className={`customer-plan-header tone-${budgetTone(budget)}`}>
-                <span className="customer-plan-title">Installation design</span>
+                <span className="customer-plan-title">{customerPlan.enclosure?.code || "Connection plan"}</span>
                 {budget && <span>{budget.status}</span>}
               </div>
 
               <div className="customer-plan-facts">
                 <div className="customer-plan-fact">
-                  <div className="l">Nearest enclosure</div>
-                  <div className="v">{customerPlan.enclosure?.code || customerPlan.enclosure?.id}</div>
-                  <div className="sub">{formatPlanDistance(customerPlan.enclosure?.distance_m)} direct to box</div>
-                </div>
-                <div className="customer-plan-fact">
-                  <div className="l">Customer route</div>
+                  <div className="l">Route</div>
                   <div className="v">{routeBasis(customerPlan.route)}</div>
-                  <div className="sub">{customerPlan.route?.source === "street_route" ? "Router measurement" : "Straight-line fallback; verify road path"}</div>
                 </div>
                 <div className="customer-plan-fact">
-                  <div className="l">Capacity assignment</div>
+                  <div className="l">Capacity</div>
                   <div className="v">{connectionChoiceLabel(connection)}</div>
-                  {connection?.type === "install_splitter_on_core" && <div className="sub">Core {connection.core?.core_number} on {connection.core?.cable_code}</div>}
-                  {connection?.type === "bring_capacity" && connection.source?.path?.length > 0 && <div className="sub">{connection.source.path.length} connected cable hop{connection.source.path.length === 1 ? "" : "s"}</div>}
+                </div>
+                <div className="customer-plan-fact">
+                  <div className="l">Box distance</div>
+                  <div className="v">{formatPlanDistance(customerPlan.enclosure?.distance_m)} direct</div>
                 </div>
               </div>
 
               {connection?.type === "bring_capacity" && (
                 <div className="customer-plan-source">
-                  <p className="section-title">Connected source path</p>
+                  <p className="section-title">Source path</p>
                   {connection.source?.source_enclosure ? (
-                    <p>
-                      Start at <strong>{connection.source.source_enclosure.code || connection.source.source_enclosure.id}</strong> using core {connection.source.source_core?.core_number ?? "the identified spare core"} on {connection.source.source_core?.cable_code || "the source cable"}.
-                    </p>
+                    <p><strong>{connection.source.source_enclosure.code || connection.source.source_enclosure.id}</strong> · core {connection.source.source_core?.core_number ?? "?"} · {connection.source.source_core?.cable_code || "source cable"}</p>
                   ) : (
-                    <p>There is no identified spare source in the connected graph. Plan and approve the source path before construction.</p>
+                    <p>Source core and path must be designed before construction.</p>
                   )}
                   {connection.source?.path?.length > 0 && (
-                    <ol>
-                      {connection.source.path.map((edge, index) => <li key={`${edge.cable_id}-${index}`}>{edge.from_code} → {edge.to_code} via {edge.cable_code || edge.cable_id}</li>)}
-                    </ol>
+                    <ol>{connection.source.path.map((edge, index) => <li key={`${edge.cable_id}-${index}`}>{edge.from_code} → {edge.to_code} · {edge.cable_code || edge.cable_id}</li>)}</ol>
                   )}
                 </div>
               )}
 
               <div className="customer-plan-budget">
-                <p className="section-title">Optical power / loss budget</p>
+                <p className="section-title">Optical budget</p>
                 <div className="customer-plan-budget-summary">{budgetSummary(budget)}</div>
                 {budget && (
                   <div className="customer-plan-budget-grid">
-                    <span>Total loss <strong>{budget.total_loss_db} dB</strong></span>
-                    <span>OLT budget <strong>{budget.budget_db} dB</strong></span>
-                    <span>Required margin <strong>{budget.required_margin_db} dB</strong></span>
-                    <span>Remaining margin <strong>{budget.remaining_margin_db} dB</strong></span>
+                    <span>Loss <strong>{budget.total_loss_db} dB</strong></span>
+                    <span>OLT limit <strong>{budget.budget_db} dB</strong></span>
+                    <span>Required <strong>{budget.required_margin_db} dB</strong></span>
+                    <span>Remaining <strong>{budget.remaining_margin_db} dB</strong></span>
                   </div>
                 )}
-                {budget?.breakdown?.length > 0 && (
+                {(budget?.breakdown?.length > 0 || budget?.assumptions?.length > 0) && (
                   <details className="customer-plan-loss-details">
-                    <summary>Show fiber, splice, splitter, and drop assumptions</summary>
-                    <ul>
-                      {budget.breakdown.map((item, index) => (
-                        <li key={`${item.type}-${item.cable_id || item.splice_id || item.splitter_id || index}`}>
-                          <span>{item.type}{item.cable_code ? ` · ${item.cable_code}` : ""}</span>
-                          <strong>{item.loss_db == null ? "unknown" : `+${item.loss_db} dB`} · {item.running_db ?? "—"} dB running</strong>
-                        </li>
-                      ))}
-                    </ul>
+                    <summary>Loss details and assumptions</summary>
+                    {budget.breakdown?.length > 0 && (
+                      <ul>
+                        {budget.breakdown.map((item, index) => (
+                          <li key={`${item.type}-${item.cable_id || item.splice_id || item.splitter_id || index}`}>
+                            <span>{item.type}{item.cable_code ? ` · ${item.cable_code}` : ""}</span>
+                            <strong>{item.loss_db == null ? "unknown" : `+${item.loss_db} dB`} · {item.running_db ?? "—"} dB</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {budget.assumptions?.map((assumption, index) => <p className="sub customer-plan-assumption" key={index}>{assumption}</p>)}
                   </details>
                 )}
-                {budget?.assumptions?.map((assumption, index) => <p className="sub customer-plan-assumption" key={index}>{assumption}</p>)}
               </div>
 
               <div className="customer-plan-steps">
@@ -2207,9 +2201,12 @@ function CustomerLookupPanel({
               </div>
 
               {customerPlan.warnings?.length > 0 && (
-                <div className="impact-warnings">
-                  {customerPlan.warnings.map((warning, index) => <p key={index} className="impact-warning">{warning}</p>)}
-                </div>
+                <details className="customer-plan-warnings">
+                  <summary>{customerPlan.warnings.length} note{customerPlan.warnings.length === 1 ? "" : "s"}</summary>
+                  <div className="impact-warnings">
+                    {customerPlan.warnings.map((warning, index) => <p key={index} className="impact-warning">{warning}</p>)}
+                  </div>
+                </details>
               )}
 
               <div className="customer-plan-actions">

@@ -6,8 +6,8 @@ export function formatPlanDistance(metres) {
 
 export function routeBasis(route) {
   if (!route) return "No route measurement";
-  if (route.source === "street_route") return `${formatPlanDistance(route.length_m)} along the street route`;
-  return `${formatPlanDistance(route.length_m)} direct haversine distance — not a street route`;
+  if (route.source === "street_route") return `${formatPlanDistance(route.length_m)} street route`;
+  return `${formatPlanDistance(route.length_m)} direct · haversine, not a street route`;
 }
 
 export function connectionChoiceLabel(connection) {
@@ -20,7 +20,9 @@ export function connectionChoiceLabel(connection) {
     return `Install ${connection.splitter?.name || "a splitter"} on core ${connection.core?.core_number ?? "?"} of ${connection.core?.cable_code || "the identified cable"}`;
   }
   if (connection.source?.source_enclosure) {
-    return `Bring capacity from ${connection.source.source_enclosure.code || connection.source.source_enclosure.id}`;
+    const source = connection.source.source_enclosure.code || connection.source.source_enclosure.id;
+    const core = connection.source.source_core?.core_number;
+    return `Bring core ${core ?? "?"} from ${source}`;
   }
   return "Source capacity path required";
 }
@@ -38,8 +40,8 @@ export function budgetSummary(budget) {
   const margin = Number.isFinite(remaining) ? `${remaining.toFixed(2)} dB remaining` : "remaining margin unknown";
   if (budget.status === "UNKNOWN") return `Path incomplete · ${margin}`;
   if (budget.exceeds_budget) return `Exceeds ${budget.budget_db} dB OLT budget · ${margin}`;
-  if (budget.consumes_required_margin) return `Only ${margin}; required safety margin is ${budget.required_margin_db} dB`;
-  return `${budget.status} · ${margin} after ${budget.total_loss_db} dB total loss`;
+  if (budget.consumes_required_margin) return `Only ${margin}; required ${budget.required_margin_db} dB`;
+  return `${budget.status} · ${budget.total_loss_db} dB loss · ${margin}`;
 }
 
 export function planClipboardText(plan) {
