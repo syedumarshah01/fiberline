@@ -2,6 +2,36 @@ import React, { useEffect, useState } from "react";
 import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
+import ImpactPanel from "./ImpactPanel.jsx";
+import TelemetryPanel from "./TelemetryPanel.jsx";
+import WorkOrderSheet from "./WorkOrderSheet.jsx";
+import QrLabelSheet from "./QrLabelSheet.jsx";
+import {
+  OLT_TYPE_LABELS,
+  formatDb,
+  lossEntryClass,
+  lossSourceLabel,
+  budgetStatusClass,
+  spliceLossClass,
+  splitterLabel,
+} from "../utils/lossView.js";
+import { cableLinkText } from "../utils/impactOverlay.js";
+import {
+  splitterRatio,
+  splitterCapacityLine,
+  splitterLossText,
+  portUsageText,
+  portStatePill,
+  boxCapacityLine,
+} from "../utils/splitterView.js";
+import {
+  formatPlanDistance,
+  routeBasis,
+  connectionChoiceLabel,
+  budgetTone,
+  budgetSummary,
+  planClipboardText,
+} from "../utils/connectionPlanView.js";
 
 function Pill({ status }) {
   return <span className={`pill pill-${status}`}>{status}</span>;
@@ -78,7 +108,7 @@ function getFiberColorName(coreNumber) {
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
-function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCable }) {
+function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDeleteEnclosure, onHoverCable, onOpenWorksheet, onOpenQrTag }) {
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -129,7 +159,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
     setEditingSplice(null);
     load();
     loadSplitters();
-  }, [enclosureId]);
+  }, [enclosureId, networkRevision]);
 
   // Any cable spotlight from this form must not outlive the panel itself.
   useEffect(() => () => onHoverCable?.(null), [onHoverCable]);
@@ -163,17 +193,20 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   const availableInCores = inCores.filter((c) => c.status === "available").sort((a, b) => a.core_number - b.core_number);
   const availableOutCores = outCores.filter((c) => c.status === "available").sort((a, b) => a.core_number - b.core_number);
   const availableCores = allCores.filter((c) => c.status === "available").sort((a, b) => a.core_number - b.core_number);
-  // Spliced cores can be used for branching (adding splitter to an already-spliced core)
-  const splicedCores = allCores.filter((c) => c.status === "spliced").sort((a, b) => a.core_number - b.core_number);
+  // A spliced IN core can still be a valid branch source: it is the upstream
+  // fibre already arriving at this box. OUT cores are intentionally not included
+  // in this list.
 
-  // Build list of splitter output ports that are empty (available for splicing)
-  // — a port is NOT empty when a child splitter is cascaded onto it either.
+  // Build list of splitter output ports that are empty (available for splicing).
+  // "Empty" is the API's own verdict (`usage === 'free'`), so the dropdown can
+  // never offer a port the capacity count does not also count as free — and a
+  // damaged port, which is empty but will not carry light, is not offered.
   const splitterPorts = splitters.flatMap((s) => {
     // Every port row names its splitter so two same-size splitters (e.g. two
     // 1:4s — common once you cascade) are distinguishable in the dropdown.
-    const displayName = s.name || `1:${s.split_count} splitter`;
+    const displayName = s.name || `${splitterRatio(s) || `1:${s.split_count}`} splitter`;
     return (s.ports || [])
-      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .filter((p) => (p.available !== undefined ? p.available : !p.output_core_id && !p.output_splitter_id))
       .map((p) => ({
         id: `port-${s.id}-${p.port_number}`,
         splitter_id: s.id,
@@ -193,10 +226,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
       .filter((p) => p.output_core_id)
       .map((p) => p.output_core_id)
   );
-  
-  // Filter out cores that are already used by splitters
-  const splicedCoresForBranching = splicedCores.filter(
-    (c) => !splitterInputCoreIds.includes(c.id) && !splitterOutputCoreIds.includes(c.id)
+  const branchedInBoxCoreIds = new Set(
+    (doc.splices || []).flatMap((splice) => [splice.core_a_id, splice.core_b_id]).filter(Boolean),
+  );
+
+  const splicedInCores = inCores.filter((c) => c.status === "spliced");
+  const splicedInCoresForBranching = splicedInCores.filter(
+    (c) =>
+      !branchedInBoxCoreIds.has(c.id) &&
+      !splitterInputCoreIds.includes(c.id) &&
+      !splitterOutputCoreIds.includes(c.id),
   );
   const availableInCoresForBranching = availableInCores.filter(
     (c) => !splitterInputCoreIds.includes(c.id) && !splitterOutputCoreIds.includes(c.id)
@@ -209,7 +248,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   // (a splitter fed from another splitter's output port).
   const freePortsForCascade = splitters.flatMap((s) =>
     (s.ports || [])
-      .filter((p) => !p.output_core_id && !p.output_splitter_id)
+      .filter((p) => (p.available !== undefined ? p.available : !p.output_core_id && !p.output_splitter_id))
       .map((p) => ({ splitter: s, port_number: p.port_number })),
   );
 
@@ -229,7 +268,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
   });
   const coreAPickerGroups = [
     { label: "Available IN cores", options: availableInCoresForBranching.map(coreOption) },
-    { label: "Spliced IN cores (for branching)", options: splicedCoresForBranching.map(coreOption) },
+    { label: "Spliced IN cores (branchable)", options: splicedInCoresForBranching.map(coreOption) },
     { label: "Splitter ports", options: splitterPorts.map(portOption) },
   ];
   const coreBPickerGroups = [
@@ -477,6 +516,22 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
           </button>
           <button
             className="btn"
+            onClick={() => onOpenWorksheet?.(doc.enclosure)}
+            title="Generate a printable splice checklist from this box's documentation"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            Work order
+          </button>
+          <button
+            className="btn"
+            onClick={() => onOpenQrTag?.(doc.enclosure)}
+            title="Print a QR sticker that opens this box's documentation when scanned"
+            style={{ padding: "4px 12px", fontSize: 12 }}
+          >
+            QR tag
+          </button>
+          <button
+            className="btn"
             onClick={startEditBox}
             title="Edit box code / name"
             style={{ padding: "4px 12px", fontSize: 12 }}
@@ -497,6 +552,21 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
           )}
         </div>
       </div>
+
+      {/* QC: auto-flag any splice in this box whose recorded loss is
+          suspiciously high — a probable bad splice worth re-doing. */}
+      {!!doc.qc_flags?.bad_splices?.length && (
+        <div
+          className="qc-flag"
+          title={doc.qc_flags.bad_splices
+            .map((s) => `${s.core_a} ↔ ${s.core_b}: ${formatDb(s.loss_db)} dB${s.tray ? ` (tray ${s.tray})` : ""}`)
+            .join("\n")}
+        >
+          ⚠ {doc.qc_flags.bad_splices.length} bad splice
+          {doc.qc_flags.bad_splices.length === 1 ? "" : "s"} — recorded loss above{" "}
+          {formatDb(doc.qc_flags.bad_splice_threshold_db)} dB (see the Loss column below)
+        </div>
+      )}
 
       {/* Inline box editor — code is what shows on the map label */}
       {editingBox && (
@@ -667,6 +737,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               <th>In (from)</th>
               <th>Out (to)</th>
               <th>Type</th>
+              <th>Loss dB</th>
               <th>Note</th>
               <th></th>
             </tr>
@@ -681,6 +752,18 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   {s.cable_b_code} #{s.core_b_number}
                 </td>
                 <td>{s.splice_type}</td>
+                <td
+                  className={spliceLossClass(s.loss_db, doc.qc_flags?.bad_splice_threshold_db)}
+                  title={
+                    s.loss_db != null
+                      ? spliceLossClass(s.loss_db, doc.qc_flags?.bad_splice_threshold_db) === "loss-flagged"
+                        ? "Bad splice — recorded loss above the threshold, re-splice recommended"
+                        : "Measured loss (OTDR / power meter)"
+                      : "No loss recorded — the loss budget assumes a default"
+                  }
+                >
+                  {s.loss_db != null ? formatDb(s.loss_db) : "—"}
+                </td>
                 <td
                   style={{ maxWidth: 140, cursor: "pointer" }}
                   title="Click to edit this splice (incl. its note)"
@@ -821,7 +904,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
             />
           </div>
           <div className="field">
-            <label>Loss (dB)</label>
+            <label>Measured loss (dB) — OTDR / power meter</label>
             <input
               type="number"
               step="0.01"
@@ -898,7 +981,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
       )}
 
       <p className="section-title">New splice</p>
-      {availableInCoresForBranching.length + availableOutCoresForBranching.length + splicedCoresForBranching.length + splitterPorts.length >= 1 ? (
+      {availableInCoresForBranching.length + splicedInCoresForBranching.length + availableOutCoresForBranching.length + splitterPorts.length >= 1 ? (
         <form onSubmit={handleSplice} style={{ marginBottom: 16 }}>
           <div className="field">
             <label>Core in (from upstream)</label>
@@ -947,12 +1030,26 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
         </p>
       )}
 
-      {/* Available splitter ports count */}
-      {splitterPorts.length > 0 && (
+      {/* Drop capacity in this box, counted once by the API (port_summary) */}
+      {splitters.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <p className="section-title">Available splitter ports</p>
+          <p className="section-title">Drop capacity here</p>
           <p className="empty-state" style={{ fontSize: 12 }}>
-            {splitterPorts.length} empty port{splitterPorts.length !== 1 ? "s" : ""} ready for assignment
+            {boxCapacityLine(
+              splitters.reduce(
+                (acc, s) => {
+                  const p = s.port_summary;
+                  if (!p) return acc;
+                  return {
+                    splitters: acc.splitters + 1,
+                    ports: acc.ports + p.total,
+                    free_ports: acc.free_ports + p.free,
+                  };
+                },
+                { splitters: 0, ports: 0, free_ports: 0 },
+              ),
+              splitters.length,
+            )}
           </p>
         </div>
       )}
@@ -967,14 +1064,16 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               style={{ marginBottom: 8 }}
             >
               <div style={{ fontWeight: 600 }}>{s.name}</div>
+              <div className="sub">{splitterCapacityLine(s)}</div>
               <div className="sub">
-                1:{s.split_count} · fed from{" "}
+                fed from{" "}
                 {s.parent
                   ? `${s.parent.name || `1:${s.parent.split_count} splitter`} — port ${s.parent.port_number}`
                   : s.input_core
                     ? `${s.input_core.cable_code} fiber #${s.input_core.core_number}`
                     : "—"}
                 {" "}· {s.splice_type}
+                {splitterLossText(s) ? ` · ${splitterLossText(s)}` : ""}
               </div>
               {s.notes ? (
                 <div className="sub" style={{ marginTop: 2 }}>📝 {s.notes}</div>
@@ -985,7 +1084,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                     <tr>
                       <th>Port</th>
                       <th>Core</th>
-                      <th>Cable</th>
+                      <th>Customer / feeds</th>
                       <th>Status</th>
                       <th></th>
                     </tr>
@@ -995,15 +1094,19 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                       <tr key={p.port_id}>
                         <td>{p.port_number}</td>
                         <td>{p.core_number ? `#${p.core_number}` : p.output_splitter_id ? "🔀" : "—"}</td>
-                        <td>{p.cable_code || (p.output_splitter_id ? `→ ${p.child_splitter_name || "splitter"}` : "—")}</td>
                         <td>
-                          {p.output_core_id ? (
-                            <Pill status={p.core_status} />
-                          ) : p.output_splitter_id ? (
-                            <span className="pill pill-reserved">cascaded</span>
-                          ) : (
-                            <span style={{ color: "var(--text-faint)", fontSize: 11 }}>empty</span>
-                          )}
+                          {portUsageText(p)}
+                          {p.customer_label && p.cable_code ? (
+                            <span className="sub" style={{ marginLeft: 6, fontSize: 10 }}>
+                              {p.cable_code}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td>
+                          {(() => {
+                            const pill = portStatePill(p);
+                            return <span className={pill.className}>{pill.text}</span>;
+                          })()}
                         </td>
                         <td>
                           {p.output_core_id ? (
@@ -1071,7 +1174,7 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                       onChange={(e) =>
                         setEditSplitterForm((f) => ({ ...f, name: e.target.value }))
                       }
-                      placeholder={`1:${s.split_count} splitter`}
+                      placeholder={`${splitterRatio(s)} splitter`}
                     />
                   </div>
                   <div className="field">
@@ -1174,6 +1277,8 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
               <option value={2}>1:2</option>
               <option value={4}>1:4</option>
               <option value={8}>1:8</option>
+              <option value={16}>1:16</option>
+              <option value={32}>1:32</option>
             </select>
           </div>
           <div className="field">
@@ -1192,9 +1297,9 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
                   </option>
                 ))}
               </optgroup>
-              {splicedCoresForBranching.length > 0 && (
-                <optgroup label="Spliced cores (for branching)">
-                  {splicedCoresForBranching.map((c) => (
+              {splicedInCoresForBranching.length > 0 && (
+                <optgroup label="Spliced IN cores (branchable)">
+                  {splicedInCoresForBranching.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.cable_code} #{c.core_number} ({getFiberColorName(c.core_number)})
                     </option>
@@ -1302,6 +1407,8 @@ function BoxDocumentation({ enclosureId, onChanged, onDeleteEnclosure, onHoverCa
 function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
   const [full, setFull] = useState(null);
   const [trace, setTrace] = useState(null);
+  const [budget, setBudget] = useState(null);
+  const [tracedCoreId, setTracedCoreId] = useState(null);
   const [insertForm, setInsertForm] = useState(null);
   const [splitInfo, setSplitInfo] = useState(null);
   const [splitRatio, setSplitRatio] = useState(0.5);
@@ -1313,6 +1420,8 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
   useEffect(() => {
     setTrace(null);
+    setBudget(null);
+    setTracedCoreId(null);
     setInsertForm(null);
     setSplitInfo(null);
     setSplitRatio(0.5);
@@ -1432,6 +1541,8 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       });
       setInsertForm(null);
       setTrace(null);
+      setBudget(null);
+      setTracedCoreId(null);
       setSplitLngLat(null);
       if (onSplitPointChange) onSplitPointChange(null, null);
       await api.getCable(cable.id).then(setFull);
@@ -1444,10 +1555,17 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
             `available in the new joint, ready to splice when needed.`
           : `No fibers were in use across the cut point, so nothing was spliced automatically — ` +
             `every core is available in the new joint, ready to splice when needed.`;
+      // The API reports here when it could not link the two halves (a database
+      // without migration 20260101000014) — the cut happened, but a failure
+      // simulation upstream of the new box will stop at it until that is fixed.
+      const warnings = result.warnings?.length
+        ? `\n\n⚠ ${result.warnings.join('\n')}`
+        : "";
       alert(
         `Done! New pole and enclosure "${result.enclosure.code}" placed.\n` +
         `Upstream: ${Math.round(result.split_info.upstream_length_m)}m → Box → Downstream: ${Math.round(result.split_info.downstream_length_m)}m\n` +
-        spliceLine
+        spliceLine +
+        warnings
       );
     } catch (err) {
       alert(err.message);
@@ -1461,8 +1579,21 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
       code: full.code || "",
       name: full.name || "",
       customer_label: full.customer_label || "",
+      attenuation_db_per_km: full.attenuation_db_per_km ?? "",
     });
     setEditingCable(true);
+  }
+
+  // Switching OLT type persists the project-wide budget setting, then
+  // recomputes this trace's budget against the new budget constant.
+  async function handleOltTypeChange(oltType) {
+    if (!tracedCoreId) return;
+    try {
+      await api.updateSettings({ olt_type: oltType });
+      setBudget(await api.getLossBudget(tracedCoreId));
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   async function handleSaveCable(e) {
@@ -1473,6 +1604,10 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
         code: cableForm.code,
         name: cableForm.name.trim() ? cableForm.name.trim() : null,
         customer_label: cableForm.customer_label.trim() ? cableForm.customer_label.trim() : null,
+        attenuation_db_per_km:
+          cableForm.attenuation_db_per_km === "" || cableForm.attenuation_db_per_km == null
+            ? null
+            : Number(cableForm.attenuation_db_per_km),
       });
       setEditingCable(false);
       await api.getCable(cable.id).then(setFull);
@@ -1525,6 +1660,15 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
         </div>
       </div>
 
+      {/* Mid-span link: which half this cable continues, and which halves
+          continue it. Present whether the database records the link or the app
+          inferred it from cable naming — the line says which. */}
+      {cableLinkText(full) && (
+        <p className={full.continuation_inferred ? "sub impact-inferred" : "sub"}>
+          {cableLinkText(full)}
+        </p>
+      )}
+
       {/* Inline cable editor — code is what shows on the map label */}
       {editingCable && (
         <form onSubmit={handleSaveCable} className="inline-edit-card" style={{ marginBottom: 12 }}>
@@ -1549,6 +1693,19 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
             <input
               value={cableForm.customer_label}
               onChange={(e) => setCableForm((f) => ({ ...f, customer_label: e.target.value }))}
+            />
+          </div>
+          <div className="field">
+            <label>Attenuation (dB/km) — blank = 0.35 singlemode default</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={cableForm.attenuation_db_per_km}
+              onChange={(e) =>
+                setCableForm((f) => ({ ...f, attenuation_db_per_km: e.target.value }))
+              }
+              placeholder="0.35"
             />
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -1593,7 +1750,11 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                 <button
                   className="btn"
                   style={{ padding: "3px 8px", fontSize: 11 }}
-                  onClick={() => api.traceFiber(c.id).then(setTrace)}
+                  onClick={() => {
+                    setTracedCoreId(c.id);
+                    api.traceFiber(c.id).then(setTrace).catch(() => setTrace(null));
+                    api.getLossBudget(c.id).then(setBudget).catch(() => setBudget(null));
+                  }}
                 >
                   Trace
                 </button>
@@ -1604,8 +1765,13 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
                     onClick={async () => {
                       if (!confirm(`Unsplice core #${c.core_number}? It will return to available.`)) return;
                       try {
-                        await api.unspliceCore(c.id);
+                        // For an inserted span, target the splice at this cable's
+                        // downstream endpoint (the middle enclosure). A core can
+                        // also have an older splice elsewhere, so selecting by
+                        // core alone can remove the wrong connection.
+                        await api.unspliceCore(c.id, full.to_enclosure_id);
                         await api.getCable(cable.id).then(setFull);
+                        onChanged?.();
                         alert(`Core #${c.core_number} unspliced successfully`);
                       } catch (err) {
                         alert(err.message);
@@ -1769,24 +1935,129 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 
       {trace && (
         <div>
-          <p className="section-title">Fiber path (req #6)</p>
-          {trace.hops.map((hop, i) =>
-            hop.cable_code ? (
-              <div className="list-item" key={i}>
-                <div className="code">
-                  {hop.cable_code} · core #{hop.core_number}
+          <p className="section-title">Fiber path &amp; loss budget</p>
+
+          {/* Budget summary: total vs OLT budget, with margin & verdict */}
+          {budget && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="summary-grid cols-3">
+                <div className="summary-card">
+                  <div className="n">{formatDb(budget.total_loss_db)} dB</div>
+                  <div className="l">Path loss</div>
                 </div>
-                <div className="sub">
-                  {hop.cable_type}
-                  <Pill status={hop.core_status} />
+                <div className="summary-card">
+                  <div className="n">{formatDb(budget.budget_db)} dB</div>
+                  <div className="l">{OLT_TYPE_LABELS[budget.olt_type] || budget.olt_type} budget</div>
+                </div>
+                <div className="summary-card">
+                  <div className={`n ${budgetStatusClass(budget.status)}`}>
+                    {formatDb(budget.margin_db)} dB
+                  </div>
+                  <div className="l">Margin — {budget.status}</div>
                 </div>
               </div>
-            ) : (
-              <div className="empty-state" key={i} style={{ paddingLeft: 8 }}>
-                ↓ spliced ({hop.splice_type})
+              <div className="loss-controls">
+                <label htmlFor="olt-type-select">OLT type</label>
+                <select
+                  id="olt-type-select"
+                  value={budget.olt_type}
+                  onChange={(e) => handleOltTypeChange(e.target.value)}
+                  title="Project-wide setting: which OLT/transport budget to compare against"
+                >
+                  {Object.entries(OLT_TYPE_LABELS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="loss-legend">
+                  <span className="loss-measured">✓ measured</span>
+                  {" · "}
+                  <span className="loss-assumed">~ assumed (default)</span>
+                  {!!budget.counts?.flagged_bad_splices && (
+                    <>
+                      {" · "}
+                      <span className="loss-flagged">⚠ bad splice</span>
+                    </>
+                  )}
+                </span>
               </div>
-            ),
+              {!!budget.warnings?.length && (
+                <div className="loss-warnings">
+                  {budget.warnings.map((w, i) => (
+                    <div key={i}>⚠ {w}</div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
+
+          {/* The path itself, annotated with per-segment loss + running total.
+              With a budget we render its breakdown (same order as the hops,
+              plus splitter crossings); without one we fall back to raw hops. */}
+          {(budget ? budget.breakdown : trace.hops).map((hop, i) => {
+            if (hop.type === "splitter") {
+              return (
+                <div className="empty-state loss-row" key={i}>
+                  <span>
+                    ◇ splitter {splitterLabel(hop)}
+                  </span>
+                  {budget && (
+                    <span className={`loss-col ${lossEntryClass(hop)}`}>
+                      <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>
+                      <span className="loss-src">{lossSourceLabel(hop)}</span>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            if (hop.core_id) {
+              return (
+                <div className="list-item loss-row" key={i}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="code">
+                      {hop.cable_code} · core #{hop.core_number}
+                    </div>
+                    <div className="sub">
+                      {hop.cable_type}
+                      <Pill status={hop.core_status} />
+                    </div>
+                  </div>
+                  {budget && (
+                    <span className={`loss-col ${lossEntryClass(hop)}`}>
+                      <span>
+                        {hop.loss_db == null ? "—" : `+${formatDb(hop.loss_db)} dB`} · Σ{" "}
+                        {formatDb(hop.running_db)}
+                      </span>
+                      <span className="loss-src">
+                        {hop.length_missing
+                          ? "length unknown"
+                          : hop.duplicate_cable
+                            ? "same cable — not re-counted"
+                            : `${Math.round(hop.length_m)} m × ${formatDb(hop.attenuation_db_per_km)} dB/km`}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              );
+            }
+            const through = hop.splice_type === "continuation";
+            return (
+              <div className="empty-state loss-row" key={i}>
+                <span>
+                  {through
+                    ? `↓ through ${hop.continues_to_cable_code || "the inserted closure"} (fusion splice)`
+                    : `↓ spliced (${hop.splice_type})`}
+                </span>
+                {budget && (
+                  <span className={`loss-col ${lossEntryClass(hop)}`}>
+                    <span>+{formatDb(hop.loss_db)} dB · Σ {formatDb(hop.running_db)}</span>
+                    <span className="loss-src">{lossSourceLabel(hop)}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1796,9 +2067,15 @@ function CableDetail({ cable, onSplitPointChange, onChanged, onDeleteCable }) {
 // ---------------------------------------------------------------------------
 // CustomerLookupPanel — shown in locate-customer mode
 // ---------------------------------------------------------------------------
-function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreateCustomer }) {
-  const [result, setResult] = useState(null);
-  const [route, setRoute] = useState(null);
+function CustomerLookupPanel({
+  customerPoint,
+  customers,
+  customerPlan,
+  customerPlanLoading,
+  customerPlanError,
+  onShowCustomerPlanBox,
+  onCreateCustomer,
+}) {
   const [form, setForm] = useState({
     customer_code: "",
     name: "",
@@ -1806,53 +2083,31 @@ function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreate
     email: "",
     address: "",
   });
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!customerPoint) {
-      setResult(null);
-      setRoute(null);
-      return;
+    const matched = customerPlan?.query?.address;
+    if (matched) setForm((current) => (current.address ? current : { ...current, address: matched }));
+  }, [customerPlan?.query?.address]);
+
+  useEffect(() => setCopied(false), [customerPoint]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(planClipboardText(customerPlan));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setCopied(false);
+      alert("Could not copy the plan. Select the plan text manually instead.");
     }
-    api
-      .customerLookup(customerPoint.lat, customerPoint.lng)
-      .then((lookupResult) => {
-        setResult(lookupResult);
-        // If we have a recommended box, fetch the route
-        if (lookupResult.recommended_box) {
-          return api.getCustomerRoute(
-            customerPoint.lat,
-            customerPoint.lng,
-            lookupResult.recommended_box.id
-          );
-        }
-        return null;
-      })
-      .then((routeResult) => {
-        if (routeResult) {
-          setRoute(routeResult);
-        }
-      })
-      .catch(() => {
-        setResult(null);
-        setRoute(null);
-      });
-  }, [customerPoint]);
+  }
 
   async function handleCreate(e) {
     e.preventDefault();
     try {
-      await api.createCustomer({
-        ...form,
-        lat: customerPoint.lat,
-        lng: customerPoint.lng,
-      });
-      setForm({
-        customer_code: "",
-        name: "",
-        phone: "",
-        email: "",
-        address: "",
-      });
+      await api.createCustomer({ ...form, lat: customerPoint.lat, lng: customerPoint.lng });
+      setForm({ customer_code: "", name: "", phone: "", email: "", address: "" });
       onCreateCustomer?.();
       alert("Customer registered");
     } catch (err) {
@@ -1860,88 +2115,116 @@ function CustomerLookupPanel({ customerPoint, customers, customerRoute, onCreate
     }
   }
 
+  const connection = customerPlan?.connection;
+  const budget = customerPlan?.optical_budget;
+  const boxId = customerPlan?.enclosure?.id;
+
   return (
     <div>
-      <p className="section-title">Customer lookup</p>
+      <p className="section-title">Customer connection plan</p>
       {!customerPoint ? (
-        <p className="empty-state">Click the map at the customer's location.</p>
+        <p className="empty-state">
+          Click the map at the customer&rsquo;s location to design the route, capacity assignment, and optical budget.
+        </p>
       ) : (
         <>
-          {result && (
-            <div style={{ marginBottom: 16 }}>
-              <p className="empty-state">
-                Nearby boxes: {result.nearby_boxes.length}
-              </p>
-              {result.recommended_box && (
-                <p className="empty-state">
-                  Recommended: <b>{result.recommended_box.code}</b> (
-                  {result.recommended_box.available_cores} free,{" "}
-                  {Math.round(result.recommended_box.distance_m)}m away)
-                </p>
+          {customerPlanLoading && !customerPlan && <p className="empty-state">Designing the connection plan…</p>}
+          {customerPlanError && <p className="empty-state customer-plan-error">{customerPlanError}</p>}
+
+          {customerPlan && (
+            <div className="customer-plan" style={{ marginBottom: 16 }}>
+              <div className={`customer-plan-header tone-${budgetTone(budget)}`}>
+                <span className="customer-plan-title">{customerPlan.enclosure?.code || "Connection plan"}</span>
+                {budget && <span>{budget.status}</span>}
+              </div>
+
+              <div className="customer-plan-facts">
+                <div className="customer-plan-fact">
+                  <div className="l">Route</div>
+                  <div className="v">{routeBasis(customerPlan.route)}</div>
+                </div>
+                <div className="customer-plan-fact">
+                  <div className="l">Capacity</div>
+                  <div className="v">{connectionChoiceLabel(connection)}</div>
+                </div>
+                <div className="customer-plan-fact">
+                  <div className="l">Box distance</div>
+                  <div className="v">{formatPlanDistance(customerPlan.enclosure?.distance_m)} direct</div>
+                </div>
+              </div>
+
+              {connection?.type === "bring_capacity" && (
+                <div className="customer-plan-source">
+                  <p className="section-title">Source path</p>
+                  {connection.source?.source_enclosure ? (
+                    <p><strong>{connection.source.source_enclosure.code || connection.source.source_enclosure.id}</strong> · core {connection.source.source_core?.core_number ?? "?"} · {connection.source.source_core?.cable_code || "source cable"}</p>
+                  ) : (
+                    <p>Source core and path must be designed before construction.</p>
+                  )}
+                  {connection.source?.path?.length > 0 && (
+                    <ol>{connection.source.path.map((edge, index) => <li key={`${edge.cable_id}-${index}`}>{edge.from_code} → {edge.to_code} · {edge.cable_code || edge.cable_id}</li>)}</ol>
+                  )}
+                </div>
               )}
-              {result.suggested_source && (
-                <p className="empty-state">
-                  Suggested source: {result.suggested_source.source_enclosure_id.slice(0, 8)}… (
-                  {result.suggested_source.available_cores} free,{" "}
-                  {result.suggested_source.hops} hops)
-                </p>
+
+              <div className="customer-plan-budget">
+                <p className="section-title">Optical budget</p>
+                <div className="customer-plan-budget-summary">{budgetSummary(budget)}</div>
+                {budget && (
+                  <div className="customer-plan-budget-grid">
+                    <span>Loss <strong>{budget.total_loss_db} dB</strong></span>
+                    <span>OLT limit <strong>{budget.budget_db} dB</strong></span>
+                    <span>Required <strong>{budget.required_margin_db} dB</strong></span>
+                    <span>Remaining <strong>{budget.remaining_margin_db} dB</strong></span>
+                  </div>
+                )}
+                {(budget?.breakdown?.length > 0 || budget?.assumptions?.length > 0) && (
+                  <details className="customer-plan-loss-details">
+                    <summary>Loss details and assumptions</summary>
+                    {budget.breakdown?.length > 0 && (
+                      <ul>
+                        {budget.breakdown.map((item, index) => (
+                          <li key={`${item.type}-${item.cable_id || item.splice_id || item.splitter_id || index}`}>
+                            <span>{item.type}{item.cable_code ? ` · ${item.cable_code}` : ""}</span>
+                            <strong>{item.loss_db == null ? "unknown" : `+${item.loss_db} dB`} · {item.running_db ?? "—"} dB</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {budget.assumptions?.map((assumption, index) => <p className="sub customer-plan-assumption" key={index}>{assumption}</p>)}
+                  </details>
+                )}
+              </div>
+
+              <div className="customer-plan-steps">
+                <p className="section-title">Ordered installation steps</p>
+                <ol>{customerPlan.steps?.map((step, index) => <li key={index}>{step}</li>)}</ol>
+              </div>
+
+              {customerPlan.warnings?.length > 0 && (
+                <details className="customer-plan-warnings">
+                  <summary>{customerPlan.warnings.length} note{customerPlan.warnings.length === 1 ? "" : "s"}</summary>
+                  <div className="impact-warnings">
+                    {customerPlan.warnings.map((warning, index) => <p key={index} className="impact-warning">{warning}</p>)}
+                  </div>
+                </details>
               )}
-              {route && (
-                <p className="empty-state" style={{ marginTop: 8, color: "var(--teal)" }}>
-                  Route distance: {Math.round(route.length_m)}m along the street
-                </p>
-              )}
+
+              <div className="customer-plan-actions">
+                {boxId && <button className="btn" type="button" onClick={() => onShowCustomerPlanBox?.(boxId)}>Show {customerPlan.enclosure?.code || "enclosure"} on map</button>}
+                <button className="btn" type="button" onClick={handleCopy}>{copied ? "Copied" : "Copy plan"}</button>
+              </div>
             </div>
           )}
+
           <form onSubmit={handleCreate} style={{ marginBottom: 16 }}>
-            <div className="field">
-              <label>Customer code</label>
-              <input
-                value={form.customer_code}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, customer_code: e.target.value }))
-                }
-              />
-            </div>
-            <div className="field">
-              <label>Name</label>
-              <input
-                value={form.name}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, name: e.target.value }))
-                }
-              />
-            </div>
-            <div className="field">
-              <label>Phone</label>
-              <input
-                value={form.phone}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, phone: e.target.value }))
-                }
-              />
-            </div>
-            <div className="field">
-              <label>Email</label>
-              <input
-                value={form.email}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, email: e.target.value }))
-                }
-              />
-            </div>
-            <div className="field">
-              <label>Address</label>
-              <input
-                value={form.address}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, address: e.target.value }))
-                }
-              />
-            </div>
-            <button className="btn btn-primary btn-block" type="submit">
-              Register customer
-            </button>
+            <p className="section-title">Register the customer</p>
+            <div className="field"><label>Customer code</label><input value={form.customer_code} onChange={(e) => setForm((f) => ({ ...f, customer_code: e.target.value }))} /></div>
+            <div className="field"><label>Name</label><input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
+            <div className="field"><label>Phone</label><input value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} /></div>
+            <div className="field"><label>Email</label><input value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></div>
+            <div className="field"><label>Address</label><input value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} /></div>
+            <button className="btn btn-primary btn-block" type="submit">Register customer</button>
           </form>
         </>
       )}
@@ -1956,18 +2239,112 @@ export default function RightPanel({
   mode,
   selectedEnclosure,
   selectedCable,
+  selectedPole,
   customerPoint,
+  customerPlan,
+  customerPlanLoading,
+  customerPlanError,
+  onShowCustomerPlanBox,
   customers,
+  impact,
+  telemetry,
+  telemetryError,
+  impactLoading,
+  impactError,
+  headends,
+  onSimulateFailure,
+  onClearImpact,
+  onSetNetworkRoot,
   onCreateCustomer,
   onChanged,
+  networkRevision = 0,
   onDeleteEnclosure,
   onDeleteCable,
   onSplitPointChange,
   onHoverCable,
 }) {
+  // Failure simulation is anchored at a box only. A cable is not a failure
+  // target: it is the span carrying the fibres, and the simulation must be able
+  // to keep the incoming span lit while cascading through connected outputs.
+  const failureTarget = selectedEnclosure
+    ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
+    : null;
+  const fieldTarget = selectedEnclosure
+    ? { kind: "box", id: selectedEnclosure.id, label: selectedEnclosure.code }
+    : selectedCable
+      ? { kind: "cable", id: selectedCable.id, label: selectedCable.code }
+      : selectedPole
+        ? { kind: "pole", id: selectedPole.id, label: selectedPole.code }
+        : null;
+
+  // Field work, for whatever is selected: a sticker that opens this thing's
+  // documentation when scanned, and (for a box) the splice worksheet.
+  const [qrTarget, setQrTarget] = useState(null);
+  const [worksheetFor, setWorksheetFor] = useState(null);
+
   return (
     <>
-      {mode === "view" && !selectedEnclosure && !selectedCable && (
+      {qrTarget && (
+        <QrLabelSheet
+          kind={qrTarget.kind}
+          id={qrTarget.id}
+          label={qrTarget.label}
+          onClose={() => setQrTarget(null)}
+        />
+      )}
+      {worksheetFor && (
+        <WorkOrderSheet
+          boxId={worksheetFor.id}
+          boxCode={worksheetFor.label}
+          onClose={() => setWorksheetFor(null)}
+        />
+      )}
+
+      {fieldTarget && mode === "view" && (
+        <div className="field-kit">
+          <button
+            className="btn"
+            onClick={() => setQrTarget(fieldTarget)}
+            title={`Print a QR sticker for ${fieldTarget.label} — scanning it opens the documentation`}
+          >
+            QR tag
+          </button>
+          {fieldTarget.kind === "box" && (
+            <button
+              className="btn"
+              onClick={() => setWorksheetFor(fieldTarget)}
+              title="A printable splice checklist generated from this box's documentation"
+            >
+              Splice worksheet
+            </button>
+          )}
+        </div>
+      )}
+      <TelemetryPanel telemetry={telemetry} error={telemetryError} />
+
+      {impact || impactLoading || impactError ? (
+        <ImpactPanel
+          impact={impact}
+          loading={impactLoading}
+          error={impactError}
+          headends={headends}
+          onClear={onClearImpact}
+          onSimulate={() => failureTarget && onSimulateFailure?.(failureTarget)}
+          onSetNetworkRoot={onSetNetworkRoot}
+        />
+      ) : (
+        failureTarget && (
+          <button
+            className="btn btn-block btn-danger impact-simulate"
+            onClick={() => onSimulateFailure?.(failureTarget)}
+            title="Take this element out of the network and see who goes dark"
+          >
+            Simulate failure of {failureTarget.label}
+          </button>
+        )
+      )}
+
+      {mode === "view" && !selectedEnclosure && !selectedCable && !failureTarget && (
         <p className="empty-state">Select a box or cable to see details.</p>
       )}
 
@@ -1975,8 +2352,11 @@ export default function RightPanel({
         <BoxDocumentation
           enclosureId={selectedEnclosure.id}
           onChanged={onChanged}
+          networkRevision={networkRevision}
           onDeleteEnclosure={onDeleteEnclosure}
           onHoverCable={onHoverCable}
+          onOpenWorksheet={(box) => setWorksheetFor({ id: box.id, label: box.code })}
+          onOpenQrTag={(box) => setQrTarget({ kind: "box", id: box.id, label: box.code })}
         />
       )}
 
@@ -1993,6 +2373,10 @@ export default function RightPanel({
         <CustomerLookupPanel
           customerPoint={customerPoint}
           customers={customers}
+          customerPlan={customerPlan}
+          customerPlanLoading={customerPlanLoading}
+          customerPlanError={customerPlanError}
+          onShowCustomerPlanBox={onShowCustomerPlanBox}
           onCreateCustomer={onCreateCustomer}
         />
       )}

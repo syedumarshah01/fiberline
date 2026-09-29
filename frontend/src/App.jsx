@@ -1,11 +1,13 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import MapView from "./components/MapView.jsx";
 import MapViewGoogle from "./components/MapViewGoogle.jsx";
 import MapViewMapbox from "./components/MapViewMapbox.jsx";
 import LeftPanel from "./components/LeftPanel.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import { parseDeepLink, syncLocation } from "./utils/deepLink.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
+import { impactOverlay, overlayHeadline, failureTitle } from "./utils/impactOverlay.js";
 import { LoadScript } from "@react-google-maps/api";
 import { LocateFixed, Sun, Moon, Type } from "lucide-react";
 
@@ -58,6 +60,21 @@ export default function App() {
   const [selectedEnclosure, setSelectedEnclosure] = useState(null);
   const [selectedCable, setSelectedCable] = useState(null);
   // Cable spotlighted because one of its fibers is hovered in the splice form
+  // Outage simulation: the result of /api/impact/simulate, the request that
+  // produced it (kept so it can be re-run after fixing the network root), and
+  // the network roots themselves.
+  const [impact, setImpact] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState(null);
+  const [failureTarget, setFailureTarget] = useState(null);
+  // Current OLT/ONT state is independent of the manual simulation. When a
+  // correlated box is available, the live response may supply an impact report
+  // too; manual simulation remains usable when this feed is empty or absent.
+  const [telemetry, setTelemetry] = useState(null);
+  const [telemetryError, setTelemetryError] = useState(null);
+  const manualImpactRef = useRef(false);
+  const liveFailureTargetRef = useRef(null);
+  const [headends, setHeadends] = useState([]);
   const [highlightCableId, setHighlightCableId] = useState(null);
   const [splitPointLngLat, setSplitPointLngLat] = useState(null);
   const [splitRatio, setSplitRatio] = useState(null);
@@ -76,23 +93,42 @@ export default function App() {
     return Number.isFinite(saved) ? Math.min(1, Math.max(0.2, saved)) : 1;
   });
   
-  // Customer route (for locate-customer mode)
+  // Locate-customer mode: one connection-plan response drives both the design
+  // panel and the map line, so the route basis and distance cannot disagree.
   const [customerRoute, setCustomerRoute] = useState(null);
+  const [customerPlan, setCustomerPlan] = useState(null);
+  const [customerPlanLoading, setCustomerPlanLoading] = useState(false);
+  const [customerPlanError, setCustomerPlanError] = useState(null);
   
   // Theme state
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("fiberline-theme") || "dark";
   });
   
+  // A scanned QR code lands here with `?box=…` (or pole/cable/customer). State
+  // for what was requested, so it opens once the network has loaded.
+  const [qrNotice, setQrNotice] = useState(null);
+
   // Resizable right panel state
   const [rightPanelWidth, setRightPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
+  // Bump this whenever network data changes so an already-open documentation
+  // panel refetches after operations such as inserting a mid-span enclosure.
+  const [networkRevision, setNetworkRevision] = useState(0);
 
   const reloadAll = useCallback(() => {
+    setNetworkRevision((revision) => revision + 1);
     api.listPoles().then(setPoles).catch(console.error);
     api.listEnclosures().then(setEnclosures).catch(console.error);
     api.listCables().then(setCables).catch(console.error);
     api.listCustomers().then(setCustomers).catch(console.error);
+    // Root list drives the "is this network rooted?" affordances. A database
+    // that has not run the headends migration answers 404 — treat that as
+    // "no roots yet" rather than an error.
+    api
+      .listHeadends()
+      .then(setHeadends)
+      .catch(() => setHeadends([]));
     api
       .capacityByEnclosure()
       .then((rows) =>
@@ -106,6 +142,111 @@ export default function App() {
   useEffect(() => {
     reloadAll();
   }, [reloadAll]);
+
+  // Live status is deliberately best-effort. SSE gives an external OLT feed
+  // immediate updates, while polling remains the safe fallback for proxies and
+  // installations with no configured stream. Neither path is required for the
+  // map or manual box simulation to work.
+  useEffect(() => {
+    let cancelled = false;
+    let stream = null;
+
+    const applyTelemetry = (snapshot) => {
+      if (cancelled || !snapshot) return;
+      setTelemetry(snapshot);
+      setTelemetryError(snapshot.error || null);
+      const correlated = snapshot.correlation?.impact;
+      const likely = snapshot.correlation?.likely_failure;
+      if (correlated && likely?.kind === "box" && !manualImpactRef.current) {
+        const target = { kind: "box", id: likely.id, label: likely.label || likely.id };
+        liveFailureTargetRef.current = target;
+        setImpact(correlated);
+        setFailureTarget(target);
+      } else if (!correlated && !manualImpactRef.current) {
+        // A recovered ONT or a stale-only snapshot must remove the previous
+        // live impact; otherwise the map would keep a red outage forever.
+        setImpact((current) => (current?.telemetry_correlated ? null : current));
+        const previous = liveFailureTargetRef.current;
+        if (previous) {
+          setFailureTarget((current) => current?.id === previous.id ? null : current);
+          liveFailureTargetRef.current = null;
+        }
+      }
+    };
+
+    const refresh = () => {
+      api.getTelemetryStatus()
+        .then(applyTelemetry)
+        .catch((error) => {
+          if (!cancelled) setTelemetryError(error.message || "Telemetry unavailable");
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30000);
+
+    if (typeof window !== "undefined" && typeof window.EventSource === "function") {
+      stream = new window.EventSource(api.telemetryStreamUrl());
+      stream.addEventListener("telemetry", (event) => {
+        try {
+          applyTelemetry(JSON.parse(event.data));
+        } catch {
+          setTelemetryError("Telemetry stream returned invalid JSON");
+        }
+      });
+      stream.onerror = () => {
+        // Keep polling; a feed outage must not turn into a broken map.
+        stream?.close();
+      };
+    }
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      stream?.close();
+    };
+  }, []);
+
+  /**
+   * Open whatever a scanned tag asked for. Runs when the network finishes
+   * loading (and once more if the target arrives late), because a QR link is
+   * often the very first request this browser ever made to the app.
+   *
+   * A tag whose thing has since been deleted says so instead of opening an empty
+   * panel — the sticker on the pole outlives the records.
+   */
+  const deepLink = useRef(parseDeepLink(typeof window === "undefined" ? "" : window.location.search));
+  useEffect(() => {
+    const target = deepLink.current;
+    if (!target) return;
+    const table = { pole: poles, box: enclosures, cable: cables, customer: customers }[target.kind] || [];
+    if (!table.length) return; // still loading
+    const match = table.find((row) => String(row.id) === String(target.id));
+    if (!match) {
+      setQrNotice(`That ${target.kind === "box" ? "box" : target.kind} (${target.id.slice(0, 8)}…) is not in this network any more.`);
+      deepLink.current = null;
+      return;
+    }
+    if (target.kind === "pole") handleSelectPole(match);
+    else if (target.kind === "box") handleSelectEnclosure(match);
+    else if (target.kind === "cable") handleSelectCable(match);
+    else {
+      // A customer's tag lives on their drop: what a technician needs from it is
+      // the box serving them, so open that box and say why.
+      const serving = enclosures.find((enc) => String(enc.id) === String(match.enclosure_id));
+      if (serving) {
+        handleSelectEnclosure(serving);
+        setQrNotice(`${match.code ? `${match.code} — ` : ""}served from ${serving.code}.`);
+        deepLink.current = null;
+        return;
+      }
+      setQrNotice(`Customer ${match.code || match.id.slice(0, 8)} has no box recorded.`);
+      deepLink.current = null;
+      return;
+    }
+    setQrNotice(null);
+    deepLink.current = null; // open it once, not on every reload
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poles, enclosures, cables, customers]);
 
   // Save theme preference
   useEffect(() => {
@@ -136,6 +277,59 @@ export default function App() {
   function handleModeChange(next) {
     setMode(next);
     resetPending();
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  function clearImpact() {
+    setImpact(null);
+    setImpactError(null);
+    setImpactLoading(false);
+  }
+
+  /**
+   * Take the selected box out of the network and report the downstream fallout.
+   * A failure is intentionally anchored at a box: the graph can then follow
+   * connected fibres and splitter ports away from that box without treating the
+   * input span as a failed cable.
+   */
+  async function handleSimulateFailure(target) {
+    if (!target || target.kind !== "box") return;
+    manualImpactRef.current = true;
+    setFailureTarget(target);
+    setImpactLoading(true);
+    setImpactError(null);
+    try {
+      const result = await api.simulateImpact(target.kind, target.id);
+      setImpact(result);
+    } catch (err) {
+      setImpact(null);
+      setImpactError(err.message);
+    } finally {
+      setImpactLoading(false);
+    }
+  }
+
+  function handleClearImpact() {
+    manualImpactRef.current = false;
+    liveFailureTargetRef.current = null;
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  /**
+   * Root the segment at a box (the OLT/CO the feeder lands in) and immediately
+   * re-run the simulation that was blocked on it — the point of setting the
+   * root is to make that answer trustworthy.
+   */
+  async function handleSetNetworkRoot(boxId) {
+    try {
+      await api.createHeadend({ root_enclosure_id: boxId, site_type: "olt" });
+      reloadAll();
+      if (failureTarget) await handleSimulateFailure(failureTarget);
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   function handleMapClick(latlng) {
@@ -148,7 +342,9 @@ export default function App() {
         return { ...draft, routePoints: [...draft.routePoints, latlng] };
       });
     }
-    // In view mode, clicking on the map clears any selection
+    // In view mode, clicking on the map clears any selection — but a simulated
+    // outage stays on screen until it is cleared, so the user can pan around
+    // the dark area without losing the analysis.
     if (mode === "view") {
       setSelectedPole(null);
       setSelectedEnclosure(null);
@@ -159,7 +355,11 @@ export default function App() {
   }
 
   function handlePoleClick(pole) {
-    if (mode === "add-enclosure") setPendingEnclosurePole(pole);
+    if (mode === "add-enclosure") {
+      setPendingEnclosurePole(pole);
+      return;
+    }
+    if (mode === "view") handleSelectPole(pole);
   }
 
   function handleEnclosureClick(enc) {
@@ -172,6 +372,7 @@ export default function App() {
       });
       return;
     }
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedCable(null);
   }
@@ -195,27 +396,48 @@ export default function App() {
   }
 
   function handleSelectPole(pole) {
+    if (selectedPole?.id !== pole.id) clearImpact();
     setSelectedPole(pole);
     setSelectedEnclosure(null);
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("pole", pole?.id);
+  }
+
+  /**
+   * Bring the enclosure chosen by the customer connection plan onto the map,
+   * using the existing fly-to and selection styling.
+   */
+  function handleShowCustomerPlanBox(boxId) {
+    const match = enclosures.find((enc) => String(enc.id) === String(boxId));
+    if (!match) {
+      // A box that is on the map but not in the loaded list (filtered out, or
+      // just added by somebody else) — refresh and let the next click find it.
+      reloadAll();
+      return;
+    }
+    handleSelectEnclosure(match);
   }
 
   function handleSelectEnclosure(enc) {
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedPole(null);
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("box", enc?.id);
   }
 
   function handleSelectCable(cable) {
+    if (selectedCable?.id !== cable.id) clearImpact();
     setSelectedCable(cable);
     setSelectedPole(null);
     setSelectedEnclosure(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("cable", cable?.id);
   }
 
   async function handleCreatePole(data) {
@@ -339,6 +561,9 @@ export default function App() {
     setTimeout(() => setIsTracking(false), 1000);
   }
 
+  // What the map paints red — one derivation shared by all three providers.
+  const overlay = useMemo(() => impactOverlay(impact, telemetry), [impact, telemetry]);
+
   const pendingCableRoute = cableDraft.from
     ? [
         [cableDraft.from.lat, cableDraft.from.lng],
@@ -371,33 +596,49 @@ export default function App() {
     };
   }, [isResizing]);
 
-  // Fetch customer route when customer point is set
+  // Design the customer connection when a point is dropped. The response is the
+  // single source for the enclosure, route geometry, capacity choice, steps, and
+  // optical budget shown in the panel and on the map.
   useEffect(() => {
-    if (customerPoint && mode === "locate-customer") {
-      api.customerLookup(customerPoint.lat, customerPoint.lng)
-        .then((result) => {
-          if (result.recommended_box) {
-            return api.getCustomerRoute(
-              customerPoint.lat,
-              customerPoint.lng,
-              result.recommended_box.id
-            );
-          }
-          return null;
-        })
-        .then((route) => {
-          if (route) {
-            setCustomerRoute(route);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to fetch customer route:", err);
-          setCustomerRoute(null);
-        });
-    } else {
+    if (!customerPoint || mode !== "locate-customer") {
       setCustomerRoute(null);
+      setCustomerPlan(null);
+      setCustomerPlanError(null);
+      setCustomerPlanLoading(false);
+      return undefined;
     }
-  }, [customerPoint, mode]);
+    let cancelled = false;
+    setCustomerPlanLoading(true);
+    setCustomerPlanError(null);
+    api
+      .customerConnectionPlan({ lat: customerPoint.lat, lng: customerPoint.lng })
+      .then((result) => {
+        if (cancelled) return;
+        setCustomerPlan(result);
+        setCustomerPlanError(null);
+        // The maps draw the same geometry the plan labels as a street route or
+        // direct haversine fallback; the latter is never presented as a road.
+        setCustomerRoute(
+          result?.route?.coordinates?.length >= 2
+            ? { route: result.route.coordinates, length_m: result.route.length_m, source: result.route.source }
+            : null
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("CustomerPlan check failed:", err);
+        setCustomerPlan(null);
+        setCustomerPlanError(err.message || "CustomerPlan check failed");
+        setCustomerRoute(null);
+      })
+      .finally(() => {
+        if (!cancelled) setCustomerPlanLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerPoint, mode, networkRevision]);
 
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
@@ -467,6 +708,13 @@ export default function App() {
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>
 
+      {qrNotice && (
+        <div className="qr-notice">
+          <span>{qrNotice}</span>
+          <button className="btn" onClick={() => setQrNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className="main-flex">
         <div className="panel left">
           <ErrorBoundary fallbackMessage="The side panel hit a rendering error.">
@@ -519,6 +767,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
@@ -548,6 +798,8 @@ export default function App() {
                 selectedPoleId={selectedPole?.id}
                 selectedCableId={selectedCable?.id}
                 highlightCableId={highlightCableId}
+                overlay={overlay}
+                impact={impact}
                 locateNonce={locateNonce}
                 labelOpacity={labelOpacity}
                 splitPointLngLat={splitPointLngLat}
@@ -577,6 +829,8 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
@@ -589,6 +843,37 @@ export default function App() {
             />
           )}
           </ErrorBoundary>
+
+          {telemetry?.available && (
+            <div className="telemetry-banner">
+              <span className={`pill ${telemetry.summary?.active ? "pill-damaged" : "pill-healthy"}`}>
+                Live telemetry
+              </span>
+              <span className="impact-banner-text">
+                {telemetry.summary?.link_down || 0} link-down · {telemetry.summary?.low_signal || 0} low-signal
+                {telemetry.summary?.stale ? ` · ${telemetry.summary.stale} stale` : ""}
+                {telemetry.source ? ` · ${telemetry.source}` : ""}
+              </span>
+              {telemetry.correlation?.likely_failure && (
+                <span className="telemetry-likely">
+                  Likely {telemetry.correlation.likely_failure.label || telemetry.correlation.likely_failure.id}
+                </span>
+              )}
+            </div>
+          )}
+          {impact && (
+            <div className="impact-banner">
+              <span className="pill pill-damaged">
+                {impact.telemetry_correlated ? "Telemetry correlated" : "Failure simulated"}
+              </span>
+              <span className="impact-banner-text">
+                {failureTitle(impact)} — {overlayHeadline(impact)}
+              </span>
+              <button className="btn btn-danger" onClick={handleClearImpact}>
+                Clear
+              </button>
+            </div>
+          )}
         </div>
 
         <div
@@ -608,10 +893,25 @@ export default function App() {
             mode={mode}
             selectedEnclosure={selectedEnclosure}
             selectedCable={selectedCable}
+            selectedPole={selectedPole}
+            impact={impact}
+            telemetry={telemetry}
+            telemetryError={telemetryError}
+            impactLoading={impactLoading}
+            impactError={impactError}
+            headends={headends}
+            onSimulateFailure={handleSimulateFailure}
+            onClearImpact={handleClearImpact}
+            onSetNetworkRoot={handleSetNetworkRoot}
             customerPoint={customerPoint}
+            customerPlan={customerPlan}
+            customerPlanLoading={customerPlanLoading}
+            customerPlanError={customerPlanError}
+            onShowCustomerPlanBox={handleShowCustomerPlanBox}
             customers={customers}
             onCreateCustomer={handleCreateCustomer}
             onChanged={reloadAll}
+            networkRevision={networkRevision}
             onDeleteEnclosure={handleDeleteEnclosure}
             onDeleteCable={handleDeleteCable}
             onSplitPointChange={handleSplitPointChange}
