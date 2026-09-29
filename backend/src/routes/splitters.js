@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { validateSplitterData } = require('../middleware/validation');
+const { canBranchFromCore } = require('../utils/branching');
 const {
   defaultSplitterName,
   splitterInputNote,
@@ -8,6 +9,8 @@ const {
   splitterUnassignNote,
   portIsOccupied,
   sanitizeSplitterPatch,
+  enrichSplitters,
+  SUPPORTED_SPLIT_COUNTS,
 } = require('../utils/splitters');
 const router = express.Router();
 
@@ -25,6 +28,7 @@ const PORT_SELECT = [
   'fiber_cores.status as core_status',
   'cables.code as cable_code',
   'cables.cable_type',
+  'cables.customer_label as cable_customer_label',
   'child.name as child_splitter_name',
   'child.split_count as child_split_count',
   'child.enclosure_id as child_splitter_enclosure_id',
@@ -75,14 +79,32 @@ router.get('/', async (req, res, next) => {
       : [];
     const inputById = Object.fromEntries(inputRows.map((r) => [r.id, r]));
 
-    // Attach ports + cascade parent + input core info to each splitter
+    // Attach ports + cascade parent + input core info to each splitter.
+    //
+    // The enrichment (ratio label, per-port usage + customer label, free/used
+    // counts, the insertion loss the budget will charge) lives in
+    // utils/splitters.js so this route and the box documentation cannot drift
+    // apart: both count "free ports" with the same function.
+    const portsBySplitterId = {};
     for (const s of splitters) {
-      s.ports = await portsFor(s.id);
-      s.parent = await parentInfo(s.id);
+      portsBySplitterId[s.id] = await portsFor(s.id);
+    }
+    const parents = {};
+    for (const s of splitters) {
+      const parent = await parentInfo(s.id);
+      if (parent) parents[s.id] = parent;
+    }
+    const { splitters: enriched, totals } = enrichSplitters(splitters, portsBySplitterId, parents);
+    for (const s of enriched) {
       s.input_core = s.input_core_id ? inputById[s.input_core_id] || null : null;
     }
 
-    res.json(splitters);
+    // `?summary=1` asks for the counts only — the capacity checks read a box's
+    // port headroom without dragging every port row across the wire.
+    if (enclosureId && ['1', 'true'].includes(String(req.query.summary))) {
+      return res.json({ enclosure_id: enclosureId, splitters: enriched, totals });
+    }
+    res.json(enriched);
   } catch (err) {
     next(err);
   }
@@ -109,10 +131,10 @@ router.get('/:id', async (req, res, next) => {
 // ---------------------------------------------------------------------------
 // POST /api/splitters
 // Creates a 1:N splitter in an enclosure. The input is EITHER a fiber core
-// (input_core_id — must be 'available'/'reserved'/'spliced' for branching,
-// and flips to 'spliced') OR a free output port of another splitter in the
-// same box (input_port — cascaded distribution tree). Output ports start
-// empty; cores are assigned to them later as drops get spliced.
+// (input_core_id — must be 'available'/'reserved' for a new branch, and flips
+// to 'spliced') OR a free output port of another splitter in the same box
+// (input_port — cascaded distribution tree). Output ports start empty; cores
+// are assigned to them later as drops get spliced.
 // ---------------------------------------------------------------------------
 router.post('/', validateSplitterData, async (req, res, next) => {
   const trx = await db.transaction();
@@ -120,7 +142,7 @@ router.post('/', validateSplitterData, async (req, res, next) => {
     const {
       enclosure_id,
       name,
-      split_count = 4, // 2, 4, or 8
+      split_count = 4, // see SUPPORTED_SPLIT_COUNTS in utils/splitters.js
       input_core_id,
       input_port, // { splitter_id, port_number } — cascade onto a free port
       splice_type = 'fusion',
@@ -129,10 +151,11 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       notes,
     } = req.body;
 
-    const validSplits = [2, 4, 8];
-    if (!validSplits.includes(Number(split_count))) {
+    if (!SUPPORTED_SPLIT_COUNTS.includes(Number(split_count))) {
       await trx.rollback();
-      return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
+      return res.status(400).json({
+        error: `split_count must be one of ${SUPPORTED_SPLIT_COUNTS.join(', ')}`,
+      });
     }
 
     let inputCore = null;
@@ -181,12 +204,34 @@ router.post('/', validateSplitterData, async (req, res, next) => {
         await trx.rollback();
         return res.status(404).json({ error: 'Input core not found' });
       }
-      // Allow spliced cores for branching (adding splitter to an already-spliced core)
-      if (!['available', 'reserved', 'spliced'].includes(inputCore.status)) {
+      const inputCable = await trx('cables')
+        .where({ id: inputCore.cable_id })
+        .select('code', 'from_enclosure_id', 'to_enclosure_id')
+        .first();
+      const existingSplice = await trx('splices')
+        .where({ enclosure_id })
+        .where(function () {
+          this.where('core_a_id', inputCore.id).orWhere('core_b_id', inputCore.id);
+        })
+        .first();
+      const existingSplitter = await trx('splitters')
+        .where({ enclosure_id, input_core_id: inputCore.id })
+        .first();
+      if (!canBranchFromCore(inputCore, {
+        cable: inputCable,
+        enclosureId: enclosure_id,
+        alreadyBranched: Boolean(existingSplice || existingSplitter),
+      })) {
         await trx.rollback();
-        return res.status(409).json({ error: 'Input core is not available to splice', status: inputCore.status });
+        return res.status(409).json({
+          error: existingSplice || existingSplitter
+            ? 'This IN core has already been branched in this enclosure'
+            : inputCore.status === 'spliced' && inputCable?.to_enclosure_id !== enclosure_id
+              ? 'Only a spliced IN core coming from upstream can be used for branching'
+              : 'Input core is not available to splice',
+          status: inputCore.status,
+        });
       }
-      const inputCable = await trx('cables').where({ id: inputCore.cable_id }).select('code').first();
       inputSource = {
         kind: 'core',
         cableCode: inputCable?.code || 'cable',
