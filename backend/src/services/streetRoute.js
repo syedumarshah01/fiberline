@@ -25,11 +25,20 @@ function toOsrmPath(points) {
   return points.map((point) => `${point.lng},${point.lat}`).join(";");
 }
 
-async function fetchStreetRoute(points) {
+async function fetchStreetRoute(points, { timeoutMs = null } = {}) {
   const normalizedPoints = toPointList(points);
   const url = `${OSRM_BASE_URL}/route/v1/${OSRM_PROFILE}/${toOsrmPath(normalizedPoints)}?overview=full&geometries=geojson&steps=false`;
 
-  const response = await fetch(url);
+  // A customer plan cannot wait on a router: its caller passes a short budget
+  // and uses the labelled straight-line fallback when it runs out.
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let response;
+  try {
+    response = await fetch(url, controller ? { signal: controller.signal } : undefined);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (!response.ok) {
     throw new Error(`Street routing service returned HTTP ${response.status}`);
   }
@@ -173,5 +182,6 @@ module.exports = {
   coordinatesToWkt,
   normalizeRouteCoordinates,
   measurePolylineMeters,
+  haversineMeters,
   splitRouteAtDistance,
 };

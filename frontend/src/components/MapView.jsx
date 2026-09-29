@@ -11,6 +11,11 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import {
+  impactCableStyle,
+  impactBoxState,
+  customersBehind,
+} from "../utils/impactOverlay.js";
 
 /** Color used to spotlight a cable (e.g. while hovering one of its fibers in
  *  the splice form). Deliberately not one of the cable-type colors. */
@@ -33,17 +38,35 @@ const selectedPoleIcon = divIcon(
   '<div class="pole-marker selected-pole-marker"></div>',
   [16, 16],
 );
+// The pole that was taken out in a simulated failure.
+const failedPoleIcon = divIcon(
+  '<div class="pole-marker failed-pole-marker"></div>',
+  [18, 18],
+);
 
-function enclosureIcon(availableCores, isSelected) {
+function enclosureIcon(availableCores, isSelected, boxState = {}, behind = 0) {
   const cls =
     availableCores === undefined
       ? ""
       : availableCores > 0
         ? "has-capacity"
         : "full";
+  const outage = [
+    boxState.dark ? "dark" : "",
+    boxState.failed ? "failure-point" : "",
+    boxState.telemetry === "link_down" ? "telemetry-link-down" : "",
+    boxState.telemetry === "low_signal" ? "telemetry-low-signal" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  // Customers behind a dark box are counted on the marker itself, so the
+  // number of people affected is visible without opening the panel.
+  const badge = behind > 0 ? `<div class="enclosure-badge">${behind}</div>` : "";
   return divIcon(
-    `<div class="enclosure-marker ${cls} ${isSelected ? "selected-enclosure-marker" : ""}"></div>`,
-    isSelected ? [20, 20] : [14, 14],
+    `<div class="enclosure-marker ${cls} ${
+      isSelected ? "selected-enclosure-marker" : ""
+    } ${outage}"></div>${badge}`,
+    isSelected || boxState.failed ? [20, 20] : [14, 14],
   );
 }
 
@@ -127,6 +150,8 @@ export default function MapView({
   selectedPoleId,
   selectedCableId,
   highlightCableId,
+  overlay,
+  impact,
   splitPointLngLat,
   userPosition,
   locateNonce,
@@ -137,6 +162,8 @@ export default function MapView({
   onCableClick,
 }) {
   const [zoom, setZoom] = useState(16);
+  const failurePoleId =
+    impact?.failure?.kind === "pole" ? impact.failure.id : null;
   const flyToTarget = useMemo(() => {
     if (selectedPoleId) {
       const pole = poles.find((p) => p.id === selectedPoleId);
@@ -217,6 +244,10 @@ export default function MapView({
         const hasSplicedCores = (cable.spliced_core_count || 0) > 0;
         const isSelected = cable.id === selectedCableId;
         const isHighlighted = cable.id === highlightCableId;
+        // A simulated outage overrides the type color: dark cables go red and
+        // everything else recedes so the outage reads at a glance.
+        const dark = impactCableStyle(cable.id, overlay);
+        const dimmed = overlay?.active && !dark;
         const label = cableLabel(cable);
         const mid = routeMidpointLngLat(cable.route);
         return (
@@ -226,24 +257,38 @@ export default function MapView({
               cable.route ? cable.route.map(([lng, lat]) => [lat, lng]) : []
             }
             pathOptions={{
-              color: isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
-              weight:
-                isSelected || isHighlighted
+              color: dark
+                ? dark.color
+                : isHighlighted
+                  ? HIGHLIGHT_COLOR
+                  : CABLE_COLORS[cable.cable_type] || "#8b96a8",
+              weight: dark
+                ? dark.weight
+                : isSelected || isHighlighted
                   ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
                   : (cable.cable_type === "feeder"
                       ? 4
                       : cable.cable_type === "distribution"
                         ? 3
                         : 2),
-              dashArray: hasSplicedCores && !isHighlighted ? (isSelected ? "2 2" : "10 6") : "none",
+              dashArray: dark
+                ? dark.dash.join(" ")
+                : hasSplicedCores && !isHighlighted
+                  ? (isSelected ? "2 2" : "10 6")
+                  : "none",
               // Marching-ants: both spliced classes animate stroke-dashoffset;
               // drop cables march faster so the customer leg reads as the
-              // "last hop" (see styles.css).
+              // "last hop" (see styles.css). Dark cables never animate — the
+              // ants mean "live traffic", which is exactly what they lost.
               className: [
-                hasSplicedCores ? "cable-line-active" : "",
-                cable.cable_type === "drop" ? "cable-line-drop" : "",
+                hasSplicedCores && !dark ? "cable-line-active" : "",
+                cable.cable_type === "drop" && !dark ? "cable-line-drop" : "",
+                // Styling for an out span is inline (see impactCableStyle); these
+                // classes only carry what inline options cannot — the marching
+                // ants, which an out span must not have.
+                dark ? "cable-line-out" : "",
               ].filter(Boolean).join(" "),
-              opacity: isSelected || isHighlighted ? 1 : 0.85,
+              opacity: dark ? dark.opacity ?? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
             }}
             eventHandlers={onCableClick ? {
               click: () => {
@@ -280,11 +325,18 @@ export default function MapView({
 
       {poles.map((pole) => {
         if (pole.lat == null || pole.lng == null) return null;
+        const isFailedPole = failurePoleId != null && pole.id === failurePoleId;
         return (
           <Marker
             key={pole.id}
             position={[pole.lat, pole.lng]}
-            icon={pole.id === selectedPoleId ? selectedPoleIcon : poleIcon}
+            icon={
+              isFailedPole
+                ? failedPoleIcon
+                : pole.id === selectedPoleId
+                  ? selectedPoleIcon
+                  : poleIcon
+            }
             eventHandlers={{ click: () => onPoleClick(pole) }}
           />
         );
@@ -293,6 +345,7 @@ export default function MapView({
       {enclosures.map((enc) => {
         if (enc.lat == null || enc.lng == null) return null;
         const isSelected = enc.id === selectedEnclosureId;
+        const boxState = impactBoxState(enc.id, overlay);
         // Box codes show ONLY while hovered (Leaflet opens non-permanent
         // tooltips on mouseover) and permanently for the selected box — they
         // never blanket the map regardless of zoom.
@@ -301,7 +354,13 @@ export default function MapView({
           <Marker
             key={enc.id}
             position={[enc.lat, enc.lng]}
-            icon={enclosureIcon(capacityByEnclosure?.[enc.id], isSelected)}
+            opacity={overlay?.active && !boxState.dark && !boxState.telemetry ? 0.5 : 1}
+            icon={enclosureIcon(
+              capacityByEnclosure?.[enc.id],
+              isSelected,
+              boxState,
+              boxState.dark ? customersBehind(enc.id, overlay) : 0,
+            )}
             eventHandlers={{ click: () => onEnclosureClick(enc) }}
           >
             {enc.code ? (
@@ -326,6 +385,27 @@ export default function MapView({
               </Tooltip>
             ) : null}
           </Marker>
+        );
+      })}
+
+      {(overlay?.telemetryDevices || []).map((device) => {
+        if (device.lat == null || device.lng == null) return null;
+        const color = device.state === "link_down"
+          ? "#ef5350"
+          : device.state === "low_signal"
+            ? "#ffb020"
+            : device.state === "stale"
+              ? "#8b96a8"
+              : "#3fd0c9";
+        return (
+          <CircleMarker
+            key={`telemetry-${device.source}-${device.external_id}`}
+            center={[Number(device.lat), Number(device.lng)]}
+            radius={device.active ? 7 : 5}
+            pathOptions={{ color, fillColor: color, fillOpacity: device.stale ? 0.35 : 0.9, weight: 2 }}
+          >
+            <Tooltip>{device.external_id} · {device.state}{device.signal_dbm != null ? ` · ${device.signal_dbm} dBm` : ""}</Tooltip>
+          </CircleMarker>
         );
       })}
 

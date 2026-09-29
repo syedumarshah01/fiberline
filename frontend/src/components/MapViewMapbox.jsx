@@ -2,6 +2,12 @@ import React, { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import {
+  impactCableStyle,
+  impactBoxState,
+  customersBehind,
+  FAILURE_COLOR,
+} from "../utils/impactOverlay.js";
 
 // Module-level flag to track if a cable was clicked (prevents map click from clearing selection)
 let cableWasClicked = false;
@@ -38,6 +44,8 @@ export default function MapViewMapbox({
   selectedPoleId,
   selectedCableId,
   highlightCableId,
+  overlay,
+  impact,
   locateNonce,
   labelOpacity,
   splitPointLngLat,
@@ -48,6 +56,8 @@ export default function MapViewMapbox({
   onEnclosureClick,
   onCableClick,
 }) {
+  const failurePoleId =
+    impact?.failure?.kind === "pole" ? impact.failure.id : null;
   const mapContainer = useRef(null);
   const map = useRef(null);
   const mapLoaded = useRef(false);
@@ -56,7 +66,9 @@ export default function MapViewMapbox({
   const markersRef = useRef([]);
   const dataRef = useRef({});
   // Keep dataRef in sync so stable map callbacks always see fresh data/handlers.
-  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, labelOpacity, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
+  // failurePoleId rides in dataRef too: updateMap is memoised, so reading the
+  // prop directly inside it would freeze the first render's value.
+  dataRef.current = { poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, overlay, impact, failurePoleId, labelOpacity, splitPointLngLat, userPosition, customerRoute, onMapClick, onPoleClick, onEnclosureClick, onCableClick };
 
   const clearDynamicContent = useCallback(() => {
     if (!map.current) return;
@@ -135,6 +147,8 @@ export default function MapViewMapbox({
 
       const isSelected = cable.id === d.selectedCableId;
       const isHighlighted = cable.id === d.highlightCableId;
+      const dark = impactCableStyle(cable.id, d.overlay);
+      const dimmed = d.overlay?.active && !dark;
       const sourceId = `cable-${cable.id}`;
 
       map.current.addSource(sourceId, {
@@ -150,14 +164,23 @@ export default function MapViewMapbox({
       });
 
       const paint = {
-        "line-color": isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
-        "line-width": isSelected || isHighlighted
-          ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
-          : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
-        "line-opacity": isSelected || isHighlighted ? 1 : 0.85,
+        "line-color": dark
+          ? dark.color
+          : isHighlighted
+            ? HIGHLIGHT_COLOR
+            : CABLE_COLORS[cable.cable_type] || "#8b96a8",
+        "line-width": dark
+          ? dark.weight
+          : isSelected || isHighlighted
+            ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
+            : (cable.cable_type === "feeder" ? 4 : cable.cable_type === "distribution" ? 3 : 2),
+        "line-opacity": dark ? dark.opacity ?? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
       };
-      // An empty dash array is invalid — only set it when spliced cores exist.
-      if ((cable.spliced_core_count || 0) > 0 && !isHighlighted) {
+      // An empty dash array is invalid — only set it when spliced cores exist
+      // (or when the cable is dark, which is drawn dashed itself).
+      if (dark) {
+        paint["line-dasharray"] = dark.dash;
+      } else if ((cable.spliced_core_count || 0) > 0 && !isHighlighted) {
         paint["line-dasharray"] = isSelected ? [2, 2] : [10, 6];
       }
 
@@ -167,6 +190,10 @@ export default function MapViewMapbox({
         source: sourceId,
         paint,
       });
+
+      // Dark cable lines are lifted above the (dimmed) rest of the network so
+      // the outage is not buried under healthy feeders.
+      if (dark) map.current.moveLayer(`cable-line-${cable.id}`);
 
       // Cable name label at the route midpoint, shown once zoomed in enough
       // that labels don't blanket the city.
@@ -208,13 +235,18 @@ export default function MapViewMapbox({
     // Poles
     d.poles.forEach((pole) => {
       if (pole.lat == null || pole.lng == null) return;
+      const isFailedPole = d.failurePoleId != null && pole.id === d.failurePoleId;
       const el = document.createElement("div");
       el.className = "map-marker";
-      el.style.width = pole.id === d.selectedPoleId ? "16px" : "10px";
-      el.style.height = pole.id === d.selectedPoleId ? "16px" : "10px";
+      el.style.width = isFailedPole ? "18px" : pole.id === d.selectedPoleId ? "16px" : "10px";
+      el.style.height = isFailedPole ? "18px" : pole.id === d.selectedPoleId ? "16px" : "10px";
       el.style.borderRadius = "50%";
-      el.style.backgroundColor = pole.id === d.selectedPoleId ? "#ff6b35" : "#333";
-      el.style.border = "2px solid #fff";
+      el.style.backgroundColor = isFailedPole
+        ? FAILURE_COLOR
+        : pole.id === d.selectedPoleId
+          ? "#ff6b35"
+          : "#333";
+      el.style.border = isFailedPole ? "3px solid #fff" : "2px solid #fff";
       el.style.cursor = "pointer";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -236,23 +268,37 @@ export default function MapViewMapbox({
       // enc-dot-marker: the box-code label span inside is revealed by CSS,
       // ONLY on hover or when this box is selected — never all at once.
       const isSelected = enc.id === d.selectedEnclosureId;
+      const boxState = impactBoxState(enc.id, d.overlay);
+      const behind = boxState.dark ? customersBehind(enc.id, d.overlay) : 0;
       el.className =
-        "map-marker enc-dot-marker" + (isSelected ? " is-selected" : "");
+        "map-marker enc-dot-marker" +
+        (isSelected ? " is-selected" : "") +
+        (boxState.dark ? " is-dark" : "") +
+        (boxState.failed ? " is-failure-point" : "") +
+        (boxState.telemetry === "link_down" ? " is-telemetry-down" : "") +
+        (boxState.telemetry === "low_signal" ? " is-telemetry-low-signal" : "");
       if (enc.code) {
         const labelEl = document.createElement("span");
         labelEl.className = "enc-dot-label";
-        labelEl.textContent = enc.code;
+        labelEl.textContent = behind > 0 ? `${enc.code} · ${behind} dark` : enc.code;
         el.appendChild(labelEl);
       }
       el.style.width = enc.id === d.selectedEnclosureId ? "20px" : "14px";
       el.style.height = enc.id === d.selectedEnclosureId ? "20px" : "14px";
       el.style.borderRadius = "50%";
-      el.style.backgroundColor =
-        enc.id === d.selectedEnclosureId
-          ? "#ff6b35"
-          : availableCores > 0
-            ? "#4caf50"
-            : "#e53935";
+      el.style.backgroundColor = boxState.dark
+        ? FAILURE_COLOR
+        : boxState.telemetry === "link_down"
+          ? FAILURE_COLOR
+          : boxState.telemetry === "low_signal"
+            ? "#ffb020"
+            : enc.id === d.selectedEnclosureId
+              ? "#ff6b35"
+              : availableCores > 0
+                ? "#4caf50"
+                : "#e53935";
+      // Boxes outside the outage recede while a failure is on screen.
+      el.style.opacity = d.overlay?.active && !boxState.dark && !boxState.telemetry ? "0.45" : "1";
       el.style.border = "2px solid #fff";
       el.style.cursor = "pointer";
       el.addEventListener("click", (e) => {
@@ -263,6 +309,33 @@ export default function MapViewMapbox({
 
       const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([enc.lng, enc.lat])
+        .addTo(map.current);
+      markersRef.current.push(marker);
+    });
+
+    // Live OLT/ONT markers. They are kept separate from inventory markers so a
+    // feed can show an untagged device while the field team is still correlating
+    // the identifier to a box or customer.
+    (d.overlay?.telemetryDevices || []).forEach((device) => {
+      if (device.lat == null || device.lng == null) return;
+      const el = document.createElement("div");
+      const color = device.state === "link_down"
+        ? FAILURE_COLOR
+        : device.state === "low_signal"
+          ? "#ffb020"
+          : device.state === "stale"
+            ? "#8b96a8"
+            : "#3fd0c9";
+      el.className = "telemetry-map-marker";
+      el.style.width = device.active ? "14px" : "10px";
+      el.style.height = device.active ? "14px" : "10px";
+      el.style.borderRadius = "50%";
+      el.style.backgroundColor = color;
+      el.style.opacity = device.stale ? "0.4" : "0.95";
+      el.style.border = "2px solid #fff";
+      el.title = `${device.external_id} · ${device.state}${device.signal_dbm != null ? ` · ${device.signal_dbm} dBm` : ""}`;
+      const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat([Number(device.lng), Number(device.lat)])
         .addTo(map.current);
       markersRef.current.push(marker);
     });
@@ -397,7 +470,7 @@ export default function MapViewMapbox({
   // previously updateMap only ran on the initial style load).
   useEffect(() => {
     updateMap();
-  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, labelOpacity, splitPointLngLat, userPosition, customerRoute, updateMap]);
+  }, [poles, enclosures, cables, capacityByEnclosure, pendingCableRoute, selectedEnclosureId, selectedPoleId, selectedCableId, highlightCableId, overlay, impact, labelOpacity, splitPointLngLat, userPosition, customerRoute, updateMap]);
 
   // Fly to selected enclosure or pole
   useEffect(() => {

@@ -9,8 +9,13 @@
     "start": "node src/server.js",
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
+    "db:reset": "node scripts/resetDb.js",
+    "db:truncate": "node scripts/resetDb.js --truncate",
     "seed": "knex seed:run",
-    "test": "node --test"
+    "test": "node --test",
+    "db:schema": "node scripts/schemaStatus.js",
+    "test:migrations": "node --test tests/migrationSql.test.js",
+    "db:link-splits": "node scripts/linkSplits.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
