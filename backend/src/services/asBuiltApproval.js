@@ -8,6 +8,7 @@ const REJECTED = 'rejected';
 function actorFromRequest(req) {
   return {
     id: req.user?.id || req.get?.('x-user-id') || 'field-tech',
+    username: req.user?.username || req.user?.id || req.get?.('x-user-name') || 'field-tech',
     role: String(req.user?.role || req.get?.('x-user-role') || 'technician').toLowerCase(),
   };
 }
@@ -81,6 +82,7 @@ async function recordAsBuiltChange(trx, {
         change_type: existing.change_type === changeType ? changeType : 'as_built_batch',
         summary: existing.summary === summary ? summary : `${existing.summary}; ${summary}`,
         submitted_by: actor.id,
+        submitted_by_username: actor.username,
         submitted_role: actor.role,
         submitted_snapshot: submittedSnapshot,
         after_revision: current.revision,
@@ -96,6 +98,7 @@ async function recordAsBuiltChange(trx, {
       change_type: changeType,
       summary,
       submitted_by: actor.id,
+      submitted_by_username: actor.username,
       submitted_role: actor.role,
       status: PENDING,
       before_snapshot: beforeSnapshot,

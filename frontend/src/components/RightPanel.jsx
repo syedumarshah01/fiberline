@@ -156,7 +156,7 @@ function AsBuiltApprovalPanel({ enclosureId, networkRevision, currentUser, onCha
       {approvals.map((approval) => (
         <div className="approval-card" key={approval.id}>
           <b>{approval.summary}</b>
-          <span>{approval.change_type.replaceAll("_", " ")} · {approval.submitted_by}</span>
+          <span>{approval.change_type.replaceAll("_", " ")} · submitted by <b>{approval.submitted_by_username || approval.submitted_by}</b> ({approval.submitted_role})</span>
           <span className="approval-revision">Submitted {new Date(approval.created_at).toLocaleString()}</span>
           {isAdmin ? (
             <div className="approval-actions">

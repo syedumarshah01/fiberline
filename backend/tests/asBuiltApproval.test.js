@@ -11,7 +11,7 @@ const {
 describe('as-built approval policy', () => {
   test('field submissions default to a technician identity', () => {
     const actor = actorFromRequest({ get: () => undefined, body: {} });
-    assert.deepEqual(actor, { id: 'field-tech', role: 'technician' });
+    assert.deepEqual(actor, { id: 'field-tech', username: 'field-tech', role: 'technician' });
   });
 
   test('uses authenticated/header identity when supplied', () => {
@@ -20,7 +20,7 @@ describe('as-built approval policy', () => {
       get: () => undefined,
       body: {},
     });
-    assert.deepEqual(actor, { id: 'tech-7', role: 'technician' });
+    assert.deepEqual(actor, { id: 'tech-7', username: 'tech-7', role: 'technician' });
   });
 
   test('approval status names and snapshot revisions are stable', () => {
