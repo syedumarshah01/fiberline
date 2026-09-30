@@ -1,6 +1,7 @@
 const DEFAULT_MODEL = 'llama3.2:1b';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const DEFAULT_TIMEOUT_MS = 180000;
+const DEFAULT_NUM_THREADS = 8;
 const MAX_RADIUS_M = 10000;
 
 const PLAN_SCHEMA = {
@@ -238,13 +239,16 @@ const TOOL_DECLARATIONS = [
 function config() {
   const baseUrl = (process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '');
   const localOllama = /:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0):11434(?:\/|$)/i.test(baseUrl);
+  const numThreads = Math.max(1, Math.round(Number(process.env.OLLAMA_NUM_THREADS || process.env.LLM_NUM_THREADS || DEFAULT_NUM_THREADS)));
   return {
-    // Ollama's OpenAI-compatible endpoint ignores the bearer value, but sending
-    // a harmless placeholder keeps the request shape compatible with hosted
-    // OpenAI-compatible endpoints too.
+    // Ollama ignores the bearer value, but the OpenAI-compatible client shape
+    // requires a non-empty key.
     apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || (localOllama ? 'ollama' : ''),
     model: process.env.LLM_MODEL || process.env.OPENAI_MODEL || DEFAULT_MODEL,
     baseUrl,
+    isOllama: localOllama,
+    ollamaUrl: localOllama ? baseUrl.replace(/\/v1\/?$/, '') + '/api/chat' : null,
+    numThreads,
     timeoutMs: Math.max(1000, Number(process.env.LLM_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)),
   };
 }

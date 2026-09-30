@@ -103,6 +103,7 @@ async function askNetworkAssistant(query, {
   const trace = {
     request_id,
     model: settings.model,
+    threads: settings.numThreads,
     rounds: 0,
     tool_calls: [],
   };
@@ -137,26 +138,37 @@ async function askNetworkAssistant(query, {
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     trace.rounds = round + 1;
-    console.info(`[network-query:${request_id || 'unknown'}] sending model request round=${trace.rounds} model=${settings.model}`);
+    console.info(`[network-query:${request_id || 'unknown'}] sending model request round=${trace.rounds} model=${settings.model} threads=${settings.numThreads}`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
     let payload;
     try {
-      const response = await fetchImpl(`${settings.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${settings.apiKey}`,
-          'Content-Type': 'application/json',
+      const requestBody = {
+        model: settings.model,
+        messages,
+        tools: LLM_TOOLS,
+        ...(settings.isOllama
+          ? {
+              stream: false,
+              options: { num_thread: settings.numThreads, temperature: 0.2 },
+            }
+          : {
+              tool_choice: 'auto',
+              temperature: 0.2,
+            }),
+      };
+      const response = await fetchImpl(
+        settings.isOllama ? settings.ollamaUrl : `${settings.baseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${settings.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
         },
-        body: JSON.stringify({
-          model: settings.model,
-          messages,
-          tools: LLM_TOOLS,
-          tool_choice: 'auto',
-          temperature: 0.2,
-        }),
-        signal: controller.signal,
-      });
+      );
       payload = await response.json().catch(() => null);
       if (!response.ok) throw assistantError(payload?.error?.message || `LLM request failed with HTTP ${response.status}`);
     } catch (error) {
@@ -171,7 +183,7 @@ async function askNetworkAssistant(query, {
       clearTimeout(timer);
     }
 
-    const message = payload?.choices?.[0]?.message;
+    const message = payload?.message || payload?.choices?.[0]?.message;
     if (!message) throw assistantError('The LLM returned an empty assistant response.', 502, 'LLM_EMPTY_RESPONSE');
     messages.push(message);
     const calls = message.tool_calls || [];

@@ -77,4 +77,29 @@ describe('generic network assistant tool loop', () => {
     assert.equal(result.tool_calls[0].source, 'validated_fallback');
     assert.equal(result.assistant_trace.fallback, 'validated_read_tool');
   });
+
+  test('sends Ollama native options with the configured computation thread count', async () => {
+    const previousBase = process.env.LLM_BASE_URL;
+    const previousThreads = process.env.OLLAMA_NUM_THREADS;
+    process.env.LLM_BASE_URL = 'http://127.0.0.1:11434/v1';
+    process.env.OLLAMA_NUM_THREADS = '12';
+    let request;
+    try {
+      const result = await askNetworkAssistant('Say hello.', {
+        fetchImpl: async (url, options) => {
+          request = { url, options };
+          return new Response(JSON.stringify({ message: { role: 'assistant', content: 'Hello.' } }), { status: 200 });
+        },
+      });
+      assert.equal(result.answer_text, 'Hello.');
+    } finally {
+      if (previousBase === undefined) delete process.env.LLM_BASE_URL;
+      else process.env.LLM_BASE_URL = previousBase;
+      if (previousThreads === undefined) delete process.env.OLLAMA_NUM_THREADS;
+      else process.env.OLLAMA_NUM_THREADS = previousThreads;
+    }
+    assert.equal(request.url, 'http://127.0.0.1:11434/api/chat');
+    assert.equal(JSON.parse(request.options.body).options.num_thread, 12);
+    assert.equal(JSON.parse(request.options.body).stream, false);
+  });
 });
