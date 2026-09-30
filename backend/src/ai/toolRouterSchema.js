@@ -86,7 +86,7 @@ const FEW_SHOT_EXAMPLES = [
   },
 ];
 
-function buildRouterPrompt(query) {
+function buildRouterInstruction() {
   const toolLines = TOOLS.map((tool) => {
     const description = tool.description.replace(/\s+/g, ' ').trim();
     return `- ${tool.name}: ${description} Args: ${compactParameterList(tool)}.`;
@@ -103,9 +103,11 @@ function buildRouterPrompt(query) {
     '',
     'Examples:',
     examples,
-    '',
-    `User query: ${String(query ?? '').trim()}`,
   ].join('\n');
+}
+
+function buildRouterPrompt(query) {
+  return `${buildRouterInstruction()}\n\nUser query: ${String(query ?? '').trim()}`;
 }
 
 function typeMatches(value, type) {
@@ -180,6 +182,7 @@ module.exports = {
   TOOL_BY_NAME,
   FEW_SHOT_EXAMPLES,
   argsSchema,
+  buildRouterInstruction,
   buildRouterPrompt,
   buildRouterResponseSchema,
   validateToolCall,

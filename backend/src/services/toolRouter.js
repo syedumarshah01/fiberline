@@ -1,6 +1,6 @@
 const { randomUUID } = require('node:crypto');
 const {
-  buildRouterPrompt,
+  buildRouterInstruction,
   buildRouterResponseSchema,
   validateToolCall,
 } = require('../ai/toolRouterSchema');
@@ -61,7 +61,10 @@ async function inferToolCall(query, {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: settings.model,
-        messages: [{ role: 'user', content: buildRouterPrompt(text) }],
+        messages: [
+          { role: 'system', content: buildRouterInstruction() },
+          { role: 'user', content: text },
+        ],
         stream: false,
         // Ollama forwards this JSON Schema to llama.cpp's constrained decoder.
         // The schema is generated from ai/tools.json; no second grammar file can drift.

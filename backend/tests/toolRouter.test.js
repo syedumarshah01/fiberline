@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   TOOLS,
+  buildRouterInstruction,
   buildRouterPrompt,
   buildRouterResponseSchema,
   validateToolCall,
@@ -101,7 +102,9 @@ test('router uses Ollama structured output and returns only tool plus args', asy
   assert.equal(body.options.num_thread, 8);
   assert.equal(body.options.temperature, 0);
   assert.deepEqual(body.format, buildRouterResponseSchema());
-  assert.match(body.messages[0].content, /Trace core core-123/);
+  assert.equal(body.messages[0].role, 'system');
+  assert.match(body.messages[0].content, /Trace fiber core fc-123/);
+  assert.deepEqual(body.messages[1], { role: 'user', content: 'Trace core core-123.' });
 });
 
 test('router reports a clear local-service error when Ollama is unavailable', async () => {
