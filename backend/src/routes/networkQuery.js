@@ -3,6 +3,8 @@ const {
   executeNaturalLanguageQuery,
   parseNaturalLanguageQuery,
 } = require('../services/naturalLanguageQuery');
+const { config, plannerMode } = require('../services/llmQueryPlanner');
+const { askGeminiNetwork } = require('../services/geminiAssistant');
 
 const router = express.Router();
 
@@ -19,7 +21,9 @@ async function handleQuery(req, res, next) {
       });
     }
 
-    const result = await executeNaturalLanguageQuery(query);
+    const result = config().provider === 'gemini' && plannerMode() !== 'deterministic'
+      ? await askGeminiNetwork(query)
+      : await executeNaturalLanguageQuery(query);
     const status = result.status === 'not_found' ? 404 : result.status === 'needs_location' || result.status === 'needs_clarification' ? 422 : 200;
     res.status(status).json(result);
   } catch (err) {

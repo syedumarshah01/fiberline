@@ -71,6 +71,8 @@ export default function NetworkQuery({ onClose }) {
 
         {error && <p className="error-row" role="alert">{error}</p>}
         {result?.message && <p className={result.status === "ok" ? "query-note" : "error-row"}>{result.message}</p>}
+        {result?.answer_text && <div className="query-answer" aria-live="polite">{result.answer_text}</div>}
+        {result?.tool_calls?.length > 0 && <small className="query-tool-note">Checked {result.tool_calls.length} live network source{result.tool_calls.length === 1 ? "" : "s"}.</small>}
 
         {result?.status === "needs_clarification" && result.candidates?.length > 0 && (
           <div className="query-results"><b>Possible poles</b>{result.candidates.map((candidate) => <div className="query-row" key={candidate.id}>{candidate.code}{candidate.name ? ` — ${candidate.name}` : ""}</div>)}</div>

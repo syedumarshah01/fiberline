@@ -3,6 +3,7 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RADIUS_M = 10000;
+const MAX_TOOL_ROUNDS = 4;
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -49,6 +50,117 @@ Important:
 - Never turn a number in a radius into a pole identifier, and never guess a pole from a place name.
 - radius_m must be in metres and between 1 and 10000 when present; leave it null when the question is not nearby_capacity.
 - Keep message short and useful only for clarification. Return JSON matching the schema exactly.`;
+
+const ASSISTANT_SYSTEM_PROMPT = `You are Fiberline, an operations assistant for a fiber network management application. Answer questions about the software, the network, customers, poles, boxes, cables, capacity, outages, approvals, and field operations.
+
+Use the read-only tools when the answer depends on live network data. You may call more than one tool and may use a previous tool result to decide what to inspect next. Never invent an asset, customer, outage, capacity number, account, or approval. If a tool returns an error or no match, say that clearly and ask for the missing identifier or location.
+
+You can explain how to use Fiberline without a tool. The application supports map-based asset management, box documentation, splice and splitter wiring, fiber tracing, loss budgets, capacity planning, customer connection plans, outage impact analysis, telemetry, QR field worksheets, work orders, and admin approval/account workflows. Do not claim that a write operation was performed: this assistant is read-only. Tell the user to use the normal UI for creates, edits, approvals, password resets, or other mutations.
+
+When answering a data question, cite the asset code/name and distinguish documented facts from assumptions. Keep the answer concise but useful. Do not mention internal tool names or implementation details unless asked.`;
+
+const TOOL_DECLARATIONS = [
+  {
+    name: 'search_network',
+    description: 'Search documented network assets by code, name, address, or customer identifier. Use this to resolve an asset before asking for details.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Asset code, name, customer name, address, or search phrase.' },
+        kind: { type: 'string', enum: ['all', 'pole', 'enclosure', 'cable', 'customer', 'headend'] },
+        limit: { type: 'integer', description: 'Maximum number of results, at most 50.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'get_network_summary',
+    description: 'Return current high-level counts for poles, boxes, cables, customers, fiber-core statuses, and boxes with spare capacity.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'find_nearby_boxes',
+    description: 'Find boxes near latitude and longitude, optionally filtering to boxes with at least one available fiber core.',
+    parameters: {
+      type: 'object',
+      properties: {
+        latitude: { type: 'number', description: 'Latitude from -90 to 90, when coordinates are available.' },
+        longitude: { type: 'number', description: 'Longitude from -180 to 180, when coordinates are available.' },
+        address: { type: 'string', description: 'Street address or known place when coordinates are not available.' },
+        radius_m: { type: 'number', description: 'Search radius in metres, maximum 10000.' },
+        spare_only: { type: 'boolean', description: 'Only return boxes with available cores.' },
+        limit: { type: 'integer', description: 'Maximum number of results, at most 50.' },
+      },
+    },
+  },
+  {
+    name: 'analyze_outage',
+    description: 'Analyze downstream customer impact for a documented pole or enclosure failure. This is simulation only and does not change network data.',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['pole', 'enclosure'] },
+        identifier: { type: 'string', description: 'Pole/box ID, code, or name.' },
+      },
+      required: ['kind', 'identifier'],
+    },
+  },
+  {
+    name: 'get_asset_details',
+    description: 'Look up matching documented assets and their stored details. Use after search when the user asks about a particular asset.',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['all', 'pole', 'enclosure', 'cable', 'customer', 'headend'] },
+        identifier: { type: 'string', description: 'Asset code, database ID, name, customer code, or address.' },
+      },
+      required: ['kind', 'identifier'],
+    },
+  },
+  {
+    name: 'get_box_documentation',
+    description: 'Return the full documented contents of a box/enclosure: landing cables and cores, splices, splitters, ports, and QC flags.',
+    parameters: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: 'Box/enclosure ID, code, or name.' },
+      },
+      required: ['identifier'],
+    },
+  },
+  {
+    name: 'trace_fiber_core',
+    description: 'Trace a documented fiber core through cables, splices, splitters, and customer termination. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: { core_id: { type: 'string', description: 'Fiber core database ID. Resolve a code first with search_network if needed.' } },
+      required: ['core_id'],
+    },
+  },
+  {
+    name: 'get_loss_budget',
+    description: 'Calculate the optical loss budget for a documented fiber core using the configured project settings.',
+    parameters: {
+      type: 'object',
+      properties: {
+        core_id: { type: 'string', description: 'Fiber core database ID.' },
+        olt_type: { type: 'string', description: 'Optional OLT type override from project settings.' },
+      },
+      required: ['core_id'],
+    },
+  },
+  {
+    name: 'list_approvals',
+    description: 'List as-built approval records, including the employee account that submitted them. Use for review/status questions only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['pending', 'approved', 'rejected'] },
+        limit: { type: 'integer', description: 'Maximum number of records, at most 50.' },
+      },
+    },
+  },
+];
 
 function config() {
   const provider = String(
@@ -261,6 +373,8 @@ module.exports = {
   PLAN_SCHEMA,
   GEMINI_PLAN_SCHEMA,
   SYSTEM_PROMPT,
+  ASSISTANT_SYSTEM_PROMPT,
+  TOOL_DECLARATIONS,
   config,
   llmConfigured,
   plannerMode,
