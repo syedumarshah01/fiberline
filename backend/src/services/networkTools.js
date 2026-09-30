@@ -7,6 +7,12 @@ const { traceFiber } = require('./fiberTrace');
 const { buildLossBudget } = require('./lossBudget');
 const { runReadOnlyQuery } = require('./readOnlyQuery');
 const { prepareAgentAction } = require('./agentActions');
+const { createConnectionPlan } = require('./connectionPlan');
+const { loadCurrentTelemetry } = require('./telemetry');
+const { buildWorkOrder } = require('./workOrder');
+const { getProjectSettings } = require('./lossBudget');
+const { resolveBudget } = require('../utils/lossBudget');
+const { resolveCostModel } = require('../utils/dropCost');
 const MAX_LIMIT = 50;
 
 function limitValue(value, fallback = 20) {
@@ -252,6 +258,64 @@ async function requestAgentAction(args, context) {
   return prepareAgentAction(args, context);
 }
 
+function applicationCapabilities() {
+  return {
+    status: 'ok',
+    read_capabilities: [
+      'network search, asset details, summaries, capacity, outage simulation, fiber tracing, loss budgets',
+      'box documentation, splice and splitter records, customer connection plans, work-order worksheets',
+      'telemetry status, approval records, project settings, guarded read-only database questions',
+      'map focus, highlighting, layer visibility, network fitting, and clearing display state',
+    ],
+    confirmed_change_capabilities: [
+      'set_asset_status for documented poles, boxes, cables, customers, and splitters',
+    ],
+    unavailable_without_confirmation: [
+      'creating, deleting, or editing network records',
+      'approving or rejecting as-built work',
+      'employee account or password changes',
+      'arbitrary SQL writes, shell commands, filesystem access, or external service calls',
+    ],
+    safety: 'Every database mutation must use an authenticated, user-owned, expiring confirmation action with stale-target checks. Map commands are display-only.',
+  };
+}
+
+async function customerConnectionPlan(args = {}) {
+  const result = await createConnectionPlan({
+    address: args.address,
+    lat: args.latitude ?? args.lat,
+    lng: args.longitude ?? args.lng,
+    radius_m: args.radius_m,
+    limit: args.limit,
+    route: args.route,
+  });
+  return result.error ? result : { status: 'ok', ...result };
+}
+
+async function workOrder({ identifier, kind = 'splice', by = null } = {}) {
+  const token = textValue(identifier);
+  if (!token) return { error: 'identifier is required' };
+  const { box, candidates } = await loadBox(token);
+  if (!box) return { status: candidates.length ? 'ambiguous' : 'not_found', candidates };
+  const documentation = await loadBoxDocumentation({ enclosureId: box.id });
+  if (!documentation) return { status: 'not_found', error: 'Box documentation not found.' };
+  return { status: 'ok', enclosure: box, work_order: buildWorkOrder({ documentation, kind, by }) };
+}
+
+async function telemetryStatus() {
+  return { status: 'ok', ...(await loadCurrentTelemetry()) };
+}
+
+async function projectSettings() {
+  const settings = await getProjectSettings();
+  return {
+    status: 'ok',
+    settings,
+    resolved_budget: resolveBudget(settings),
+    cost_model: resolveCostModel(settings),
+  };
+}
+
 const MAP_COLORS = {
   yellow: '#f5c542',
   red: '#ef5350',
@@ -340,6 +404,7 @@ async function approvals({ status = 'pending', limit = 20 } = {}) {
 }
 
 const TOOL_HANDLERS = {
+  get_application_capabilities: applicationCapabilities,
   search_network: searchNetwork,
   get_network_summary: networkSummary,
   find_nearby_boxes: nearbyBoxes,
@@ -349,6 +414,10 @@ const TOOL_HANDLERS = {
   trace_fiber_core: traceCore,
   get_loss_budget: lossBudget,
   query_network_database: queryDatabase,
+  get_customer_connection_plan: customerConnectionPlan,
+  get_work_order: workOrder,
+  get_telemetry_status: telemetryStatus,
+  get_project_settings: projectSettings,
   request_agent_action: requestAgentAction,
   control_map: controlMap,
   list_approvals: approvals,
@@ -377,6 +446,10 @@ module.exports = {
   traceCore,
   lossBudget,
   queryDatabase,
+  customerConnectionPlan,
+  workOrder,
+  telemetryStatus,
+  projectSettings,
   requestAgentAction,
   controlMap,
   approvals,

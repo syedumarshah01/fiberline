@@ -1,5 +1,5 @@
-const DEFAULT_MODEL = 'gpt-4o-mini';
-const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_MODEL = 'llama3.2:1b';
+const DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RADIUS_M = 10000;
 
@@ -37,11 +37,16 @@ Use the read-only tools when the answer depends on live network data. You may ca
 
 For questions that need a custom database lookup, use query_network_database with one simple PostgreSQL SELECT. Allowed tables are poles, enclosures, cables, customers, fiber_cores, splices, splitters, splitter_ports, headends, telemetry_status, and as_built_approvals. Common relationships are enclosures.pole_id = poles.id, cables.from_enclosure_id/to_enclosure_id = enclosures.id, fiber_cores.cable_id = cables.id, splices.enclosure_id = enclosures.id, splitters.enclosure_id = enclosures.id, splitter_ports.splitter_id = splitters.id, and customers.id = cables.customer_id. Use explicit columns and LIMIT 100. Never select passwords, tokens, sessions, snapshots, or any account credentials.
 
-You can explain how to use Fiberline without a tool. The application supports map-based asset management, box documentation, splice and splitter wiring, fiber tracing, loss budgets, capacity planning, customer connection plans, outage impact analysis, telemetry, QR field worksheets, work orders, and admin approval/account workflows. The assistant may prepare a set_asset_status action when the user explicitly asks to change an asset status, but that tool only creates a confirmation preview. Never claim that a change happened. The server will execute it only after the authenticated user presses Confirm. Do not prepare actions for creates, deletes, approvals, password resets, or other mutations; tell the user to use the normal UI for those.
+You can explain how to use Fiberline without a tool. The application supports map-based asset management, box documentation, splice and splitter wiring, fiber tracing, loss budgets, capacity planning, customer connection plans, outage impact analysis, telemetry, QR field worksheets, work-order worksheet generation, and admin approval/account workflows. Use get_application_capabilities when the user asks about your scope. Use the specialized tools for these features before falling back to query_network_database. The assistant may prepare a set_asset_status action when the user explicitly asks to change an asset status, but that tool only creates a confirmation preview. Never claim that a change happened. The server will execute it only after the authenticated user presses Confirm. Do not invent a successful write, and do not attempt creates, deletes, approvals, password resets, settings edits, shell commands, filesystem access, or external service calls; explain the safe boundary and direct the user to the normal UI when a request is outside the confirmed action registry.
 
 When answering a data question, cite the asset code/name and distinguish documented facts from assumptions. Keep the answer concise but useful. Do not mention internal tool names or implementation details unless asked.`;
 
 const TOOL_DECLARATIONS = [
+  {
+    name: 'get_application_capabilities',
+    description: 'Describe the software capabilities and the exact safety boundary. Use this when the user asks what the agent can do or how changes are controlled.',
+    parameters: { type: 'object', properties: {} },
+  },
   {
     name: 'control_map',
     description: 'Interact with the current map only. Use for highlighting/filtering assets, focusing the map on an asset or address, showing/hiding layers, fitting the network, or clearing map state. This never changes database data.',
@@ -180,6 +185,44 @@ const TOOL_DECLARATIONS = [
     },
   },
   {
+    name: 'get_customer_connection_plan',
+    description: 'Build a read-only physical customer connection plan from an address or coordinates, including the nearest box, capacity choice, route basis, optical budget, and cost estimate.',
+    parameters: {
+      type: 'object',
+      properties: {
+        address: { type: 'string' },
+        latitude: { type: 'number' },
+        longitude: { type: 'number' },
+        radius_m: { type: 'number', description: 'Search radius in metres, capped by the server.' },
+        limit: { type: 'integer', description: 'Maximum candidate boxes.' },
+        route: { type: 'boolean', description: 'Whether to request a street route when configured.' },
+      },
+    },
+  },
+  {
+    name: 'get_work_order',
+    description: 'Generate a read-only field worksheet from a box documentation record. It does not create or modify a work order.',
+    parameters: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: 'Box/enclosure ID, code, or name.' },
+        kind: { type: 'string', enum: ['splice', 'repair', 'survey', 'install'] },
+        by: { type: 'string', description: 'Optional technician name printed on the worksheet.' },
+      },
+      required: ['identifier'],
+    },
+  },
+  {
+    name: 'get_telemetry_status',
+    description: 'Return the current normalized OLT/ONT telemetry snapshot, freshness, signal state, and correlated impact evidence.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_project_settings',
+    description: 'Return configured optical-loss budgets and planning cost settings. Read-only.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
     name: 'list_approvals',
     description: 'List as-built approval records, including the employee account that submitted them. Use for review/status questions only.',
     parameters: {
@@ -193,10 +236,15 @@ const TOOL_DECLARATIONS = [
 ];
 
 function config() {
+  const baseUrl = (process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const localOllama = /:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0):11434(?:\/|$)/i.test(baseUrl);
   return {
-    apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || '',
+    // Ollama's OpenAI-compatible endpoint ignores the bearer value, but sending
+    // a harmless placeholder keeps the request shape compatible with hosted
+    // OpenAI-compatible endpoints too.
+    apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || (localOllama ? 'ollama' : ''),
     model: process.env.LLM_MODEL || process.env.OPENAI_MODEL || DEFAULT_MODEL,
-    baseUrl: (process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    baseUrl,
     timeoutMs: Math.max(1000, Number(process.env.LLM_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)),
   };
 }

@@ -57,8 +57,9 @@ app.use('/api/headends', headendsRouter);
 app.use('/api/qr', qrRouter);
 app.use('/api/work-orders', workOrdersRouter);
 app.use('/api/customer-plans', connectionPlansRouter);
-// Natural-language read-only graph queries. The route executes only validated
-// graph intents; it never lets generated text become SQL or an asset ID.
+// Natural-language network assistant. It can inspect the allowlisted software
+// tools and prepare only explicit, authenticated confirmation actions; generated
+// text never becomes arbitrary SQL, a shell command, or an asset ID.
 app.use('/api/network', networkQueryRouter);
 // OLT/ONT status feed: POST current events, then consume /status or /stream.
 app.use('/api/telemetry', telemetryRouter);

@@ -98,7 +98,10 @@ async function askNetworkAssistant(query, {
       payload = await response.json().catch(() => null);
       if (!response.ok) throw assistantError(payload?.error?.message || `LLM request failed with HTTP ${response.status}`);
     } catch (error) {
-      if (error.name === 'AbortError') throw assistantError('The network assistant timed out.', 504, 'LLM_TIMEOUT');
+      if (error.name === 'AbortError') throw assistantError('The network assistant timed out. Check that the local model is loaded and increase LLM_TIMEOUT_MS if needed.', 504, 'LLM_TIMEOUT');
+      if (error.name === 'TypeError' && /fetch|connect|socket|network/i.test(error.message || '')) {
+        throw assistantError(`Cannot reach the local LLM at ${settings.baseUrl}. Start Ollama with \'ollama serve\' and verify the model is installed.`, 503, 'LLM_UNREACHABLE');
+      }
       throw error;
     } finally {
       clearTimeout(timer);
