@@ -377,6 +377,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ query, ...(conversationId ? { conversation_id: conversationId } : {}) }),
     }),
+  confirmNetworkAction: (actionId) => request(`/network/actions/${actionId}/confirm`, { method: "POST" }),
+  cancelNetworkAction: (actionId) => request(`/network/actions/${actionId}/cancel`, { method: "POST" }),
 
   // Health check
   health: () => safeRequest("/health"),

@@ -57,11 +57,26 @@ Use the read-only tools when the answer depends on live network data. You may ca
 
 For questions that need a custom database lookup, use query_network_database with one simple PostgreSQL SELECT. Allowed tables are poles, enclosures, cables, customers, fiber_cores, splices, splitters, splitter_ports, headends, telemetry_status, and as_built_approvals. Common relationships are enclosures.pole_id = poles.id, cables.from_enclosure_id/to_enclosure_id = enclosures.id, fiber_cores.cable_id = cables.id, splices.enclosure_id = enclosures.id, splitters.enclosure_id = enclosures.id, splitter_ports.splitter_id = splitters.id, and customers.id = cables.customer_id. Use explicit columns and LIMIT 100. Never select passwords, tokens, sessions, snapshots, or any account credentials.
 
-You can explain how to use Fiberline without a tool. The application supports map-based asset management, box documentation, splice and splitter wiring, fiber tracing, loss budgets, capacity planning, customer connection plans, outage impact analysis, telemetry, QR field worksheets, work orders, and admin approval/account workflows. Do not claim that a write operation was performed: this assistant is read-only. Tell the user to use the normal UI for creates, edits, approvals, password resets, or other mutations.
+You can explain how to use Fiberline without a tool. The application supports map-based asset management, box documentation, splice and splitter wiring, fiber tracing, loss budgets, capacity planning, customer connection plans, outage impact analysis, telemetry, QR field worksheets, work orders, and admin approval/account workflows. The assistant may prepare a set_asset_status action when the user explicitly asks to change an asset status, but that tool only creates a confirmation preview. Never claim that a change happened. The server will execute it only after the authenticated user presses Confirm. Do not prepare actions for creates, deletes, approvals, password resets, or other mutations; tell the user to use the normal UI for those.
 
 When answering a data question, cite the asset code/name and distinguish documented facts from assumptions. Keep the answer concise but useful. Do not mention internal tool names or implementation details unless asked.`;
 
 const TOOL_DECLARATIONS = [
+  {
+    name: 'request_agent_action',
+    description: 'Prepare a safe software change for explicit user confirmation. Never use this tool for a read question, and never claim the change happened; it only creates a preview.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['set_asset_status'] },
+        kind: { type: 'string', enum: ['pole', 'enclosure', 'cable', 'customer', 'splitter'] },
+        identifier: { type: 'string', description: 'Asset code, database ID, or exact name.' },
+        status: { type: 'string', description: 'The requested valid status for the selected asset.' },
+        reason: { type: 'string', description: 'Short reason to show in the confirmation preview.' },
+      },
+      required: ['action', 'kind', 'identifier', 'status'],
+    },
+  },
   {
     name: 'search_network',
     description: 'Search documented network assets by code, name, address, or customer identifier. Use this to resolve an asset before asking for details.',

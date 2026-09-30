@@ -6,6 +6,7 @@ const { loadBoxDocumentation } = require('./boxDocumentation');
 const { traceFiber } = require('./fiberTrace');
 const { buildLossBudget } = require('./lossBudget');
 const { runReadOnlyQuery } = require('./readOnlyQuery');
+const { prepareAgentAction } = require('./agentActions');
 const MAX_LIMIT = 50;
 
 function limitValue(value, fallback = 20) {
@@ -247,6 +248,10 @@ async function queryDatabase({ sql } = {}) {
   return runReadOnlyQuery(sql);
 }
 
+async function requestAgentAction(args, context) {
+  return prepareAgentAction(args, context);
+}
+
 async function approvals({ status = 'pending', limit = 20 } = {}) {
   const capped = limitValue(limit);
   const rows = await db('as_built_approvals as a')
@@ -272,14 +277,15 @@ const TOOL_HANDLERS = {
   trace_fiber_core: traceCore,
   get_loss_budget: lossBudget,
   query_network_database: queryDatabase,
+  request_agent_action: requestAgentAction,
   list_approvals: approvals,
 };
 
-async function executeNetworkTool(name, args = {}) {
+async function executeNetworkTool(name, args = {}, context = {}) {
   const handler = TOOL_HANDLERS[name];
   if (!handler) return { error: `Tool ${name} is not available.` };
   try {
-    return await handler(args);
+    return await handler(args, context);
   } catch (error) {
     // Tool failures become model-visible data, not stack traces or a way to
     // make the model retry arbitrary SQL.
@@ -298,6 +304,7 @@ module.exports = {
   traceCore,
   lossBudget,
   queryDatabase,
+  requestAgentAction,
   approvals,
   executeNetworkTool,
 };

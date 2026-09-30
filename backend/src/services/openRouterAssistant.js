@@ -42,7 +42,7 @@ function visualizationForTool(name, result) {
   return null;
 }
 
-async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id = null, userId = 'anonymous' } = {}) {
+async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id = null, userId = 'anonymous', userRole = 'technician' } = {}) {
   const settings = config();
   if (settings.provider !== 'openrouter') {
     throw providerError('The network assistant is not configured for OpenRouter.', 503, 'OPENROUTER_NOT_SELECTED');
@@ -65,6 +65,7 @@ async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id 
 
   const toolCalls = [];
   let visualization = conversation?.visualization || null;
+  let pendingAction = conversation?.pending_action || null;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
@@ -104,7 +105,7 @@ async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id 
       const answer = String(message.content || '').trim();
       if (!answer) throw providerError('OpenRouter returned no readable assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
       if (/\b(?:clear|hide|remove)\b.*\b(?:map|highlight|visual)/i.test(String(query))) visualization = null;
-      conversations.set(id, { userId: String(userId), updatedAt: Date.now(), messages: messages.slice(-MAX_MESSAGES), visualization });
+      conversations.set(id, { userId: String(userId), updatedAt: Date.now(), messages: messages.slice(-MAX_MESSAGES), visualization, pending_action: pendingAction });
       return {
         status: 'ok',
         planner_source: 'openrouter-tools',
@@ -112,6 +113,7 @@ async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id 
         answer_text: answer,
         tool_calls: toolCalls,
         visualization,
+        pending_action: pendingAction,
       };
     }
 
@@ -121,8 +123,9 @@ async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id 
       if (typeof args === 'string') {
         try { args = JSON.parse(args); } catch { args = {}; }
       }
-      const result = await executeNetworkTool(name, args);
+      const result = await executeNetworkTool(name, args, { userId, userRole });
       visualization = visualizationForTool(name, result) || visualization;
+      if (result?.pending_action) pendingAction = result.pending_action;
       toolCalls.push({ name, arguments: args, ok: !result?.error });
       messages.push({
         role: 'tool',

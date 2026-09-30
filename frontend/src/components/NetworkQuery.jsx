@@ -22,6 +22,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
   const [error, setError] = useState(null);
   const [voiceError, setVoiceError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const [showTyping, setShowTyping] = useState(false);
   const [conversationId, setConversationId] = useState(null);
@@ -124,6 +125,34 @@ export default function NetworkQuery({ onClose, onVisualize }) {
     runQuery(query);
   }
 
+  async function confirmAction() {
+    const actionId = result?.pending_action?.id;
+    if (!actionId) return;
+    setActionBusy(true);
+    try {
+      const executed = await api.confirmNetworkAction(actionId);
+      setResult((current) => ({ ...current, pending_action: null, answer_text: executed.message || "The confirmed action was completed." }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function cancelAction() {
+    const actionId = result?.pending_action?.id;
+    if (!actionId) return;
+    setActionBusy(true);
+    try {
+      await api.cancelNetworkAction(actionId);
+      setResult((current) => ({ ...current, pending_action: null, answer_text: "The action was cancelled. No data was changed." }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   function close() {
     recognitionRef.current?.abort?.();
     recognitionRef.current = null;
@@ -186,6 +215,15 @@ export default function NetworkQuery({ onClose, onVisualize }) {
         {error && <p className="error-row" role="alert">{error}</p>}
         {result?.message && <p className={result.status === "ok" ? "query-note" : "error-row"}>{result.message}</p>}
         {result?.answer_text && <div className="query-answer" aria-live="polite">{result.answer_text}</div>}
+        {result?.pending_action && (
+          <div className="agent-action-card" role="alert">
+            <b>Confirmation required</b>
+            <p>{result.pending_action.target_label}: <strong>{result.pending_action.before || "unset"}</strong> → <strong>{result.pending_action.after}</strong></p>
+            {result.pending_action.reason && <small>{result.pending_action.reason}</small>}
+            <div className="network-query-actions"><button className="btn" disabled={actionBusy} onClick={cancelAction}>Cancel</button><button className="btn btn-primary" disabled={actionBusy} onClick={confirmAction}>{actionBusy ? "Applying…" : "Confirm change"}</button></div>
+            <small>This change will be applied only after you confirm it.</small>
+          </div>
+        )}
         {result?.tool_calls?.length > 0 && <small className="query-tool-note">Checked {result.tool_calls.length} live network source{result.tool_calls.length === 1 ? "" : "s"}.</small>}
 
         {result?.status === "needs_clarification" && result.candidates?.length > 0 && (

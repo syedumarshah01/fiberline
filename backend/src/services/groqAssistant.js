@@ -42,7 +42,7 @@ function visualizationForTool(name, result) {
   return null;
 }
 
-async function askGroqNetwork(query, { fetchImpl = fetch, conversation_id = null, userId = 'anonymous' } = {}) {
+async function askGroqNetwork(query, { fetchImpl = fetch, conversation_id = null, userId = 'anonymous', userRole = 'technician' } = {}) {
   const settings = config();
   if (settings.provider !== 'groq') {
     throw providerError('The network assistant is not configured for Groq.', 503, 'GROQ_NOT_SELECTED');
@@ -70,6 +70,7 @@ async function askGroqNetwork(query, { fetchImpl = fetch, conversation_id = null
 
   const toolCalls = [];
   let visualization = conversation?.visualization || null;
+  let pendingAction = conversation?.pending_action || null;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
@@ -107,7 +108,7 @@ async function askGroqNetwork(query, { fetchImpl = fetch, conversation_id = null
       const answer = String(message.content || '').trim();
       if (!answer) throw providerError('Groq returned no readable assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
       if (/\b(?:clear|hide|remove)\b.*\b(?:map|highlight|visual)/i.test(String(query))) visualization = null;
-      conversations.set(id, { userId: String(userId), updatedAt: Date.now(), messages: messages.slice(-MAX_MESSAGES), visualization });
+      conversations.set(id, { userId: String(userId), updatedAt: Date.now(), messages: messages.slice(-MAX_MESSAGES), visualization, pending_action: pendingAction });
       return {
         status: 'ok',
         planner_source: 'groq-tools',
@@ -115,6 +116,7 @@ async function askGroqNetwork(query, { fetchImpl = fetch, conversation_id = null
         answer_text: answer,
         tool_calls: toolCalls,
         visualization,
+        pending_action: pendingAction,
       };
     }
 
@@ -124,8 +126,9 @@ async function askGroqNetwork(query, { fetchImpl = fetch, conversation_id = null
       if (typeof args === 'string') {
         try { args = JSON.parse(args); } catch { args = {}; }
       }
-      const result = await executeNetworkTool(name, args);
+      const result = await executeNetworkTool(name, args, { userId, userRole });
       visualization = visualizationForTool(name, result) || visualization;
+      if (result?.pending_action) pendingAction = result.pending_action;
       toolCalls.push({ name, arguments: args, ok: !result?.error });
       messages.push({
         role: 'tool',

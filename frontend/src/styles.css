@@ -1067,6 +1067,9 @@ code, .mono { font-family: var(--font-mono); }
 .query-result-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .query-note { margin: 0; color: var(--text-muted); font-size: 11px; }
 .query-answer { white-space: pre-wrap; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); line-height: 1.55; }
+.agent-action-card { display: grid; gap: 7px; margin-top: 12px; padding: 12px; border: 1px solid rgba(245, 166, 35, .7); border-left: 3px solid var(--amber); border-radius: var(--radius); background: rgba(245, 166, 35, .09); }
+.agent-action-card p { margin: 0; }
+.agent-action-card small { color: var(--text-muted); }
 .query-tool-note { display: block; margin-top: 8px; color: var(--text-muted); }
 .query-list { display: grid; gap: 6px; max-height: 270px; overflow: auto; }
 .query-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 9px; border: 1px solid var(--border-soft); border-radius: var(--radius); font-size: 12px; }
