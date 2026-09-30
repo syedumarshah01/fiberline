@@ -75,6 +75,9 @@ app.use((err, req, res, next) => {
     ...(err.code ? { code: err.code } : {}),
     ...(err.conflict ? { conflict: err.conflict } : {}),
     ...(err.approval ? { approval: err.approval } : {}),
+    ...(err.request_id ? { request_id: err.request_id } : {}),
+    ...(err.stage ? { stage: err.stage } : {}),
+    ...(err.assistant_trace ? { assistant_trace: err.assistant_trace } : {}),
   });
 });
 

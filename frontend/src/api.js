@@ -4,6 +4,8 @@ const BASE = "/api";
 const MAX_RETRIES = 3;
 const INITIAL_DELAY_MS = 1000;
 const MAX_DELAY_MS = 10000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const NETWORK_QUERY_TIMEOUT_MS = 210000;
 
 /**
  * Validates that the response data is not null or undefined.
@@ -65,11 +67,18 @@ async function requestText(path, options = {}) {
 }
 
 async function request(path, options = {}, retryCount = 0) {
+  let timeoutId;
+  let retryEnabled = true;
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-    const { headers: optionHeaders = {}, ...requestOptions } = options;
+    const {
+      headers: optionHeaders = {},
+      timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+      retry = true,
+      ...requestOptions
+    } = options;
+    retryEnabled = retry;
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(`${BASE}${path}`, {
       ...requestOptions,
       credentials: "include",
@@ -104,11 +113,14 @@ async function request(path, options = {}, retryCount = 0) {
 
     return validateResponse(body, path);
   } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
     if (error.name === 'AbortError') {
-      throw new Error(`Request timeout for ${path}`);
+      const timeoutError = new Error(`Request timeout for ${path}`);
+      timeoutError.code = 'REQUEST_TIMEOUT';
+      throw timeoutError;
     }
 
-    if (error.retryable && retryCount < MAX_RETRIES) {
+    if (error.retryable && retryEnabled && retryCount < MAX_RETRIES) {
       const delay = calculateDelay(retryCount);
       console.warn(`Retrying ${path} (attempt ${retryCount + 1}/${MAX_RETRIES})`);
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -372,9 +384,14 @@ export const api = {
 
   // Natural-language network graph queries. The backend translates the text into
   // a validated graph operation and returns both the answer and its assumptions.
+  // Local 1B models can spend time loading weights and executing several tool
+  // rounds. Do not retry this request: retrying would duplicate model work and
+  // can make a slow local model appear hung.
   networkQuery: (query, conversationId = null) =>
     request("/network/query", {
       method: "POST",
+      timeoutMs: NETWORK_QUERY_TIMEOUT_MS,
+      retry: false,
       body: JSON.stringify({ query, ...(conversationId ? { conversation_id: conversationId } : {}) }),
     }),
   confirmNetworkAction: (actionId) => request(`/network/actions/${actionId}/confirm`, { method: "POST" }),

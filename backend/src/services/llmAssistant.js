@@ -16,10 +16,11 @@ const LLM_TOOLS = TOOL_DECLARATIONS.map((tool) => ({
   function: tool,
 }));
 
-function assistantError(message, status = 502, code = 'LLM_REQUEST_FAILED') {
+function assistantError(message, status = 502, code = 'LLM_REQUEST_FAILED', meta = {}) {
   const error = new Error(message);
   error.status = status;
   error.code = code;
+  Object.assign(error, meta);
   return error;
 }
 
@@ -46,12 +47,23 @@ function visualizationForTool(name, result) {
 async function askNetworkAssistant(query, {
   fetchImpl = fetch,
   conversation_id = null,
+  request_id = null,
   userId = 'anonymous',
   userRole = 'technician',
 } = {}) {
   const settings = config();
+  const trace = {
+    request_id,
+    model: settings.model,
+    rounds: 0,
+    tool_calls: [],
+  };
   if (!settings.apiKey) {
-    throw assistantError('The network assistant is not configured. Set LLM_API_KEY in backend/.env.', 503, 'LLM_NOT_CONFIGURED');
+    throw assistantError('The network assistant is not configured. Set LLM_API_KEY in backend/.env.', 503, 'LLM_NOT_CONFIGURED', {
+      request_id,
+      stage: 'configuration',
+      assistant_trace: trace,
+    });
   }
 
   const now = Date.now();
@@ -76,6 +88,8 @@ async function askNetworkAssistant(query, {
   let pendingAction = conversation?.pending_action || null;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    trace.rounds = round + 1;
+    console.info(`[network-query:${request_id || 'unknown'}] sending model request round=${trace.rounds} model=${settings.model}`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
     let payload;
@@ -98,10 +112,12 @@ async function askNetworkAssistant(query, {
       payload = await response.json().catch(() => null);
       if (!response.ok) throw assistantError(payload?.error?.message || `LLM request failed with HTTP ${response.status}`);
     } catch (error) {
-      if (error.name === 'AbortError') throw assistantError('The network assistant timed out. Check that the local model is loaded and increase LLM_TIMEOUT_MS if needed.', 504, 'LLM_TIMEOUT');
+      const meta = { request_id, stage: 'model_request', assistant_trace: { ...trace, tool_calls: [...trace.tool_calls] } };
+      if (error.name === 'AbortError') throw assistantError('The network assistant timed out. Check that the local model is loaded and increase LLM_TIMEOUT_MS if needed.', 504, 'LLM_TIMEOUT', meta);
       if (error.name === 'TypeError' && /fetch|connect|socket|network/i.test(error.message || '')) {
-        throw assistantError(`Cannot reach the local LLM at ${settings.baseUrl}. Start Ollama with \'ollama serve\' and verify the model is installed.`, 503, 'LLM_UNREACHABLE');
+        throw assistantError(`Cannot reach the local LLM at ${settings.baseUrl}. Start Ollama with \'ollama serve\' and verify the model is installed.`, 503, 'LLM_UNREACHABLE', meta);
       }
+      if (!error.request_id) Object.assign(error, meta);
       throw error;
     } finally {
       clearTimeout(timer);
@@ -111,6 +127,7 @@ async function askNetworkAssistant(query, {
     if (!message) throw assistantError('The LLM returned an empty assistant response.', 502, 'LLM_EMPTY_RESPONSE');
     messages.push(message);
     const calls = message.tool_calls || [];
+    console.info(`[network-query:${request_id || 'unknown'}] model response round=${trace.rounds} tool_calls=${calls.length}`);
     if (!calls.length) {
       const answer = String(message.content || '').trim();
       if (!answer) throw assistantError('The LLM returned no readable assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
@@ -130,6 +147,7 @@ async function askNetworkAssistant(query, {
         tool_calls: toolCalls,
         visualization,
         pending_action: pendingAction,
+        assistant_trace: { ...trace, tool_calls: [...trace.tool_calls] },
       };
     }
 
@@ -139,6 +157,7 @@ async function askNetworkAssistant(query, {
       if (typeof args === 'string') {
         try { args = JSON.parse(args); } catch { args = {}; }
       }
+      trace.tool_calls.push(name || 'unknown');
       const result = await executeNetworkTool(name, args, { userId, userRole });
       visualization = visualizationForTool(name, result) || visualization;
       if (result?.pending_action) pendingAction = result.pending_action;
@@ -152,7 +171,11 @@ async function askNetworkAssistant(query, {
     }
   }
 
-  throw assistantError('The network assistant used too many graph lookups for one question.', 502, 'LLM_TOOL_LIMIT');
+  throw assistantError('The network assistant used too many graph lookups for one question.', 502, 'LLM_TOOL_LIMIT', {
+    request_id,
+    stage: 'tool_loop',
+    assistant_trace: { ...trace, tool_calls: [...trace.tool_calls] },
+  });
 }
 
 module.exports = { askNetworkAssistant, LLM_TOOLS };

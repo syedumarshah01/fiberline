@@ -1,6 +1,6 @@
 const DEFAULT_MODEL = 'llama3.2:1b';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 180000;
 const MAX_RADIUS_M = 10000;
 
 const PLAN_SCHEMA = {

@@ -22,6 +22,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
   const [error, setError] = useState(null);
   const [voiceError, setVoiceError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const [showTyping, setShowTyping] = useState(false);
@@ -47,7 +48,12 @@ export default function NetworkQuery({ onClose, onVisualize }) {
       onVisualize?.(response.visualization || null);
     } catch (requestError) {
       if (requestError.details?.intent || requestError.details?.status) setResult(requestError.details);
-      else setError(requestError.details?.error || requestError.message);
+      else {
+        const details = requestError.details || {};
+        const requestId = details.request_id ? ` Request ID: ${details.request_id}.` : "";
+        const stage = details.stage ? ` Stage: ${details.stage}.` : "";
+        setError(`${details.error || requestError.message}${stage}${requestId}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -113,6 +119,26 @@ export default function NetworkQuery({ onClose, onVisualize }) {
       recognitionRef.current = null;
     };
   }, [showTyping, startListening]);
+
+  useEffect(() => {
+    if (!loading) {
+      setLoadingStage("");
+      return undefined;
+    }
+    const stages = [
+      "Sending your prompt to local Ollama…",
+      "Waiting for llama3.2:1b to respond…",
+      "The agent is checking Fiberline tools…",
+      "Still working — local models can take a little longer on their first request…",
+    ];
+    let index = 0;
+    setLoadingStage(stages[index]);
+    const timer = setInterval(() => {
+      index = Math.min(index + 1, stages.length - 1);
+      setLoadingStage(stages[index]);
+    }, 7000);
+    return () => clearInterval(timer);
+  }, [loading]);
 
   function stopListening() {
     recognitionRef.current?.stop?.();
@@ -191,7 +217,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
           </div>
         )}
 
-        {loading && <div className="voice-query-hero"><div className="voice-thinking" aria-hidden="true"><span /><span /><span /></div><strong>Checking the network…</strong><span className="voice-query-hint">The assistant is looking through the documented network graph.</span></div>}
+        {loading && <div className="voice-query-hero"><div className="voice-thinking" aria-hidden="true"><span /><span /><span /></div><strong>{loadingStage || "Starting the network assistant…"}</strong><span className="voice-query-hint">Your prompt is being processed by the local model; this request is not retried.</span></div>}
 
         {showTyping && !loading && !result && (
           <form className="network-query-form" onSubmit={submit}>
@@ -225,6 +251,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
           </div>
         )}
         {result?.tool_calls?.length > 0 && <small className="query-tool-note">Checked {result.tool_calls.length} live network source{result.tool_calls.length === 1 ? "" : "s"}.</small>}
+        {result?.assistant_trace && <small className="query-tool-note">Model: {result.assistant_trace.model} · rounds: {result.assistant_trace.rounds} · request: {result.assistant_trace.request_id}</small>}
 
         {result?.status === "needs_clarification" && result.candidates?.length > 0 && (
           <div className="query-results"><b>Possible poles</b>{result.candidates.map((candidate) => <div className="query-row" key={candidate.id}>{candidate.code}{candidate.name ? ` — ${candidate.name}` : ""}</div>)}</div>
