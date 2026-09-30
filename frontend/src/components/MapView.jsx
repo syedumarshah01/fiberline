@@ -117,6 +117,18 @@ function MapFlyTo({ targetLatLng, locateLatLng, queryLatLng }) {
 }
 
 /** Reports live zoom changes upward so cable labels can gate on zoom level. */
+function FitNetwork({ active, poles, enclosures }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!active) return;
+    const points = [...poles, ...enclosures]
+      .filter((asset) => asset.lat != null && asset.lng != null)
+      .map((asset) => [Number(asset.lat), Number(asset.lng)]);
+    if (points.length > 1) map.fitBounds(points, { padding: [40, 40], maxZoom: 17 });
+  }, [active, enclosures, map, poles]);
+  return null;
+}
+
 function ZoomTracker({ onZoomChange }) {
   const map = useMap();
   useEffect(() => {
@@ -205,7 +217,9 @@ export default function MapView({
     return center?.lat != null && center?.lng != null ? [Number(center.lat), Number(center.lng)] : null;
   }, [networkVisualization]);
 
-  const queryBoxIds = useMemo(() => new Set(networkVisualization?.box_ids || []), [networkVisualization]);
+  const queryStyle = networkVisualization?.type === "map_command" ? networkVisualization.style : networkVisualization?.type === "asset_style" ? networkVisualization : null;
+  const queryBoxIds = useMemo(() => new Set(queryStyle?.asset_ids || networkVisualization?.box_ids || []), [queryStyle, networkVisualization]);
+  const mapVisibility = networkVisualization?.visibility || {};
 
   const center = useMemo(() => {
     if (poles.length && poles[0].lat != null && poles[0].lng != null) return [poles[0].lat, poles[0].lng];
@@ -224,10 +238,14 @@ export default function MapView({
       />
       <ClickCatcher onMapClick={onMapClick} />
       <MapFlyTo targetLatLng={flyToTarget} locateLatLng={locateLatLng} queryLatLng={queryLatLng} />
+      <FitNetwork active={networkVisualization?.type === "map_command" && networkVisualization.action === "fit_network"} poles={poles} enclosures={enclosures} />
       <ZoomTracker onZoomChange={setZoom} />
 
       {networkVisualization?.type === "nearby_boxes" && queryLatLng && (
         <Circle center={queryLatLng} radius={Number(networkVisualization.radius_m) || 500} pathOptions={{ color: "#3fd0c9", weight: 2, dashArray: "7 6", fillColor: "#3fd0c9", fillOpacity: 0.08 }} />
+      )}
+      {networkVisualization?.type === "map_command" && networkVisualization.action === "focus" && queryLatLng && networkVisualization.radius_m && (
+        <Circle center={queryLatLng} radius={Number(networkVisualization.radius_m)} pathOptions={{ color: "#ff6b35", weight: 2, dashArray: "7 6", fillColor: "#ff6b35", fillOpacity: 0.08 }} />
       )}
       {enclosures.filter((enc) => queryBoxIds.has(enc.id) && enc.lat != null && enc.lng != null).map((enc) => (
         <CircleMarker key={`query-${enc.id}`} center={[enc.lat, enc.lng]} radius={11} pathOptions={{ color: "#ff6b35", weight: 3, fillColor: "#ff6b35", fillOpacity: 0.12 }} />
@@ -260,7 +278,7 @@ export default function MapView({
         />
       ))}
 
-      {cables.map((cable) => {
+      {mapVisibility.cables !== false && cables.map((cable) => {
         const isSpliceLive = cable.cable_type !== "drop";
         const hasSplicedCores = (cable.spliced_core_count || 0) > 0;
         const isSelected = cable.id === selectedCableId;
@@ -344,7 +362,7 @@ export default function MapView({
         );
       })}
 
-      {poles.map((pole) => {
+      {mapVisibility.poles !== false && poles.map((pole) => {
         if (pole.lat == null || pole.lng == null) return null;
         const isFailedPole = failurePoleId != null && pole.id === failurePoleId;
         return (
@@ -363,7 +381,7 @@ export default function MapView({
         );
       })}
 
-      {enclosures.map((enc) => {
+      {mapVisibility.boxes !== false && enclosures.map((enc) => {
         if (enc.lat == null || enc.lng == null) return null;
         const isSelected = enc.id === selectedEnclosureId;
         const boxState = impactBoxState(enc.id, overlay);
@@ -371,7 +389,7 @@ export default function MapView({
         // tooltips on mouseover) and permanently for the selected box — they
         // never blanket the map regardless of zoom.
         const labelPinned = isSelected;
-        const agentMarked = networkVisualization?.type === "asset_style" && networkVisualization.kind === "enclosure" && (networkVisualization.scope === "all" || (networkVisualization.asset_ids || []).includes(enc.id));
+        const agentMarked = queryStyle?.kind === "enclosure" && (queryStyle.scope === "all" || queryBoxIds.has(enc.id));
         return (
           <Marker
             key={enc.id}
@@ -411,7 +429,7 @@ export default function MapView({
         );
       })}
 
-      {(overlay?.telemetryDevices || []).map((device) => {
+      {mapVisibility.telemetry !== false && (overlay?.telemetryDevices || []).map((device) => {
         if (device.lat == null || device.lng == null) return null;
         const color = device.state === "link_down"
           ? "#ef5350"

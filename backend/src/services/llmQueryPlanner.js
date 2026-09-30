@@ -53,7 +53,7 @@ Important:
 
 const ASSISTANT_SYSTEM_PROMPT = `You are Fiberline, an operations assistant for a fiber network management application. Answer questions about the software, the network, customers, poles, boxes, cables, capacity, outages, approvals, and field operations.
 
-Use the read-only tools when the answer depends on live network data. You may call more than one tool and may use a previous tool result to decide what to inspect next. For map-only requests such as “mark all boxes yellow”, use set_map_visualization; it changes only the current browser display and is safe to do without confirmation. Never invent an asset, customer, outage, capacity number, account, or approval. If a tool returns an error or no match, say that clearly and ask for the missing identifier or location.
+Use the read-only tools when the answer depends on live network data. You may call more than one tool and may use a previous tool result to decide what to inspect next. For map-only requests such as “mark all boxes yellow”, “focus the map on box NAP-14”, “hide cables”, “show the whole network”, or “clear the highlights”, use control_map; it changes only the current browser display and is safe to do without confirmation. Never invent an asset, customer, outage, capacity number, account, or approval. If a tool returns an error or no match, say that clearly and ask for the missing identifier or location.
 
 For questions that need a custom database lookup, use query_network_database with one simple PostgreSQL SELECT. Allowed tables are poles, enclosures, cables, customers, fiber_cores, splices, splitters, splitter_ports, headends, telemetry_status, and as_built_approvals. Common relationships are enclosures.pole_id = poles.id, cables.from_enclosure_id/to_enclosure_id = enclosures.id, fiber_cores.cable_id = cables.id, splices.enclosure_id = enclosures.id, splitters.enclosure_id = enclosures.id, splitter_ports.splitter_id = splitters.id, and customers.id = cables.customer_id. Use explicit columns and LIMIT 100. Never select passwords, tokens, sessions, snapshots, or any account credentials.
 
@@ -62,6 +62,28 @@ You can explain how to use Fiberline without a tool. The application supports ma
 When answering a data question, cite the asset code/name and distinguish documented facts from assumptions. Keep the answer concise but useful. Do not mention internal tool names or implementation details unless asked.`;
 
 const TOOL_DECLARATIONS = [
+  {
+    name: 'control_map',
+    description: 'Interact with the current map only. Use for highlighting/filtering assets, focusing the map on an asset or address, showing/hiding layers, fitting the network, or clearing map state. This never changes database data.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['highlight', 'focus_asset', 'focus_location', 'set_visibility', 'fit_network', 'clear'] },
+        kind: { type: 'string', enum: ['enclosure', 'pole', 'cable'] },
+        identifier: { type: 'string', description: 'Asset code, ID, or name for focus_asset.' },
+        address: { type: 'string', description: 'Address for focus_location.' },
+        latitude: { type: 'number' },
+        longitude: { type: 'number' },
+        radius_m: { type: 'number' },
+        scope: { type: 'string', enum: ['all', 'selected'] },
+        color: { type: 'string', enum: ['yellow', 'red', 'green', 'blue', 'orange', 'teal', 'purple'] },
+        ids: { type: 'array', items: { type: 'string' } },
+        layer: { type: 'string', enum: ['poles', 'boxes', 'cables', 'telemetry', 'labels'] },
+        visible: { type: 'boolean' },
+      },
+      required: ['action'],
+    },
+  },
   {
     name: 'set_map_visualization',
     description: 'Change only the current map display, not database data. Use this when the user asks to mark, color, highlight, hide, or visualize boxes, poles, or cables.',

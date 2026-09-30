@@ -252,35 +252,82 @@ async function requestAgentAction(args, context) {
   return prepareAgentAction(args, context);
 }
 
-async function setMapVisualization({ kind = 'enclosure', scope = 'all', color = 'yellow', ids = [] } = {}) {
-  const allowedKinds = ['enclosure', 'pole', 'cable'];
-  const colors = {
-    yellow: '#f5c542',
-    red: '#ef5350',
-    green: '#4caf50',
-    blue: '#42a5f5',
-    orange: '#ff6b35',
-    teal: '#3fd0c9',
-    purple: '#9c7cff',
-  };
+const MAP_COLORS = {
+  yellow: '#f5c542',
+  red: '#ef5350',
+  green: '#4caf50',
+  blue: '#42a5f5',
+  orange: '#ff6b35',
+  teal: '#3fd0c9',
+  purple: '#9c7cff',
+};
+
+function mapStyle({ kind = 'enclosure', scope = 'all', color = 'yellow', ids = [] } = {}) {
   const normalizedKind = String(kind).toLowerCase();
   const normalizedColor = String(color).toLowerCase();
-  if (!allowedKinds.includes(normalizedKind)) return { error: 'Map styling supports boxes, poles, or cables.' };
-  if (!colors[normalizedColor]) return { error: `Color must be one of: ${Object.keys(colors).join(', ')}.` };
+  if (!['enclosure', 'pole', 'cable'].includes(normalizedKind)) return { error: 'Map styling supports boxes, poles, or cables.' };
+  if (!MAP_COLORS[normalizedColor]) return { error: `Color must be one of: ${Object.keys(MAP_COLORS).join(', ')}.` };
   if (scope !== 'all' && scope !== 'selected') return { error: 'Map styling scope must be all or selected.' };
   const assetIds = Array.isArray(ids) ? ids.map((id) => String(id)).slice(0, 100) : [];
   if (scope === 'selected' && !assetIds.length) return { error: 'At least one asset is required for selected map styling.' };
   return {
-    status: 'ok',
-    visualization: {
-      type: 'asset_style',
-      kind: normalizedKind,
-      scope,
-      asset_ids: assetIds,
-      color: normalizedColor,
-      color_hex: colors[normalizedColor],
-    },
+    type: 'asset_style', kind: normalizedKind, scope, asset_ids: assetIds,
+    color: normalizedColor, color_hex: MAP_COLORS[normalizedColor],
   };
+}
+
+async function setMapVisualization(args = {}) {
+  const style = mapStyle(args);
+  if (style.error) return style;
+  return { status: 'ok', visualization: style };
+}
+
+async function controlMap({ action, kind = 'enclosure', identifier, address, latitude, longitude, radius_m, scope = 'all', color = 'yellow', ids = [], layer, visible } = {}) {
+  const normalizedAction = String(action || '').toLowerCase();
+  if (normalizedAction === 'clear') return { status: 'ok', map_command: { type: 'map_command', action: 'clear' } };
+  if (normalizedAction === 'fit_network') return { status: 'ok', map_command: { type: 'map_command', action: 'fit_network' } };
+  if (normalizedAction === 'set_visibility') {
+    const layers = ['poles', 'boxes', 'cables', 'telemetry', 'labels'];
+    if (!layers.includes(layer)) return { error: `Layer must be one of: ${layers.join(', ')}.` };
+    return { status: 'ok', map_command: { type: 'map_command', action: 'set_visibility', visibility: { [layer]: Boolean(visible) } } };
+  }
+  if (normalizedAction === 'highlight') {
+    const style = mapStyle({ kind, scope, color, ids });
+    if (style.error) return style;
+    return { status: 'ok', map_command: { type: 'map_command', action: 'highlight', style } };
+  }
+  if (normalizedAction === 'focus_asset') {
+    const details = await assetDetails({ kind, identifier });
+    const asset = details.exact_or_matching_assets?.[0];
+    if (!asset) return details;
+    if (asset.lat == null || asset.lng == null) return { error: 'The asset has no map coordinates.', asset };
+    const mapKind = asset.kind === 'enclosure' ? 'enclosure' : asset.kind;
+    return {
+      status: 'ok',
+      map_command: {
+        type: 'map_command', action: 'focus', center: { lat: Number(asset.lat), lng: Number(asset.lng) },
+        zoom: 17, selection: { kind: mapKind, id: asset.id, label: asset.code || asset.name || asset.customer_code },
+        style: mapKind === 'enclosure' || mapKind === 'pole' || mapKind === 'cable'
+          ? mapStyle({ kind: mapKind, scope: 'selected', color: 'orange', ids: [asset.id] })
+          : null,
+      },
+      asset,
+    };
+  }
+  if (normalizedAction === 'focus_location') {
+    let point = coordinates({ lat: latitude, lng: longitude });
+    let label = null;
+    if (!point && textValue(address)) {
+      const resolved = await resolveAddress(address, { limit: 5 });
+      if (resolved.resolved) {
+        point = { lat: Number(resolved.resolved.lat), lng: Number(resolved.resolved.lng) };
+        label = resolved.resolved.label;
+      } else return { error: 'The address could not be resolved.', candidates: resolved.candidates };
+    }
+    if (!point) return { error: 'Provide a valid address or coordinates.' };
+    return { status: 'ok', map_command: { type: 'map_command', action: 'focus', center: point, radius_m: radius_m ? Number(radius_m) : null, label } };
+  }
+  return { error: 'Map action must be highlight, focus_asset, focus_location, set_visibility, fit_network, or clear.' };
 }
 
 async function approvals({ status = 'pending', limit = 20 } = {}) {
@@ -310,6 +357,7 @@ const TOOL_HANDLERS = {
   query_network_database: queryDatabase,
   request_agent_action: requestAgentAction,
   set_map_visualization: setMapVisualization,
+  control_map: controlMap,
   list_approvals: approvals,
 };
 
@@ -338,6 +386,7 @@ module.exports = {
   queryDatabase,
   requestAgentAction,
   setMapVisualization,
+  controlMap,
   approvals,
   executeNetworkTool,
 };
