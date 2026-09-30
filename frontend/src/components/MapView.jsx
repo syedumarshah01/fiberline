@@ -45,7 +45,7 @@ const failedPoleIcon = divIcon(
   [18, 18],
 );
 
-function enclosureIcon(availableCores, isSelected, boxState = {}, behind = 0) {
+function enclosureIcon(availableCores, isSelected, boxState = {}, behind = 0, agentColor = null) {
   const cls =
     availableCores === undefined
       ? ""
@@ -66,7 +66,7 @@ function enclosureIcon(availableCores, isSelected, boxState = {}, behind = 0) {
   return divIcon(
     `<div class="enclosure-marker ${cls} ${
       isSelected ? "selected-enclosure-marker" : ""
-    } ${outage}"></div>${badge}`,
+    } ${outage} ${agentColor ? "agent-marked-enclosure" : ""}"${agentColor ? ` style="--agent-color:${agentColor}"` : ""}></div>${badge}`,
     isSelected || boxState.failed ? [20, 20] : [14, 14],
   );
 }
@@ -371,6 +371,7 @@ export default function MapView({
         // tooltips on mouseover) and permanently for the selected box — they
         // never blanket the map regardless of zoom.
         const labelPinned = isSelected;
+        const agentMarked = networkVisualization?.type === "asset_style" && networkVisualization.kind === "enclosure" && (networkVisualization.scope === "all" || (networkVisualization.asset_ids || []).includes(enc.id));
         return (
           <Marker
             key={enc.id}
@@ -381,6 +382,7 @@ export default function MapView({
               isSelected,
               boxState,
               boxState.dark ? customersBehind(enc.id, overlay) : 0,
+              agentMarked ? networkVisualization.color_hex : null,
             )}
             eventHandlers={{ click: () => onEnclosureClick(enc) }}
           >

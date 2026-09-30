@@ -316,6 +316,7 @@ code, .mono { font-family: var(--font-mono); }
   width: 14px; height: 14px; border-radius: 3px;
   background: var(--amber); border: 2px solid var(--bg);
 }
+.enclosure-marker.agent-marked-enclosure { background: var(--agent-color) !important; border-color: var(--agent-color) !important; box-shadow: 0 0 0 5px color-mix(in srgb, var(--agent-color) 35%, transparent), 0 0 18px var(--agent-color); }
 .enclosure-marker.has-capacity { background: var(--teal); }
 .enclosure-marker.full { background: var(--red); }
 .enclosure-marker.selected-enclosure-marker {

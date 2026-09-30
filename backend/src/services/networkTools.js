@@ -252,6 +252,37 @@ async function requestAgentAction(args, context) {
   return prepareAgentAction(args, context);
 }
 
+async function setMapVisualization({ kind = 'enclosure', scope = 'all', color = 'yellow', ids = [] } = {}) {
+  const allowedKinds = ['enclosure', 'pole', 'cable'];
+  const colors = {
+    yellow: '#f5c542',
+    red: '#ef5350',
+    green: '#4caf50',
+    blue: '#42a5f5',
+    orange: '#ff6b35',
+    teal: '#3fd0c9',
+    purple: '#9c7cff',
+  };
+  const normalizedKind = String(kind).toLowerCase();
+  const normalizedColor = String(color).toLowerCase();
+  if (!allowedKinds.includes(normalizedKind)) return { error: 'Map styling supports boxes, poles, or cables.' };
+  if (!colors[normalizedColor]) return { error: `Color must be one of: ${Object.keys(colors).join(', ')}.` };
+  if (scope !== 'all' && scope !== 'selected') return { error: 'Map styling scope must be all or selected.' };
+  const assetIds = Array.isArray(ids) ? ids.map((id) => String(id)).slice(0, 100) : [];
+  if (scope === 'selected' && !assetIds.length) return { error: 'At least one asset is required for selected map styling.' };
+  return {
+    status: 'ok',
+    visualization: {
+      type: 'asset_style',
+      kind: normalizedKind,
+      scope,
+      asset_ids: assetIds,
+      color: normalizedColor,
+      color_hex: colors[normalizedColor],
+    },
+  };
+}
+
 async function approvals({ status = 'pending', limit = 20 } = {}) {
   const capped = limitValue(limit);
   const rows = await db('as_built_approvals as a')
@@ -278,6 +309,7 @@ const TOOL_HANDLERS = {
   get_loss_budget: lossBudget,
   query_network_database: queryDatabase,
   request_agent_action: requestAgentAction,
+  set_map_visualization: setMapVisualization,
   list_approvals: approvals,
 };
 
@@ -305,6 +337,7 @@ module.exports = {
   lossBudget,
   queryDatabase,
   requestAgentAction,
+  setMapVisualization,
   approvals,
   executeNetworkTool,
 };

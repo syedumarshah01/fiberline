@@ -24,6 +24,7 @@ function providerError(message, status = 502, code = 'LLM_REQUEST_FAILED') {
 }
 
 function visualizationForTool(name, result) {
+  if (name === 'set_map_visualization' && result?.visualization) return result.visualization;
   if (name === 'find_nearby_boxes' && result?.center && Array.isArray(result.boxes)) {
     return {
       type: 'nearby_boxes',
