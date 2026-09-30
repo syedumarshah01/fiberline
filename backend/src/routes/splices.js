@@ -2,7 +2,19 @@ const express = require('express');
 const db = require('../db');
 const { validateSpliceData } = require('../middleware/validation');
 const { canBranchFromCore } = require('../utils/branching');
+const { assertBoxRevision, expectedRevision } = require('../services/boxRevision');
 const router = express.Router();
+
+async function checkBoxRevision(trx, req, enclosureId) {
+  if (!expectedRevision(req)) return;
+  const box = await trx('enclosures').where({ id: enclosureId }).forUpdate().first();
+  if (!box) {
+    const error = new Error('Enclosure not found');
+    error.status = 404;
+    throw error;
+  }
+  await assertBoxRevision({ req, enclosureId, executor: trx });
+}
 
 // GET /api/splices/:id
 router.get('/:id', async (req, res, next) => {
@@ -137,6 +149,7 @@ router.post('/', validateSpliceData, async (req, res, next) => {
       loss_db, technician, splice_date, notes,
     } = req.body;
 
+    await checkBoxRevision(trx, req, enclosure_id);
     const cores = await trx('fiber_cores').whereIn('id', [core_a_id, core_b_id]).forUpdate();
     if (cores.length !== 2) {
       await trx.rollback();
@@ -227,6 +240,7 @@ router.patch('/:id', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'Splice not found' });
     }
+    await checkBoxRevision(trx, req, splice.enclosure_id);
 
     const allowed = ['splice_type', 'tray_number', 'tray_position', 'loss_db', 'technician', 'splice_date', 'notes'];
     const updates = { updated_at: trx.fn.now() };
@@ -354,6 +368,7 @@ router.delete('/by-core/:coreId', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'No splice found for this core' });
     }
+    await checkBoxRevision(trx, req, splice.enclosure_id);
 
     await repairLegacyPassThroughReferences(trx, splice);
     await releaseCoreIfOrphaned(trx, splice.core_a_id, splice.id);
@@ -378,6 +393,7 @@ router.delete('/:id', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'Splice not found' });
     }
+    await checkBoxRevision(trx, req, splice.enclosure_id);
 
     await repairLegacyPassThroughReferences(trx, splice);
     await releaseCoreIfOrphaned(trx, splice.core_a_id, splice.id);

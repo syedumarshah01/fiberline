@@ -4,6 +4,7 @@ const { validateEnclosureData } = require('../middleware/validation');
 const { normalizeEditableCode } = require('../utils/codegen');
 const { BAD_SPLICE_LOSS_DB } = require('../utils/lossBudget');
 const { loadBoxDocumentation } = require('../services/boxDocumentation');
+const { assertBoxRevision, expectedRevision } = require('../services/boxRevision');
 const router = express.Router();
 
 // GET /api/enclosures — all boxes, with parent pole coordinates or direct location
@@ -58,9 +59,19 @@ router.post('/', validateEnclosureData, async (req, res, next) => {
 
 // PATCH /api/enclosures/:id
 router.patch('/:id', async (req, res, next) => {
+  const trx = expectedRevision(req) ? await db.transaction() : null;
+  const executor = trx || db;
   try {
+    if (trx) {
+      const box = await trx('enclosures').where({ id: req.params.id }).forUpdate().first();
+      if (!box) {
+        await trx.rollback();
+        return res.status(404).json({ error: 'Enclosure not found' });
+      }
+      await assertBoxRevision({ req, enclosureId: req.params.id, executor: trx });
+    }
     const fields = ['name', 'type', 'capacity', 'status', 'mounting', 'notes'];
-    const updates = { updated_at: db.fn.now() };
+    const updates = { updated_at: executor.fn.now() };
     for (const f of fields) if (req.body[f] !== undefined) updates[f] = req.body[f];
 
     // `code` (the box code shown on the map and in documentation) is editable,
@@ -71,20 +82,26 @@ router.patch('/:id', async (req, res, next) => {
       if (!code) {
         return res.status(400).json({ error: 'code must be a non-empty string' });
       }
-      const clash = await db('enclosures')
+      const clash = await executor('enclosures')
         .where({ code })
         .whereNot({ id: req.params.id })
         .first();
       if (clash) {
+        if (trx) await trx.rollback();
         return res.status(409).json({ error: `Another box already uses code ${code}` });
       }
       updates.code = code;
     }
 
-    const changed = await db('enclosures').where({ id: req.params.id }).update(updates);
-    if (!changed) return res.status(404).json({ error: 'Enclosure not found' });
+    const changed = await executor('enclosures').where({ id: req.params.id }).update(updates);
+    if (!changed) {
+      if (trx) await trx.rollback();
+      return res.status(404).json({ error: 'Enclosure not found' });
+    }
+    if (trx) await trx.commit();
     res.json({ ok: true });
   } catch (err) {
+    if (trx) await trx.rollback();
     next(err);
   }
 });

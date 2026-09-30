@@ -45,7 +45,12 @@ app.use('/api/telemetry', telemetryRouter);
 // Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ error: err.message || 'Internal server error' });
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({
+    error: err.message || 'Internal server error',
+    ...(err.code ? { code: err.code } : {}),
+    ...(err.conflict ? { conflict: err.conflict } : {}),
+  });
 });
 
 const PORT = process.env.PORT || 4000;

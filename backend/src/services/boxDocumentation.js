@@ -13,6 +13,7 @@
 const db = require('../db');
 const { BAD_SPLICE_LOSS_DB } = require('../utils/lossBudget');
 const { enrichSplitters } = require('../utils/splitters');
+const { makeBoxRevision } = require('./boxRevision');
 
 async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
   const enclosure = await executor('enclosures').where({ id: enclosureId }).first();
@@ -24,7 +25,7 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
   const cables = await executor('cables')
     .where({ from_enclosure_id: enclosureId })
     .orWhere({ to_enclosure_id: enclosureId })
-    .select('id', 'code', 'name', 'cable_type', 'core_count', 'from_enclosure_id', 'to_enclosure_id', 'customer_label');
+    .select('id', 'code', 'name', 'cable_type', 'core_count', 'from_enclosure_id', 'to_enclosure_id', 'customer_label', 'updated_at');
 
   const cableIds = cables.map((c) => c.id);
 
@@ -37,7 +38,7 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
   const splices = await executor.raw(
     `
     SELECT s.id, s.splice_type, s.tray_number, s.tray_position, s.loss_db,
-           s.technician, s.splice_date, s.notes,
+           s.technician, s.splice_date, s.notes, s.updated_at,
            ca.id AS core_a_id, ca.core_number AS core_a_number, cca.code AS cable_a_code, cca.cable_type AS cable_a_type,
            cb.id AS core_b_id, cb.core_number AS core_b_number, ccb.code AS cable_b_code, ccb.cable_type AS cable_b_type
     FROM splices s
@@ -180,9 +181,11 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
         .leftJoin('cables', 'cables.id', 'fiber_cores.cable_id')
         .leftJoin('splitters as child', 'child.id', 'splitter_ports.output_splitter_id')
         .select(
+          'splitter_ports.id',
           'splitter_ports.splitter_id',
           'splitter_ports.port_number',
           'splitter_ports.status as port_status',
+          'splitter_ports.status',
           'splitter_ports.output_core_id',
           'splitter_ports.output_splitter_id',
           'fiber_cores.id as core_id',
@@ -192,6 +195,7 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
           'cables.customer_label as cable_customer_label',
           'child.name as child_splitter_name',
           'child.split_count as child_split_count',
+          'splitter_ports.updated_at',
         )
         .orderBy(['splitter_ports.splitter_id', 'splitter_ports.port_number'])
     : [];
@@ -229,6 +233,14 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
   );
 
   const availableCores = cores.filter((c) => c.status === 'available');
+  const revision = makeBoxRevision({
+    enclosure,
+    cables,
+    cores,
+    splices: splices.rows,
+    splitters,
+    ports: splitterPorts,
+  });
 
   // QC: any splice in this box whose RECORDED loss is suspiciously high is
   // auto-flagged as a probable bad splice — techs get a work list without
@@ -245,6 +257,7 @@ async function loadBoxDocumentation({ enclosureId, executor = db } = {}) {
     }));
 
   return {
+    revision,
     enclosure,
     cables_landing_here: Object.values(coresByCable),
     splices: splices.rows,

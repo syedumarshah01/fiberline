@@ -46,6 +46,10 @@ as it found it. Run `npm run migrate`; on a healthy database it changes nothing.
 
 The public failure simulation is **box-only**: `GET /api/impact/simulate?kind=box&id=<uuid>`.
 
+## Multi-user box documentation edits
+
+`GET /api/enclosures/:id/documentation` returns a `revision` token for the complete box documentation. The frontend sends that token as the `If-Match` header on box metadata, splice, splitter, and splitter-port edits. The backend compares the token while holding the box row lock, so the first simultaneous save wins and the next receives HTTP `409` with `code: "BOX_EDIT_CONFLICT"`, the current revision, change timestamp, and current record snapshot. The panel reloads the latest documentation and asks the technician to review it before editing again; no edit is silently overwritten. A direct `PATCH /api/fiber-cores/:id` can use the same guard; include `enclosure_id` in the body/query when the cable lands at both ends to identify the box explicitly (the API can also match the token against either endpoint). Clients that do not send `If-Match` retain the legacy behavior for backward compatibility.
+
 ## Live OLT/ONT telemetry
 
 External OLT/ONT systems may send one current event or a batch to `POST /api/telemetry/events` (also `POST /api/telemetry/ingest`). The event accepts vendor aliases such as `device_id`/`ont_id`, `status: "down"`/`"link-down"`, and `rx_power_dbm`; inventory identifiers may be UUIDs or human `customer_code`, box `code`, and cable `code` values. Example:

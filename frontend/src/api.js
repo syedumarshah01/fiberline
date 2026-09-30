@@ -69,9 +69,10 @@ async function request(path, options = {}, retryCount = 0) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
+    const { headers: optionHeaders = {}, ...requestOptions } = options;
     const res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
+      ...requestOptions,
+      headers: { "Content-Type": "application/json", ...optionHeaders },
       signal: controller.signal,
     });
 
@@ -84,6 +85,8 @@ async function request(path, options = {}, retryCount = 0) {
       const errorMessage = body?.error || `Request failed: ${res.status}`;
       const error = new Error(errorMessage);
       error.status = res.status;
+      error.code = body?.code;
+      error.details = body;
       error.retryable = isRetryableError(res.status);
       throw error;
     }
@@ -138,6 +141,10 @@ export function qrLink(kind, id, { base = "" } = {}) {
   };
 }
 
+function boxRevisionHeaders(revision) {
+  return revision ? { "If-Match": revision } : {};
+}
+
 export const api = {
   // Poles
   listPoles: () => request("/poles"),
@@ -173,8 +180,8 @@ export const api = {
   },
   qrLinkInfo: (kind, id, params = {}) => qrLink(kind, id, params),
   getVisualization: (id) => request(`/enclosures/${id}/visualization`),
-  updateEnclosure: (id, data) =>
-    request(`/enclosures/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  updateEnclosure: (id, data, revision = null) =>
+    request(`/enclosures/${id}`, { method: "PATCH", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
   deleteEnclosure: (id) => request(`/enclosures/${id}`, { method: "DELETE" }),
 
   // Cables
@@ -203,32 +210,36 @@ export const api = {
     request("/customers", { method: "POST", body: JSON.stringify(data) }),
 
   // Splices
-  createSplice: (data) =>
-    request("/splices", { method: "POST", body: JSON.stringify(data) }),
-  updateSplice: (id, data) =>
-    request(`/splices/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteSplice: (id) => request(`/splices/${id}`, { method: "DELETE" }),
-  unspliceCore: (coreId, enclosureId = null) => {
+  createSplice: (data, revision = null) =>
+    request("/splices", { method: "POST", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  updateSplice: (id, data, revision = null) =>
+    request(`/splices/${id}`, { method: "PATCH", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  deleteSplice: (id, revision = null) =>
+    request(`/splices/${id}`, { method: "DELETE", headers: boxRevisionHeaders(revision) }),
+  unspliceCore: (coreId, enclosureId = null, revision = null) => {
     const suffix = enclosureId ? `?enclosure_id=${encodeURIComponent(enclosureId)}` : "";
-    return request(`/splices/by-core/${coreId}${suffix}`, { method: "DELETE" });
+    return request(`/splices/by-core/${coreId}${suffix}`, { method: "DELETE", headers: boxRevisionHeaders(revision) });
   },
 
   // Splitters
   listSplitters: (enclosureId) => request(`/splitters?enclosureId=${enclosureId}`),
   getSplitter: (id) => request(`/splitters/${id}`),
-  createSplitter: (data) =>
-    request("/splitters", { method: "POST", body: JSON.stringify(data) }),
-  updateSplitter: (id, data) =>
-    request(`/splitters/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteSplitter: (id) => request(`/splitters/${id}`, { method: "DELETE" }),
-  assignCoreToPort: (splitterId, portNumber, coreId) =>
+  createSplitter: (data, revision = null) =>
+    request("/splitters", { method: "POST", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  updateSplitter: (id, data, revision = null) =>
+    request(`/splitters/${id}`, { method: "PATCH", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  deleteSplitter: (id, revision = null) =>
+    request(`/splitters/${id}`, { method: "DELETE", headers: boxRevisionHeaders(revision) }),
+  assignCoreToPort: (splitterId, portNumber, coreId, revision = null) =>
     request(`/splitters/${splitterId}/assign-port`, {
       method: "POST",
       body: JSON.stringify({ port_number: portNumber, core_id: coreId }),
+      headers: boxRevisionHeaders(revision),
     }),
-  unassignCoreFromPort: (splitterId, portNumber) =>
+  unassignCoreFromPort: (splitterId, portNumber, revision = null) =>
     request(`/splitters/${splitterId}/assign-port?port_number=${portNumber}`, {
       method: "DELETE",
+      headers: boxRevisionHeaders(revision),
     }),
 
   // Fiber cores
@@ -237,10 +248,11 @@ export const api = {
     request(
       `/fiber-cores/${coreId}/loss-budget${oltType ? `?olt_type=${oltType}` : ""}`,
     ),
-  updateCore: (id, data) =>
+  updateCore: (id, data, revision = null) =>
     request(`/fiber-cores/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
+      headers: boxRevisionHeaders(revision),
     }),
 
   // Capacity

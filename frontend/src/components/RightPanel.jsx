@@ -105,6 +105,16 @@ function getFiberColorName(coreNumber) {
   return baseName;
 }
 
+function documentationDiff(before, after) {
+  if (!before || !after) return [];
+  const changed = [];
+  if (JSON.stringify(before.enclosure) !== JSON.stringify(after.enclosure)) changed.push("box metadata");
+  if (JSON.stringify(before.cables_landing_here) !== JSON.stringify(after.cables_landing_here)) changed.push("cables or cores");
+  if (JSON.stringify(before.splices) !== JSON.stringify(after.splices)) changed.push("splices");
+  if (JSON.stringify(before.splitters) !== JSON.stringify(after.splitters)) changed.push("splitters or ports");
+  return changed;
+}
+
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
@@ -112,6 +122,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [conflict, setConflict] = useState(null);
   const [source, setSource] = useState(null);
   const [viewMode, setViewMode] = useState("text"); // "text" or "visual"
   const [spliceForm, setSpliceForm] = useState({ coreA: "", coreB: "", notes: "" });
@@ -143,6 +154,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
       .then((d) => {
         setDoc(d);
         setError(null);
+        return d;
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -152,11 +164,34 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
     api.listSplitters(enclosureId).then(setSplitters).catch(() => {});
   };
 
+  function handleMutationError(err) {
+    if (err.code !== "BOX_EDIT_CONFLICT") return false;
+    const before = doc;
+    setConflict(err.details?.conflict || { message: err.message });
+    setEditingBox(false);
+    setEditingSplice(null);
+    setEditingSplitter(null);
+    // Fetch the other technician's committed state. Their values are never
+    // silently overwritten, and retain a small section-level diff for review.
+    api.getBoxDocumentation(enclosureId)
+      .then((latest) => {
+        setDoc(latest);
+        setConflict((current) => ({
+          ...(current || {}),
+          changed_sections: documentationDiff(before, latest),
+        }));
+      })
+      .catch((loadError) => setError(loadError.message));
+    loadSplitters();
+    return true;
+  }
+
   useEffect(() => {
     setSource(null);
     setEditingBox(false);
     setEditingSplitter(null);
     setEditingSplice(null);
+    setConflict(null);
     load();
     loadSplitters();
   }, [enclosureId, networkRevision]);
@@ -306,7 +341,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
           return;
         }
         // coreB gets assigned to the port
-        await api.assignCoreToPort(portInfo.splitter_id, portInfo.port_number, coreB);
+        await api.assignCoreToPort(portInfo.splitter_id, portInfo.port_number, coreB, doc.revision);
       } else if (coreB.startsWith("port-")) {
         const portInfo = splitterPorts.find((p) => p.id === coreB);
         if (!portInfo) {
@@ -314,7 +349,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
           return;
         }
         // coreA gets assigned to the port
-        await api.assignCoreToPort(portInfo.splitter_id, portInfo.port_number, coreA);
+        await api.assignCoreToPort(portInfo.splitter_id, portInfo.port_number, coreA, doc.revision);
       } else {
         // Regular splice between two cores
         await api.createSplice({
@@ -323,7 +358,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
           core_b_id: coreB,
           technician: "field-tech",
           notes: spliceForm.notes?.trim() ? spliceForm.notes.trim() : null,
-        });
+        }, doc.revision);
       }
       // Reset form and refresh data
       setSpliceForm({ coreA: "", coreB: "", notes: "" });
@@ -332,19 +367,19 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
       await loadSplitters();
       onChanged?.();
     } catch (err) {
-      alert(err.message);
+      if (!handleMutationError(err)) alert(err.message);
     }
   }
 
   async function handleUpdateSplice(spliceId) {
     try {
-      await api.updateSplice(spliceId, editSpliceForm);
+      await api.updateSplice(spliceId, editSpliceForm, doc.revision);
       setEditingSplice(null);
       setEditSpliceForm({});
       load();
       onChanged?.();
     } catch (err) {
-      alert(err.message);
+      if (!handleMutationError(err)) alert(err.message);
     }
   }
 
@@ -368,7 +403,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
         payload.input_port = { splitter_id: parentId, port_number: Number(portNumber) };
         delete payload.input_core_id;
       }
-      await api.createSplitter(payload);
+      await api.createSplitter(payload, doc.revision);
       setShowSplitterForm(false);
       setSplitterForm({
         name: "",
@@ -384,7 +419,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
       loadSplitters();
       onChanged?.();
     } catch (err) {
-      alert(err.message);
+      if (!handleMutationError(err)) alert(err.message);
     } finally {
       setCreatingSplitter(false);
     }
@@ -405,12 +440,12 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
       await api.updateEnclosure(enclosureId, {
         code: boxForm.code,
         name: boxForm.name.trim() ? boxForm.name.trim() : null,
-      });
+      }, doc.revision);
       setEditingBox(false);
       await load();
       onChanged?.(); // refresh map labels + capacity chips
     } catch (err) {
-      alert(err.message);
+      if (!handleMutationError(err)) alert(err.message);
     } finally {
       setSavingBox(false);
     }
@@ -429,26 +464,26 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
 
   async function handleUpdateSplitter(splitterId) {
     try {
-      await api.updateSplitter(splitterId, editSplitterForm);
+      await api.updateSplitter(splitterId, editSplitterForm, doc.revision);
       setEditingSplitter(null);
       setEditSplitterForm({});
       await load();
       await loadSplitters();
       onChanged?.();
     } catch (err) {
-      alert(err.message);
+      if (!handleMutationError(err)) alert(err.message);
     }
   }
 
   async function handleDeleteSplitter(splitterId) {
     if (!confirm("Remove this splitter? All cores will return to available.")) return;
     try {
-      await api.deleteSplitter(splitterId);
+      await api.deleteSplitter(splitterId, doc.revision);
       load();
       loadSplitters();
       onChanged?.();
     } catch (err) {
-      alert(err.message);
+      if (!handleMutationError(err)) alert(err.message);
     }
   }
 
@@ -500,6 +535,16 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
   // Text mode - show the original text documentation
   return (
     <div>
+      {conflict && (
+        <div className="box-edit-conflict" role="alert">
+          <b>This box changed in another technician's session.</b>
+          <span>The latest documentation has been loaded. Review it before starting the edit again.</span>
+          {conflict.changed_sections?.length > 0 && (
+            <span>Changed sections: {conflict.changed_sections.join(", ")}.</span>
+          )}
+          <button className="btn" onClick={() => setConflict(null)}>Review latest</button>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 6, flexWrap: "wrap" }}>
         <p className="section-title" style={{ margin: 0 }}>{doc.enclosure.code} — box documentation</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -785,13 +830,13 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
                     onClick={async () => {
                       if (!confirm("Unsplice this? Both cores will return to available.")) return;
                       try {
-                        await api.deleteSplice(s.id);
+                        await api.deleteSplice(s.id, doc.revision);
                         load();
                         loadSplitters();
                         onChanged?.();
                         alert("Splice removed successfully");
                       } catch (err) {
-                        alert(err.message);
+                        if (!handleMutationError(err)) alert(err.message);
                       }
                     }}
                   >
@@ -953,14 +998,14 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
               onClick={async () => {
                 if (!confirm("Unsplice this? Both cores will return to available.")) return;
                 try {
-                  await api.deleteSplice(editingSplice);
+                  await api.deleteSplice(editingSplice, doc.revision);
                   setEditingSplice(null);
                   setEditSpliceForm({});
                   load();
                   loadSplitters();
                   onChanged?.();
                 } catch (err) {
-                  alert(err.message);
+                  if (!handleMutationError(err)) alert(err.message);
                 }
               }}
             >
@@ -1115,12 +1160,12 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
                               style={{ padding: "3px 8px", fontSize: 11 }}
                               onClick={async () => {
                                 try {
-                                  await api.unassignCoreFromPort(s.id, p.port_number);
+                                  await api.unassignCoreFromPort(s.id, p.port_number, doc.revision);
                                   load();
                                   loadSplitters();
                                   onChanged?.();
                                 } catch (err) {
-                                  alert(err.message);
+                                  if (!handleMutationError(err)) alert(err.message);
                                 }
                               }}
                             >
