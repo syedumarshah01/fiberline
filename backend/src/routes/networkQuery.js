@@ -21,8 +21,12 @@ async function handleQuery(req, res, next) {
       });
     }
 
+    const conversationId = req.method === 'GET' ? req.query.conversation_id : req.body?.conversation_id;
     const result = config().provider === 'gemini' && plannerMode() !== 'deterministic'
-      ? await askGeminiNetwork(query)
+      ? await askGeminiNetwork(query, {
+          conversation_id: typeof conversationId === 'string' ? conversationId : null,
+          userId: req.user?.id || 'anonymous',
+        })
       : await executeNaturalLanguageQuery(query);
     const status = result.status === 'not_found' ? 404 : result.status === 'needs_location' || result.status === 'needs_clarification' ? 422 : 200;
     res.status(status).json(result);

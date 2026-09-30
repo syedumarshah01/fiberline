@@ -1,3 +1,4 @@
+const { randomUUID } = require('node:crypto');
 const {
   config,
   SYSTEM_PROMPT,
@@ -7,6 +8,13 @@ const {
 const { executeNetworkTool } = require('./networkTools');
 
 const MAX_TOOL_ROUNDS = 4;
+const CONVERSATION_TTL_MS = 30 * 60 * 1000;
+const MAX_CONVERSATION_MESSAGES = 30;
+const conversations = new Map();
+
+function conversationId() {
+  return randomUUID();
+}
 
 function assistantError(message, status = 502, code = 'LLM_REQUEST_FAILED') {
   const error = new Error(message);
@@ -19,7 +27,7 @@ function responseParts(payload) {
   return payload?.candidates?.[0]?.content?.parts || [];
 }
 
-async function askGeminiNetwork(query, { fetchImpl = fetch } = {}) {
+async function askGeminiNetwork(query, { fetchImpl = fetch, conversation_id = null, userId = 'anonymous' } = {}) {
   const settings = config();
   if (settings.provider !== 'gemini') {
     throw assistantError('The network assistant is configured for Gemini only.', 503, 'GEMINI_NOT_SELECTED');
@@ -28,9 +36,19 @@ async function askGeminiNetwork(query, { fetchImpl = fetch } = {}) {
     throw assistantError('Gemini is not configured. Set GEMINI_API_KEY in backend/.env.', 503, 'LLM_NOT_CONFIGURED');
   }
 
-  const contents = [{ role: 'user', parts: [{ text: String(query) }] }];
+  const now = Date.now();
+  let id = conversation_id || conversationId();
+  const existing = conversations.get(id);
+  if (existing && (now - existing.updatedAt > CONVERSATION_TTL_MS || existing.userId !== String(userId))) {
+    conversations.delete(id);
+  }
+  const conversation = conversations.get(id);
+  const contents = conversation
+    ? conversation.contents.map((content) => ({ ...content, parts: content.parts?.map((part) => ({ ...part })) }))
+    : [];
+  contents.push({ role: 'user', parts: [{ text: String(query) }] });
   const toolCalls = [];
-  let visualization = null;
+  let visualization = conversation?.visualization || null;
   const timerController = () => new AbortController();
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -76,9 +94,17 @@ async function askGeminiNetwork(query, { fetchImpl = fetch } = {}) {
     if (!calls.length) {
       const answer = parts.map((part) => part.text || '').join('').trim();
       if (!answer) throw assistantError('Gemini returned no readable network-assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
+      if (/\b(?:clear|hide|remove)\b.*\b(?:map|highlight|visual)/i.test(String(query))) visualization = null;
+      conversations.set(id, {
+        userId: String(userId),
+        updatedAt: Date.now(),
+        contents: contents.slice(-MAX_CONVERSATION_MESSAGES),
+        visualization,
+      });
       return {
         status: 'ok',
         planner_source: 'gemini-tools',
+        conversation_id: id,
         answer_text: answer,
         tool_calls: toolCalls,
         visualization,

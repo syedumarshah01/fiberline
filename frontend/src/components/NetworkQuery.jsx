@@ -24,6 +24,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
   const [loading, setLoading] = useState(false);
   const [listening, setListening] = useState(false);
   const [showTyping, setShowTyping] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
   const [interimTranscript, setInterimTranscript] = useState("");
   const recognitionRef = useRef(null);
   const finalTranscriptRef = useRef("");
@@ -39,7 +40,8 @@ export default function NetworkQuery({ onClose, onVisualize }) {
     setVoiceError(null);
     setResult(null);
     try {
-      const response = await api.networkQuery(clean);
+      const response = await api.networkQuery(clean, conversationId);
+      if (response.conversation_id) setConversationId(response.conversation_id);
       setResult(response);
       onVisualize?.(response.visualization || null);
     } catch (requestError) {
@@ -48,7 +50,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
     } finally {
       setLoading(false);
     }
-  }, [onVisualize]);
+  }, [conversationId, onVisualize]);
 
   const startListening = useCallback(() => {
     const Recognition = recognitionConstructor();
@@ -104,12 +106,12 @@ export default function NetworkQuery({ onClose, onVisualize }) {
   }, [runQuery]);
 
   useEffect(() => {
-    startListening();
+    if (!showTyping) startListening();
     return () => {
       recognitionRef.current?.abort?.();
       recognitionRef.current = null;
     };
-  }, [startListening]);
+  }, [showTyping, startListening]);
 
   function stopListening() {
     recognitionRef.current?.stop?.();
@@ -168,6 +170,16 @@ export default function NetworkQuery({ onClose, onVisualize }) {
             <textarea id="network-query-input" rows="3" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask about poles, boxes, customers, capacity, outages, cables, approvals, or Fiberline workflows." autoFocus />
             <div className="network-query-actions"><button className="btn" type="button" onClick={() => { setShowTyping(false); startListening(); }}>Use microphone</button><button className="btn btn-primary" type="submit" disabled={!query.trim()}>Ask Gemini</button></div>
           </form>
+        )}
+
+        {result && !loading && !showTyping && (
+          <div className="voice-followup">
+            <button className={`voice-mic voice-mic-small ${listening ? "is-listening" : ""}`} onClick={listening ? stopListening : startListening} aria-label={listening ? "Stop listening" : "Ask a follow-up question"}>
+              <span className="voice-mic-waves" aria-hidden="true" />
+              <span className="voice-mic-icon" aria-hidden="true">●</span>
+            </button>
+            <span><b>{listening ? "Listening for your follow-up…" : "Ask a follow-up"}</b><small>Your next question continues this conversation.</small></span>
+          </div>
         )}
 
         {voiceError && <p className="query-note" role="status">{voiceError}</p>}

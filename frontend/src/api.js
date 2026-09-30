@@ -372,10 +372,10 @@ export const api = {
 
   // Natural-language network graph queries. The backend translates the text into
   // a validated graph operation and returns both the answer and its assumptions.
-  networkQuery: (query) =>
+  networkQuery: (query, conversationId = null) =>
     request("/network/query", {
       method: "POST",
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, ...(conversationId ? { conversation_id: conversationId } : {}) }),
     }),
 
   // Health check
