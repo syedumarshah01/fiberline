@@ -44,6 +44,54 @@ function visualizationForTool(name, result) {
   return null;
 }
 
+function summaryAnswer(query, summary) {
+  const text = String(query || '').toLowerCase();
+  const requested = [];
+  const fields = [
+    ['box', 'enclosures', 'boxes'],
+    ['enclosure', 'enclosures', 'enclosures'],
+    ['pole', 'poles', 'poles'],
+    ['cable', 'cables', 'cables'],
+    ['customer', 'customers', 'customers'],
+    ['headend', 'headends', 'headends'],
+  ];
+  for (const [needle, field, label] of fields) {
+    if (text.includes(needle) && !requested.some((item) => item.field === field)) requested.push({ field, label });
+  }
+  if (/\b(?:spare|available|free)\b/.test(text) && /\bbox|enclosure|cabinet|nap/.test(text)) {
+    requested.push({ field: 'boxes_with_spare_capacity', label: 'boxes with spare capacity' });
+  }
+  if (!requested.length) {
+    requested.push(
+      { field: 'poles', label: 'poles' },
+      { field: 'enclosures', label: 'boxes' },
+      { field: 'cables', label: 'cables' },
+      { field: 'customers', label: 'customers' },
+    );
+  }
+  const facts = requested.map(({ field, label }) => `${summary?.[field] ?? 0} ${label}`);
+  return `The current network has ${facts.join(', ')}.`;
+}
+
+async function validatedFallback(query, context) {
+  const text = String(query || '').toLowerCase();
+  const asksForCount = /\b(?:how many|number of|count|total)\b/.test(text);
+  const asksAboutInventory = /\b(?:box|boxes|enclosure|enclosures|cabinet|cabinets|pole|poles|cable|cables|customer|customers|headend|headends|network)\b/.test(text);
+  if (asksForCount && asksAboutInventory) {
+    const result = await executeNetworkTool('get_network_summary', {}, context);
+    if (!result?.error) return { name: 'get_network_summary', arguments: {}, result, answer_text: summaryAnswer(query, result) };
+  }
+  if (/\b(?:what can you do|what are your capabilities|your capabilities|available features)\b/.test(text)) {
+    const result = await executeNetworkTool('get_application_capabilities', {}, context);
+    if (!result?.error) return { name: 'get_application_capabilities', arguments: {}, result, answer_text: result.read_capabilities.join(' ') };
+  }
+  if (/\b(?:telemetry|olt|ont|signal strength|link down)\b/.test(text)) {
+    const result = await executeNetworkTool('get_telemetry_status', {}, context);
+    if (!result?.error) return { name: 'get_telemetry_status', arguments: {}, result, answer_text: `Telemetry is ${result.available ? 'available' : 'not available'} with ${result.devices?.length || 0} device records.` };
+  }
+  return null;
+}
+
 async function askNetworkAssistant(query, {
   fetchImpl = fetch,
   conversation_id = null,
@@ -129,6 +177,31 @@ async function askNetworkAssistant(query, {
     const calls = message.tool_calls || [];
     console.info(`[network-query:${request_id || 'unknown'}] model response round=${trace.rounds} tool_calls=${calls.length}`);
     if (!calls.length) {
+      const fallback = await validatedFallback(query, { userId, userRole });
+      if (fallback) {
+        trace.tool_calls.push(fallback.name);
+        trace.fallback = 'validated_read_tool';
+        toolCalls.push({ name: fallback.name, arguments: fallback.arguments, ok: true, source: 'validated_fallback' });
+        console.info(`[network-query:${request_id || 'unknown'}] used validated fallback tool=${fallback.name}`);
+        const fallbackTrace = { ...trace, tool_calls: [...trace.tool_calls] };
+        conversations.set(id, {
+          userId: String(userId),
+          updatedAt: Date.now(),
+          messages: messages.slice(-MAX_MESSAGES),
+          visualization,
+          pending_action: pendingAction,
+        });
+        return {
+          status: 'ok',
+          planner_source: 'llm-tools+validated-fallback',
+          conversation_id: id,
+          answer_text: fallback.answer_text,
+          tool_calls: toolCalls,
+          visualization,
+          pending_action: pendingAction,
+          assistant_trace: fallbackTrace,
+        };
+      }
       const answer = String(message.content || '').trim();
       if (!answer) throw assistantError('The LLM returned no readable assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
       if (/\b(?:clear|hide|remove)\b.*\b(?:map|highlight|visual)/i.test(String(query))) visualization = null;

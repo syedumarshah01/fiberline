@@ -9,12 +9,9 @@ require.cache[toolsPath] = {
   filename: toolsPath,
   loaded: true,
   exports: {
-    executeNetworkTool: async (name, args) => ({
-      status: 'ok',
-      name,
-      args,
-      counts: { poles: 3, enclosures: 2 },
-    }),
+    executeNetworkTool: async (name, args) => name === 'get_network_summary'
+      ? { status: 'ok', poles: 3, enclosures: 7, cables: 4, customers: 12 }
+      : ({ status: 'ok', name, args, counts: { poles: 3, enclosures: 2 } }),
   },
 };
 
@@ -63,8 +60,21 @@ describe('generic network assistant tool loop', () => {
     assert.equal(requests[0].url, 'https://llm.test/v1/chat/completions');
     assert.equal(requests[0].options.headers.Authorization, 'Bearer test-key');
     assert.equal(JSON.parse(requests[0].options.body).model, 'test-model');
-    assert.equal(result.answer_text, 'There are 3 poles.');
-    assert.equal(result.planner_source, 'llm-tools');
+    assert.equal(result.answer_text, 'The current network has 3 poles.');
+    assert.equal(result.planner_source, 'llm-tools+validated-fallback');
     assert.equal(result.tool_calls[0].name, 'get_network_summary');
+  });
+
+  test('falls back to a validated summary tool when the small model answers without a tool call', async () => {
+    const result = await askNetworkAssistant('How many boxes are in my network?', {
+      fetchImpl: async () => new Response(JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: "I don't know." } }],
+      }), { status: 200 }),
+    });
+
+    assert.match(result.answer_text, /7 boxes/);
+    assert.equal(result.planner_source, 'llm-tools+validated-fallback');
+    assert.equal(result.tool_calls[0].source, 'validated_fallback');
+    assert.equal(result.assistant_trace.fallback, 'validated_read_tool');
   });
 });
