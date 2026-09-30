@@ -1,6 +1,6 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { requestPlan, normalizePlan } = require('../src/services/llmQueryPlanner');
+const { requestPlan, requestGeminiPlan, normalizePlan } = require('../src/services/llmQueryPlanner');
 
 describe('LLM network-query planner', () => {
   test('normalizes a strict pole plan from an OpenAI-compatible response', async () => {
@@ -30,6 +30,35 @@ describe('LLM network-query planner', () => {
     assert.equal(JSON.parse(request.options.body).model, 'test-model');
     assert.deepEqual(plan.target, { kind: 'pole', text: '42' });
     assert.equal(plan.intent, 'pole_outage');
+  });
+
+  test('calls Gemini native generateContent with the API key header and JSON schema', async () => {
+    let request;
+    const plan = await requestGeminiPlan('boxes within 500m of 12 Main Street with spare capacity', {
+      apiKey: 'gemini-test-key',
+      model: 'gemini-2.5-flash-lite',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      fetchImpl: async (url, options) => {
+        request = { url, options };
+        return new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify({
+            intent: 'nearby_capacity',
+            message: '',
+            pole_identifier: null,
+            location_text: '12 Main Street',
+            latitude: null,
+            longitude: null,
+            radius_m: 500,
+          }) }] } }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    });
+
+    assert.equal(request.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent');
+    assert.equal(request.options.headers['x-goog-api-key'], 'gemini-test-key');
+    assert.equal(JSON.parse(request.options.body).generationConfig.responseMimeType, 'application/json');
+    assert.equal(plan.intent, 'nearby_capacity');
+    assert.equal(plan.location.text, '12 Main Street');
   });
 
   test('normalizes a nearby-capacity plan and converts missing radius to the safe default', () => {

@@ -1,5 +1,6 @@
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RADIUS_M = 10000;
 
@@ -18,6 +19,24 @@ const PLAN_SCHEMA = {
   },
 };
 
+// Gemini's native generateContent endpoint uses the same JSON Schema concepts,
+// but spells schema types in its REST format. Keeping this separate from the
+// OpenAI-compatible schema lets the provider be switched without weakening the
+// structured-output contract.
+const GEMINI_PLAN_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    intent: { type: 'STRING', enum: ['pole_outage', 'nearby_capacity', 'clarification'] },
+    message: { type: 'STRING' },
+    pole_identifier: { type: ['STRING', 'NULL'] },
+    location_text: { type: ['STRING', 'NULL'] },
+    latitude: { type: ['NUMBER', 'NULL'] },
+    longitude: { type: ['NUMBER', 'NULL'] },
+    radius_m: { type: ['NUMBER', 'NULL'] },
+  },
+  required: ['intent', 'message', 'pole_identifier', 'location_text', 'latitude', 'longitude', 'radius_m'],
+};
+
 const SYSTEM_PROMPT = `You are Fiberline's network-query translator. Translate a user's natural-language question into the JSON plan below. Do not answer the question, do not write SQL, and do not invent network assets.
 
 Supported intents:
@@ -32,11 +51,21 @@ Important:
 - Keep message short and useful only for clarification. Return JSON matching the schema exactly.`;
 
 function config() {
-  const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || '';
+  const provider = String(
+    process.env.LLM_PROVIDER || (process.env.GEMINI_API_KEY ? 'gemini' : 'openai'),
+  ).toLowerCase();
+  const gemini = provider === 'gemini';
+  const apiKey = process.env.LLM_API_KEY ||
+    (gemini ? process.env.GEMINI_API_KEY : process.env.OPENAI_API_KEY) || '';
   return {
+    provider,
     apiKey,
-    model: process.env.LLM_MODEL || process.env.OPENAI_MODEL || DEFAULT_MODEL,
-    baseUrl: (process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    model: process.env.LLM_MODEL ||
+      (gemini ? process.env.GEMINI_MODEL : process.env.OPENAI_MODEL) ||
+      (gemini ? DEFAULT_MODEL : 'gpt-4o-mini'),
+    baseUrl: (process.env.LLM_BASE_URL ||
+      (gemini ? process.env.GEMINI_BASE_URL : process.env.OPENAI_BASE_URL) ||
+      (gemini ? DEFAULT_GEMINI_BASE_URL : DEFAULT_BASE_URL)).replace(/\/+$/, ''),
     timeoutMs: Math.max(1000, Number(process.env.LLM_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)),
   };
 }
@@ -51,7 +80,7 @@ function plannerMode() {
 
 function configurationError() {
   const error = new Error(
-    'Network-query LLM is not configured. Set LLM_API_KEY and LLM_MODEL in backend/.env, or explicitly set NETWORK_QUERY_PLANNER=deterministic.',
+    'Network-query LLM is not configured. Set GEMINI_API_KEY (or LLM_API_KEY) and GEMINI_MODEL in backend/.env, or explicitly set NETWORK_QUERY_PLANNER=deterministic.',
   );
   error.status = 503;
   error.code = 'LLM_NOT_CONFIGURED';
@@ -110,8 +139,63 @@ function normalizePlan(plan) {
   return normalized;
 }
 
+async function requestGeminiPlan(query, { fetchImpl = fetch, ...overrides } = {}) {
+  const settings = { ...config(), ...overrides, provider: 'gemini' };
+  if (!settings.apiKey) throw configurationError();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  try {
+    const response = await fetchImpl(
+      `${settings.baseUrl}/models/${encodeURIComponent(settings.model)}:generateContent`,
+      {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': settings.apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: 'user', parts: [{ text: String(query) }] }],
+          generationConfig: {
+            temperature: 0,
+            responseMimeType: 'application/json',
+            responseSchema: GEMINI_PLAN_SCHEMA,
+          },
+        }),
+        signal: controller.signal,
+      },
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || `Gemini request failed with HTTP ${response.status}`);
+      error.status = 502;
+      error.code = 'LLM_REQUEST_FAILED';
+      throw error;
+    }
+    const content = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('');
+    if (!content) {
+      const error = new Error('Gemini returned no network-query plan.');
+      error.status = 502;
+      error.code = 'LLM_EMPTY_RESPONSE';
+      throw error;
+    }
+    return normalizePlan(parseJsonContent(content));
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      const timeout = new Error('The network-query LLM timed out.');
+      timeout.status = 504;
+      timeout.code = 'LLM_TIMEOUT';
+      throw timeout;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function requestPlan(query, { fetchImpl = fetch, ...overrides } = {}) {
   const settings = { ...config(), ...overrides };
+  if (settings.provider === 'gemini') return requestGeminiPlan(query, { fetchImpl, ...settings });
   if (!settings.apiKey) throw configurationError();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
@@ -173,7 +257,9 @@ async function planNetworkQuery(query, options = {}) {
 module.exports = {
   DEFAULT_MODEL,
   DEFAULT_BASE_URL,
+  DEFAULT_GEMINI_BASE_URL,
   PLAN_SCHEMA,
+  GEMINI_PLAN_SCHEMA,
   SYSTEM_PROMPT,
   config,
   llmConfigured,
@@ -181,5 +267,6 @@ module.exports = {
   configurationError,
   normalizePlan,
   requestPlan,
+  requestGeminiPlan,
   planNetworkQuery,
 };
