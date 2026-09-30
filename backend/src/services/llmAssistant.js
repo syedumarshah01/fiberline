@@ -11,12 +11,12 @@ const CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const MAX_MESSAGES = 30;
 const conversations = new Map();
 
-const OPENROUTER_TOOLS = TOOL_DECLARATIONS.map((tool) => ({
+const LLM_TOOLS = TOOL_DECLARATIONS.map((tool) => ({
   type: 'function',
   function: tool,
 }));
 
-function providerError(message, status = 502, code = 'LLM_REQUEST_FAILED') {
+function assistantError(message, status = 502, code = 'LLM_REQUEST_FAILED') {
   const error = new Error(message);
   error.status = status;
   error.code = code;
@@ -43,30 +43,38 @@ function visualizationForTool(name, result) {
   return null;
 }
 
-async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id = null, userId = 'anonymous', userRole = 'technician' } = {}) {
+async function askNetworkAssistant(query, {
+  fetchImpl = fetch,
+  conversation_id = null,
+  userId = 'anonymous',
+  userRole = 'technician',
+} = {}) {
   const settings = config();
-  if (settings.provider !== 'openrouter') {
-    throw providerError('The network assistant is not configured for OpenRouter.', 503, 'OPENROUTER_NOT_SELECTED');
-  }
   if (!settings.apiKey) {
-    throw providerError('OpenRouter is not configured. Set OPENROUTER_API_KEY in backend/.env.', 503, 'LLM_NOT_CONFIGURED');
+    throw assistantError('The network assistant is not configured. Set LLM_API_KEY in backend/.env.', 503, 'LLM_NOT_CONFIGURED');
   }
 
   const now = Date.now();
-  let id = conversation_id || randomUUID();
+  const id = conversation_id || randomUUID();
   const existing = conversations.get(id);
   if (existing && (now - existing.updatedAt > CONVERSATION_TTL_MS || existing.userId !== String(userId))) {
     conversations.delete(id);
   }
   const conversation = conversations.get(id);
   const messages = conversation
-    ? conversation.messages.map((message) => ({ ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((call) => ({ ...call, function: { ...call.function } })) } : {}) }))
+    ? conversation.messages.map((message) => ({
+        ...message,
+        ...(message.tool_calls
+          ? { tool_calls: message.tool_calls.map((call) => ({ ...call, function: { ...call.function } })) }
+          : {}),
+      }))
     : [{ role: 'system', content: ASSISTANT_SYSTEM_PROMPT }];
   messages.push({ role: 'user', content: String(query) });
 
   const toolCalls = [];
   let visualization = conversation?.visualization || null;
   let pendingAction = conversation?.pending_action || null;
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
@@ -77,39 +85,43 @@ async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id 
         headers: {
           Authorization: `Bearer ${settings.apiKey}`,
           'Content-Type': 'application/json',
-          ...(process.env.OPENROUTER_SITE_URL ? { 'HTTP-Referer': process.env.OPENROUTER_SITE_URL } : {}),
-          ...(process.env.OPENROUTER_APP_NAME ? { 'X-Title': process.env.OPENROUTER_APP_NAME } : {}),
         },
         body: JSON.stringify({
           model: settings.model,
           messages,
-          tools: OPENROUTER_TOOLS,
+          tools: LLM_TOOLS,
           tool_choice: 'auto',
           temperature: 0.2,
         }),
         signal: controller.signal,
       });
       payload = await response.json().catch(() => null);
-      if (!response.ok) throw providerError(payload?.error?.message || `OpenRouter request failed with HTTP ${response.status}`);
+      if (!response.ok) throw assistantError(payload?.error?.message || `LLM request failed with HTTP ${response.status}`);
     } catch (error) {
-      if (error.name === 'AbortError') throw providerError('The OpenRouter assistant timed out.', 504, 'LLM_TIMEOUT');
+      if (error.name === 'AbortError') throw assistantError('The network assistant timed out.', 504, 'LLM_TIMEOUT');
       throw error;
     } finally {
       clearTimeout(timer);
     }
 
     const message = payload?.choices?.[0]?.message;
-    if (!message) throw providerError('OpenRouter returned an empty assistant response.', 502, 'LLM_EMPTY_RESPONSE');
+    if (!message) throw assistantError('The LLM returned an empty assistant response.', 502, 'LLM_EMPTY_RESPONSE');
     messages.push(message);
     const calls = message.tool_calls || [];
     if (!calls.length) {
       const answer = String(message.content || '').trim();
-      if (!answer) throw providerError('OpenRouter returned no readable assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
+      if (!answer) throw assistantError('The LLM returned no readable assistant answer.', 502, 'LLM_EMPTY_RESPONSE');
       if (/\b(?:clear|hide|remove)\b.*\b(?:map|highlight|visual)/i.test(String(query))) visualization = null;
-      conversations.set(id, { userId: String(userId), updatedAt: Date.now(), messages: messages.slice(-MAX_MESSAGES), visualization, pending_action: pendingAction });
+      conversations.set(id, {
+        userId: String(userId),
+        updatedAt: Date.now(),
+        messages: messages.slice(-MAX_MESSAGES),
+        visualization,
+        pending_action: pendingAction,
+      });
       return {
         status: 'ok',
-        planner_source: 'openrouter-tools',
+        planner_source: 'llm-tools',
         conversation_id: id,
         answer_text: answer,
         tool_calls: toolCalls,
@@ -136,7 +148,8 @@ async function askOpenRouterNetwork(query, { fetchImpl = fetch, conversation_id 
       });
     }
   }
-  throw providerError('The OpenRouter assistant used too many graph lookups for one question.', 502, 'LLM_TOOL_LIMIT');
+
+  throw assistantError('The network assistant used too many graph lookups for one question.', 502, 'LLM_TOOL_LIMIT');
 }
 
-module.exports = { askOpenRouterNetwork, OPENROUTER_TOOLS };
+module.exports = { askNetworkAssistant, LLM_TOOLS };

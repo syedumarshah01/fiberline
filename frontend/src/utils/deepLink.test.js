@@ -97,7 +97,6 @@ describe('qrPath', () => {
   it('has a parameter for every kind of thing that can carry a tag', () => {
     assert.deepEqual(Object.keys(KIND_PARAM).sort(), ['box', 'cable', 'customer', 'enclosure', 'pole']);
     assert.equal(qrPath('sausage', BOX_ID), null);
-    
   });
 });
 

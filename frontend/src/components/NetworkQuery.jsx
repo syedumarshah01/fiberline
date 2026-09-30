@@ -168,7 +168,7 @@ export default function NetworkQuery({ onClose, onVisualize }) {
         <div className="user-management-header">
           <div>
             <p className="section-title" style={{ margin: 0 }}>Ask the network</p>
-            <p className="empty-state">Speak your question and Gemini will check the live Fiberline network.</p>
+            <p className="empty-state">Speak your question and the network assistant will check the live Fiberline network.</p>
           </div>
           <button className="btn" onClick={close}>Close</button>
         </div>
@@ -191,13 +191,13 @@ export default function NetworkQuery({ onClose, onVisualize }) {
           </div>
         )}
 
-        {loading && <div className="voice-query-hero"><div className="voice-thinking" aria-hidden="true"><span /><span /><span /></div><strong>Checking the network…</strong><span className="voice-query-hint">Gemini is looking through the documented network graph.</span></div>}
+        {loading && <div className="voice-query-hero"><div className="voice-thinking" aria-hidden="true"><span /><span /><span /></div><strong>Checking the network…</strong><span className="voice-query-hint">The assistant is looking through the documented network graph.</span></div>}
 
         {showTyping && !loading && !result && (
           <form className="network-query-form" onSubmit={submit}>
             <label htmlFor="network-query-input">Network question</label>
             <textarea id="network-query-input" rows="3" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ask about poles, boxes, customers, capacity, outages, cables, approvals, or Fiberline workflows." autoFocus />
-            <div className="network-query-actions"><button className="btn" type="button" onClick={() => { setShowTyping(false); startListening(); }}>Use microphone</button><button className="btn btn-primary" type="submit" disabled={!query.trim()}>Ask Gemini</button></div>
+            <div className="network-query-actions"><button className="btn" type="button" onClick={() => { setShowTyping(false); startListening(); }}>Use microphone</button><button className="btn btn-primary" type="submit" disabled={!query.trim()}>Ask assistant</button></div>
           </form>
         )}
 
