@@ -1,11 +1,11 @@
 const express = require('express');
 const db = require('../db');
 const { getBoxRevision } = require('../services/boxRevision');
+const { requireAdmin } = require('../services/auth');
 const {
   PENDING,
   APPROVED,
   REJECTED,
-  requireAdmin,
   restoreBoxSnapshot,
   listApprovals,
 } = require('../services/asBuiltApproval');
@@ -49,13 +49,8 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/approvals/:id/approve — admin reviewer only
-router.post('/:id/approve', async (req, res, next) => {
-  let reviewer;
-  try {
-    reviewer = requireAdmin(req);
-  } catch (err) {
-    return next(err);
-  }
+router.post('/:id/approve', requireAdmin, async (req, res, next) => {
+  const reviewer = { id: req.user.id, role: req.user.role };
   const trx = await db.transaction();
   try {
     const approval = await trx('as_built_approvals').where({ id: req.params.id }).forUpdate().first();
@@ -94,13 +89,8 @@ router.post('/:id/approve', async (req, res, next) => {
 });
 
 // POST /api/approvals/:id/reject — admin reviewer only; restores the prior box
-router.post('/:id/reject', async (req, res, next) => {
-  let reviewer;
-  try {
-    reviewer = requireAdmin(req);
-  } catch (err) {
-    return next(err);
-  }
+router.post('/:id/reject', requireAdmin, async (req, res, next) => {
+  const reviewer = { id: req.user.id, role: req.user.role };
   const trx = await db.transaction();
   try {
     const approval = await trx('as_built_approvals').where({ id: req.params.id }).forUpdate().first();

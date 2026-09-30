@@ -72,7 +72,8 @@ async function request(path, options = {}, retryCount = 0) {
     const { headers: optionHeaders = {}, ...requestOptions } = options;
     const res = await fetch(`${BASE}${path}`, {
       ...requestOptions,
-      headers: { "Content-Type": "application/json", ...optionHeaders },
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...csrfHeaders(requestOptions.method), ...optionHeaders },
       signal: controller.signal,
     });
 
@@ -82,6 +83,9 @@ async function request(path, options = {}, retryCount = 0) {
     const body = isJson ? await res.json().catch(() => null) : null;
 
     if (!res.ok) {
+      if (res.status === 401 && path !== "/auth/login" && typeof window !== "undefined") {
+        window.dispatchEvent(new Event("fiberline-auth-expired"));
+      }
       const errorMessage = body?.error || `Request failed: ${res.status}`;
       const error = new Error(errorMessage);
       error.status = res.status;
@@ -145,23 +149,33 @@ function boxRevisionHeaders(revision) {
   return revision ? { "If-Match": revision } : {};
 }
 
-// The app currently has no login provider. Deployments can bridge their
-// authenticated session by setting these values, which the API enforces for
-// approval actions. Never treat the UI flag as the security boundary.
-export function approvalRole() {
-  if (typeof localStorage === "undefined") return "technician";
-  return localStorage.getItem("fiberline-user-role") || "technician";
+function cookieValue(name) {
+  if (typeof document === "undefined") return null;
+  const part = document.cookie.split('; ').find((entry) => entry.startsWith(`${name}=`));
+  return part ? decodeURIComponent(part.slice(name.length + 1)) : null;
 }
 
-export function approvalHeaders() {
-  if (typeof localStorage === "undefined") return {};
-  const headers = { "X-User-Role": approvalRole() };
-  const userId = localStorage.getItem("fiberline-user-id");
-  if (userId) headers["X-User-Id"] = userId;
-  return headers;
+function csrfHeaders(method) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(method || 'GET').toUpperCase())) return {};
+  const token = cookieValue('fiberline_csrf');
+  return token ? { 'X-CSRF-Token': token } : {};
 }
 
 export const api = {
+  // Authentication
+  me: () => request("/auth/me"),
+  login: (username, password) =>
+    request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => request("/auth/logout", { method: "POST" }),
+  changePassword: (currentPassword, newPassword) =>
+    request("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
   // Poles
   listPoles: () => request("/poles"),
   createPole: (data) =>
@@ -269,13 +283,11 @@ export const api = {
     request(`/approvals/${id}/approve`, {
       method: "POST",
       body: JSON.stringify({ comment }),
-      headers: approvalHeaders(),
     }),
   rejectAsBuilt: (id, comment = "") =>
     request(`/approvals/${id}/reject`, {
       method: "POST",
       body: JSON.stringify({ comment }),
-      headers: approvalHeaders(),
     }),
 
   // Fiber cores

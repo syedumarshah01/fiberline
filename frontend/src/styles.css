@@ -983,6 +983,39 @@ code, .mono { font-family: var(--font-mono); }
 .approval-revision, .approval-admin-note { color: var(--text-muted); font-size: 10px; }
 .approval-actions { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
 
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+}
+.auth-card {
+  width: min(100%, 380px);
+  display: grid;
+  gap: 8px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, .28);
+}
+.auth-card .brand { margin-bottom: 10px; }
+.auth-card h1 { margin: 0; font-size: 22px; }
+.auth-label { margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.auth-card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.auth-submit { margin-top: 12px; }
+.session-user { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+
 /* Live OLT/ONT telemetry */
 .telemetry-banner {
   position: absolute;

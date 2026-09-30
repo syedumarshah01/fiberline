@@ -7,6 +7,10 @@
 3. Create the database: `createdb fiber_network`
 4. `npm install`
 5. `npm run migrate`
+6. Create the first administrator out-of-band, using a password of at least 12 characters:
+   `ADMIN_USERNAME=admin ADMIN_PASSWORD='use-a-long-random-password' npm run create-admin`
+
+The API uses database-backed opaque sessions in an HttpOnly cookie and a CSRF token for browser mutations. All `/api` routes except login require authentication. Users are stored in `users` with `technician` or `admin` roles; do not seed a default password. Put the frontend origin in `FRONTEND_ORIGIN` and set `COOKIE_SECURE=true` when serving over HTTPS.
 
 ## Is my database up to date?
 
@@ -52,7 +56,7 @@ The public failure simulation is **box-only**: `GET /api/impact/simulate?kind=bo
 
 ## As-built approval workflow
 
-Field edits are committed and visible immediately so technicians and operations can see the as-built state, but each box-documentation mutation creates a `pending` row in `as_built_approvals` with a complete before snapshot and the resulting revision. An admin reviewer uses `GET /api/approvals?status=pending&enclosure_id=<box>`, then `POST /api/approvals/:id/approve` or `POST /api/approvals/:id/reject` with `X-User-Role: admin`, `X-User-Id: <reviewer>`. Approval keeps the live state. Rejection restores the exact pre-change enclosure, splice, splitter, port, and core rows. A rejection or approval refuses with `409 APPROVAL_STALE` if another edit happened after submission, preventing a reviewer from erasing newer work. The frontend shows pending work in the box panel; set the authenticated session's `fiberline-user-role`/`fiberline-user-id` values (or have the auth proxy supply the same headers) for reviewer controls. The UI role flag is only a client hint; the backend header/`req.user` check is authoritative.
+Field edits are committed and visible immediately so technicians and operations can see the as-built state, but each box-documentation mutation creates a `pending` row in `as_built_approvals` with a complete before snapshot and the resulting revision. An authenticated admin reviewer uses `GET /api/approvals?status=pending&enclosure_id=<box>`, then `POST /api/approvals/:id/approve` or `POST /api/approvals/:id/reject`; the backend authorizes these actions from the database-backed session role, not a browser flag. Approval keeps the live state. Rejection restores the exact pre-change enclosure, splice, splitter, port, and core rows. A rejection or approval refuses with `409 APPROVAL_STALE` if another edit happened after submission, preventing a reviewer from erasing newer work. The frontend shows pending work in the selected box panel and only renders reviewer buttons when the logged-in `/api/auth/me` user has role `admin`.
 
 ## Live OLT/ONT telemetry
 

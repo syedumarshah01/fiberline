@@ -5,7 +5,6 @@ const {
   APPROVED,
   REJECTED,
   actorFromRequest,
-  requireAdmin,
   revisionForSnapshot,
 } = require('../src/services/asBuiltApproval');
 
@@ -22,14 +21,6 @@ describe('as-built approval policy', () => {
       body: {},
     });
     assert.deepEqual(actor, { id: 'tech-7', role: 'technician' });
-  });
-
-  test('only an admin reviewer can approve or reject', () => {
-    assert.equal(requireAdmin({ get: (name) => name === 'x-user-role' ? 'ADMIN' : 'reviewer-1' }).role, 'admin');
-    assert.throws(
-      () => requireAdmin({ get: () => 'technician' }),
-      (error) => error.status === 403 && error.code === 'APPROVAL_ADMIN_REQUIRED',
-    );
   });
 
   test('approval status names and snapshot revisions are stable', () => {

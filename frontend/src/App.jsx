@@ -36,7 +36,67 @@ const HINTS = {
   "locate-customer": "Click the map at the customer's location.",
 };
 
+function LoginScreen({ onLogin, error, loading }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  return (
+    <main className="auth-shell">
+      <form className="auth-card" onSubmit={(event) => { event.preventDefault(); onLogin(username, password); }}>
+        <div className="brand">FIBER<span>LINE</span></div>
+        <h1>Sign in</h1>
+        <p className="empty-state">Use your network account to access the operations console.</p>
+        {error && <p className="error-row" role="alert">{error}</p>}
+        <label className="auth-label" htmlFor="login-username">Username</label>
+        <input id="login-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
+        <label className="auth-label" htmlFor="login-password">Password</label>
+        <input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+        <button className="btn btn-primary auth-submit" disabled={loading} type="submit">{loading ? "Signing in…" : "Sign in"}</button>
+      </form>
+    </main>
+  );
+}
+
 export default function App() {
+  const [authUser, setAuthUser] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authError, setAuthError] = useState(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  useEffect(() => {
+    const expire = () => {
+      setAuthUser(null);
+      setAuthError("Your session expired. Please sign in again.");
+    };
+    window.addEventListener("fiberline-auth-expired", expire);
+    api.me()
+      .then((result) => setAuthUser(result.user))
+      .catch(() => setAuthUser(null))
+      .finally(() => setAuthChecking(false));
+    return () => window.removeEventListener("fiberline-auth-expired", expire);
+  }, []);
+
+  async function handleLogin(username, password) {
+    setLoginLoading(true);
+    setAuthError(null);
+    try {
+      const result = await api.login(username, password);
+      setAuthUser(result.user);
+    } catch (error) {
+      setAuthError(error.message || "Unable to sign in");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } catch (_) {
+      // The session may already have expired; the local app still signs out.
+    }
+    setAuthUser(null);
+  }
+
   const [poles, setPoles] = useState([]);
   const [enclosures, setEnclosures] = useState([]);
   const [cables, setCables] = useState([]);
@@ -140,14 +200,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    reloadAll();
-  }, [reloadAll]);
+    if (authUser) reloadAll();
+  }, [reloadAll, authUser]);
 
   // Live status is deliberately best-effort. SSE gives an external OLT feed
   // immediate updates, while polling remains the safe fallback for proxies and
   // installations with no configured stream. Neither path is required for the
   // map or manual box simulation to work.
   useEffect(() => {
+    if (!authUser) return undefined;
     let cancelled = false;
     let stream = null;
 
@@ -204,7 +265,7 @@ export default function App() {
       window.clearInterval(interval);
       stream?.close();
     };
-  }, []);
+  }, [authUser]);
 
   /**
    * Open whatever a scanned tag asked for. Runs when the network finishes
@@ -640,6 +701,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerPoint, mode, networkRevision]);
 
+  if (authChecking) {
+    return <main className="auth-shell"><p className="loading-row">Loading secure session…</p></main>;
+  }
+  if (!authUser) {
+    return <LoginScreen onLogin={handleLogin} error={authError} loading={loginLoading} />;
+  }
+
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
       <div className="topbar">
@@ -705,6 +773,10 @@ export default function App() {
             onChange={(e) => setLabelOpacity(Number(e.target.value))}
           />
         </label>
+        <span className="session-user" title={`Signed in as ${authUser.username}`}>
+          {authUser.username} · {authUser.role}
+        </span>
+        <button className="btn" onClick={handleLogout} style={{ padding: "4px 10px" }}>Sign out</button>
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>
 
@@ -912,6 +984,7 @@ export default function App() {
             onCreateCustomer={handleCreateCustomer}
             onChanged={reloadAll}
             networkRevision={networkRevision}
+            currentUser={authUser}
             onDeleteEnclosure={handleDeleteEnclosure}
             onDeleteCable={handleDeleteCable}
             onSplitPointChange={handleSplitPointChange}

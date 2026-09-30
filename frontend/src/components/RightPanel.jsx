@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api, approvalRole } from "../api";
+import { api } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
 import ImpactPanel from "./ImpactPanel.jsx";
@@ -105,11 +105,11 @@ function getFiberColorName(coreNumber) {
   return baseName;
 }
 
-function AsBuiltApprovalPanel({ enclosureId, networkRevision, onChanged }) {
+function AsBuiltApprovalPanel({ enclosureId, networkRevision, currentUser, onChanged }) {
   const [approvals, setApprovals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const isAdmin = approvalRole().toLowerCase() === "admin";
+  const isAdmin = currentUser?.role === "admin";
 
   function loadApprovals() {
     setLoading(true);
@@ -185,7 +185,7 @@ function documentationDiff(before, after) {
 // ---------------------------------------------------------------------------
 // BoxDocumentation — shown when an enclosure is selected
 // ---------------------------------------------------------------------------
-function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDeleteEnclosure, onHoverCable, onOpenWorksheet, onOpenQrTag }) {
+function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, currentUser, onDeleteEnclosure, onHoverCable, onOpenWorksheet, onOpenQrTag }) {
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -612,7 +612,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
           <button className="btn" onClick={() => setConflict(null)}>Review latest</button>
         </div>
       )}
-      <AsBuiltApprovalPanel enclosureId={enclosureId} networkRevision={networkRevision} onChanged={onChanged} />
+      <AsBuiltApprovalPanel enclosureId={enclosureId} networkRevision={networkRevision} currentUser={currentUser} onChanged={onChanged} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 6, flexWrap: "wrap" }}>
         <p className="section-title" style={{ margin: 0 }}>{doc.enclosure.code} — box documentation</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -2371,6 +2371,7 @@ export default function RightPanel({
   onCreateCustomer,
   onChanged,
   networkRevision = 0,
+  currentUser,
   onDeleteEnclosure,
   onDeleteCable,
   onSplitPointChange,
@@ -2466,6 +2467,7 @@ export default function RightPanel({
           enclosureId={selectedEnclosure.id}
           onChanged={onChanged}
           networkRevision={networkRevision}
+          currentUser={currentUser}
           onDeleteEnclosure={onDeleteEnclosure}
           onHoverCable={onHoverCable}
           onOpenWorksheet={(box) => setWorksheetFor({ id: box.id, label: box.code })}

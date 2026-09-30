@@ -18,12 +18,27 @@ const workOrdersRouter = require('./routes/workOrders');
 const connectionPlansRouter = require('./routes/connectionPlans');
 const telemetryRouter = require('./routes/telemetry');
 const approvalsRouter = require('./routes/approvals');
+const authRouter = require('./routes/auth');
+const { attachUser, requireAuth, requireCsrf, allowTelemetryIngest } = require('./services/auth');
 const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
-app.use(cors());
+app.set('trust proxy', 1);
+app.use(cors({ origin: process.env.FRONTEND_ORIGIN || true, credentials: true }));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Authentication is public only for login. Every other API route requires a
+// live HttpOnly session and state-changing requests also require the CSRF token
+// paired with that session.
+app.use('/api', attachUser);
+app.use('/api/auth', authRouter);
+// OLT/ONT systems are services, not browser users. They may post telemetry
+// with the dedicated token while all other API routes still require a session.
+app.use('/api/telemetry/events', allowTelemetryIngest);
+app.use('/api/telemetry/ingest', allowTelemetryIngest);
+app.use('/api', requireAuth);
+app.use('/api', requireCsrf);
 
 app.use('/api/poles', polesRouter);
 app.use('/api/enclosures', enclosuresRouter);

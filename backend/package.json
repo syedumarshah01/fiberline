@@ -14,6 +14,7 @@
     "seed": "knex seed:run",
     "test": "node --test",
     "db:schema": "node scripts/schemaStatus.js",
+    "create-admin": "node scripts/createAdmin.js",
     "test:migrations": "node --test tests/migrationSql.test.js",
     "db:link-splits": "node scripts/linkSplits.js"
   },

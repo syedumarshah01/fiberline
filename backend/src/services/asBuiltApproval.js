@@ -12,17 +12,6 @@ function actorFromRequest(req) {
   };
 }
 
-function requireAdmin(req) {
-  const actor = actorFromRequest(req);
-  if (actor.role !== 'admin') {
-    const error = new Error('An admin reviewer is required for this action');
-    error.status = 403;
-    error.code = 'APPROVAL_ADMIN_REQUIRED';
-    throw error;
-  }
-  return actor;
-}
-
 /**
  * Snapshot only the records that make up a box's as-built documentation. The
  * snapshot is deliberately database-shaped so a rejected change can be
@@ -164,7 +153,6 @@ module.exports = {
   APPROVED,
   REJECTED,
   actorFromRequest,
-  requireAdmin,
   snapshotBox,
   revisionForSnapshot,
   recordAsBuiltChange,
