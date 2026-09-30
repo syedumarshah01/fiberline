@@ -4,13 +4,18 @@ import {
   TileLayer,
   Marker,
   Polyline,
-  CircleMarker,
+  Circle,
   Tooltip,
   useMapEvents,
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
 import { cableLabel, routeMidpointLngLat, CABLE_LABEL_MIN_ZOOM } from "../utils/geoLabels.js";
+import {
+  impactCableStyle,
+  impactBoxState,
+  customersBehind,
+} from "../utils/impactOverlay.js";
 
 /** Color used to spotlight a cable (e.g. while hovering one of its fibers in
  *  the splice form). Deliberately not one of the cable-type colors. */
@@ -33,17 +38,33 @@ const selectedPoleIcon = divIcon(
   '<div class="pole-marker selected-pole-marker"></div>',
   [16, 16],
 );
+// The pole that was taken out in a simulated failure.
+const failedPoleIcon = divIcon(
+  '<div class="pole-marker failed-pole-marker"></div>',
+  [18, 18],
+);
 
-function enclosureIcon(availableCores, isSelected) {
+function enclosureIcon(availableCores, isSelected, boxState = {}, behind = 0, agentColor = null) {
   const cls =
     availableCores === undefined
       ? ""
       : availableCores > 0
         ? "has-capacity"
         : "full";
+  const outage = [
+    boxState.dark ? "dark" : "",
+    boxState.failed ? "failure-point" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  // Customers behind a dark box are counted on the marker itself, so the
+  // number of people affected is visible without opening the panel.
+  const badge = behind > 0 ? `<div class="enclosure-badge">${behind}</div>` : "";
   return divIcon(
-    `<div class="enclosure-marker ${cls} ${isSelected ? "selected-enclosure-marker" : ""}"></div>`,
-    isSelected ? [20, 20] : [14, 14],
+    `<div class="enclosure-marker ${cls} ${
+      isSelected ? "selected-enclosure-marker" : ""
+    } ${outage} ${agentColor ? "agent-marked-enclosure" : ""}"${agentColor ? ` style="--agent-color:${agentColor}"` : ""}></div>${badge}`,
+    isSelected || boxState.failed ? [20, 20] : [14, 14],
   );
 }
 
@@ -68,7 +89,7 @@ function ClickCatcher({ onMapClick }) {
   return null;
 }
 
-function MapFlyTo({ targetLatLng, locateLatLng }) {
+function MapFlyTo({ targetLatLng, locateLatLng, queryLatLng }) {
   const map = useMapEvents({});
   useEffect(() => {
     if (targetLatLng && map) {
@@ -77,6 +98,11 @@ function MapFlyTo({ targetLatLng, locateLatLng }) {
       });
     }
   }, [targetLatLng, map]);
+  useEffect(() => {
+    if (queryLatLng && map) {
+      map.flyTo(queryLatLng, Math.max(map.getZoom(), 16), { duration: 0.8 });
+    }
+  }, [queryLatLng, map]);
   // Only the explicit "locate me" click is allowed to move the map to the
   // user's position — never as a side effect of selection changes.
   useEffect(() => {
@@ -88,6 +114,18 @@ function MapFlyTo({ targetLatLng, locateLatLng }) {
 }
 
 /** Reports live zoom changes upward so cable labels can gate on zoom level. */
+function FitNetwork({ active, poles, enclosures }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!active) return;
+    const points = [...poles, ...enclosures]
+      .filter((asset) => asset.lat != null && asset.lng != null)
+      .map((asset) => [Number(asset.lat), Number(asset.lng)]);
+    if (points.length > 1) map.fitBounds(points, { padding: [40, 40], maxZoom: 17 });
+  }, [active, enclosures, map, poles]);
+  return null;
+}
+
 function ZoomTracker({ onZoomChange }) {
   const map = useMap();
   useEffect(() => {
@@ -127,16 +165,21 @@ export default function MapView({
   selectedPoleId,
   selectedCableId,
   highlightCableId,
+  overlay,
+  impact,
   splitPointLngLat,
   userPosition,
   locateNonce,
   customerRoute,
+  networkVisualization,
   onMapClick,
   onPoleClick,
   onEnclosureClick,
   onCableClick,
 }) {
   const [zoom, setZoom] = useState(16);
+  const failurePoleId =
+    impact?.failure?.kind === "pole" ? impact.failure.id : null;
   const flyToTarget = useMemo(() => {
     if (selectedPoleId) {
       const pole = poles.find((p) => p.id === selectedPoleId);
@@ -166,6 +209,15 @@ export default function MapView({
     return null;
   }, [locateNonce, userPosition]);
 
+  const queryLatLng = useMemo(() => {
+    const center = networkVisualization?.center;
+    return center?.lat != null && center?.lng != null ? [Number(center.lat), Number(center.lng)] : null;
+  }, [networkVisualization]);
+
+  const queryStyle = networkVisualization?.type === "map_command" ? networkVisualization.style : networkVisualization?.type === "asset_style" ? networkVisualization : null;
+  const queryBoxIds = useMemo(() => new Set(queryStyle?.asset_ids || networkVisualization?.box_ids || []), [queryStyle, networkVisualization]);
+  const mapVisibility = networkVisualization?.visibility || {};
+
   const center = useMemo(() => {
     if (poles.length && poles[0].lat != null && poles[0].lng != null) return [poles[0].lat, poles[0].lng];
     return [34.0083, 71.5788]; // Peshawar, as a sensible default center
@@ -182,8 +234,19 @@ export default function MapView({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <ClickCatcher onMapClick={onMapClick} />
-      <MapFlyTo targetLatLng={flyToTarget} locateLatLng={locateLatLng} />
+      <MapFlyTo targetLatLng={flyToTarget} locateLatLng={locateLatLng} queryLatLng={queryLatLng} />
+      <FitNetwork active={networkVisualization?.type === "map_command" && networkVisualization.action === "fit_network"} poles={poles} enclosures={enclosures} />
       <ZoomTracker onZoomChange={setZoom} />
+
+      {networkVisualization?.type === "nearby_boxes" && queryLatLng && (
+        <Circle center={queryLatLng} radius={Number(networkVisualization.radius_m) || 500} pathOptions={{ color: "#3fd0c9", weight: 2, dashArray: "7 6", fillColor: "#3fd0c9", fillOpacity: 0.08 }} />
+      )}
+      {networkVisualization?.type === "map_command" && networkVisualization.action === "focus" && queryLatLng && networkVisualization.radius_m && (
+        <Circle center={queryLatLng} radius={Number(networkVisualization.radius_m)} pathOptions={{ color: "#ff6b35", weight: 2, dashArray: "7 6", fillColor: "#ff6b35", fillOpacity: 0.08 }} />
+      )}
+      {enclosures.filter((enc) => queryBoxIds.has(enc.id) && enc.lat != null && enc.lng != null).map((enc) => (
+        <CircleMarker key={`query-${enc.id}`} center={[enc.lat, enc.lng]} radius={11} pathOptions={{ color: "#ff6b35", weight: 3, fillColor: "#ff6b35", fillOpacity: 0.12 }} />
+      ))}
 
       {pendingCableRoute.length >= 2 && (
         <Polyline
@@ -212,11 +275,15 @@ export default function MapView({
         />
       ))}
 
-      {cables.map((cable) => {
+      {mapVisibility.cables !== false && cables.map((cable) => {
         const isSpliceLive = cable.cable_type !== "drop";
         const hasSplicedCores = (cable.spliced_core_count || 0) > 0;
         const isSelected = cable.id === selectedCableId;
         const isHighlighted = cable.id === highlightCableId;
+        // A simulated outage overrides the type color: dark cables go red and
+        // everything else recedes so the outage reads at a glance.
+        const dark = impactCableStyle(cable.id, overlay);
+        const dimmed = overlay?.active && !dark;
         const label = cableLabel(cable);
         const mid = routeMidpointLngLat(cable.route);
         return (
@@ -226,24 +293,38 @@ export default function MapView({
               cable.route ? cable.route.map(([lng, lat]) => [lat, lng]) : []
             }
             pathOptions={{
-              color: isHighlighted ? HIGHLIGHT_COLOR : CABLE_COLORS[cable.cable_type] || "#8b96a8",
-              weight:
-                isSelected || isHighlighted
+              color: dark
+                ? dark.color
+                : isHighlighted
+                  ? HIGHLIGHT_COLOR
+                  : CABLE_COLORS[cable.cable_type] || "#8b96a8",
+              weight: dark
+                ? dark.weight
+                : isSelected || isHighlighted
                   ? (cable.cable_type === "feeder" ? 7 : cable.cable_type === "distribution" ? 6 : 4)
                   : (cable.cable_type === "feeder"
                       ? 4
                       : cable.cable_type === "distribution"
                         ? 3
                         : 2),
-              dashArray: hasSplicedCores && !isHighlighted ? (isSelected ? "2 2" : "10 6") : "none",
+              dashArray: dark
+                ? dark.dash.join(" ")
+                : hasSplicedCores && !isHighlighted
+                  ? (isSelected ? "2 2" : "10 6")
+                  : "none",
               // Marching-ants: both spliced classes animate stroke-dashoffset;
               // drop cables march faster so the customer leg reads as the
-              // "last hop" (see styles.css).
+              // "last hop" (see styles.css). Dark cables never animate — the
+              // ants mean "live traffic", which is exactly what they lost.
               className: [
-                hasSplicedCores ? "cable-line-active" : "",
-                cable.cable_type === "drop" ? "cable-line-drop" : "",
+                hasSplicedCores && !dark ? "cable-line-active" : "",
+                cable.cable_type === "drop" && !dark ? "cable-line-drop" : "",
+                // Styling for an out span is inline (see impactCableStyle); these
+                // classes only carry what inline options cannot — the marching
+                // ants, which an out span must not have.
+                dark ? "cable-line-out" : "",
               ].filter(Boolean).join(" "),
-              opacity: isSelected || isHighlighted ? 1 : 0.85,
+              opacity: dark ? dark.opacity ?? 1 : dimmed ? 0.35 : isSelected || isHighlighted ? 1 : 0.85,
             }}
             eventHandlers={onCableClick ? {
               click: () => {
@@ -278,30 +359,46 @@ export default function MapView({
         );
       })}
 
-      {poles.map((pole) => {
+      {mapVisibility.poles !== false && poles.map((pole) => {
         if (pole.lat == null || pole.lng == null) return null;
+        const isFailedPole = failurePoleId != null && pole.id === failurePoleId;
         return (
           <Marker
             key={pole.id}
             position={[pole.lat, pole.lng]}
-            icon={pole.id === selectedPoleId ? selectedPoleIcon : poleIcon}
+            icon={
+              isFailedPole
+                ? failedPoleIcon
+                : pole.id === selectedPoleId
+                  ? selectedPoleIcon
+                  : poleIcon
+            }
             eventHandlers={{ click: () => onPoleClick(pole) }}
           />
         );
       })}
 
-      {enclosures.map((enc) => {
+      {mapVisibility.boxes !== false && enclosures.map((enc) => {
         if (enc.lat == null || enc.lng == null) return null;
         const isSelected = enc.id === selectedEnclosureId;
+        const boxState = impactBoxState(enc.id, overlay);
         // Box codes show ONLY while hovered (Leaflet opens non-permanent
         // tooltips on mouseover) and permanently for the selected box — they
         // never blanket the map regardless of zoom.
         const labelPinned = isSelected;
+        const agentMarked = queryStyle?.kind === "enclosure" && (queryStyle.scope === "all" || queryBoxIds.has(enc.id));
         return (
           <Marker
             key={enc.id}
             position={[enc.lat, enc.lng]}
-            icon={enclosureIcon(capacityByEnclosure?.[enc.id], isSelected)}
+            opacity={overlay?.active && !boxState.dark ? 0.5 : 1}
+            icon={enclosureIcon(
+              capacityByEnclosure?.[enc.id],
+              isSelected,
+              boxState,
+              boxState.dark ? customersBehind(enc.id, overlay) : 0,
+              agentMarked ? networkVisualization.color_hex : null,
+            )}
             eventHandlers={{ click: () => onEnclosureClick(enc) }}
           >
             {enc.code ? (

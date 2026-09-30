@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "description": "The only operations the constrained network assistant may select. Each handler is deterministic backend code; the model never receives database access.",
+  "tools": [
+    {
+      "name": "checkServiceability",
+      "description": "Check whether an identified enclosure can serve a customer at a given location. Return deterministic serviceability issues such as no spare core, no available splitter port, or insufficient optical power margin. Read-only.",
+      "parameters": {
+        "enclosure_id": {
+          "type": "string",
+          "required": true,
+          "description": "The existing enclosure ID to check. Do not invent an ID."
+        },
+        "lat": {
+          "type": "number",
+          "required": false,
+          "description": "Customer latitude, when the location is available as coordinates.",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "required": false,
+          "description": "Customer longitude, when the location is available as coordinates.",
+          "minimum": -180,
+          "maximum": 180
+        }
+      },
+      "handler": "services/serviceability.checkServiceability",
+      "read_only": true
+    },
+    {
+      "name": "findPortRemediation",
+      "description": "Find deterministic ways to resolve a missing or unavailable splitter port at an existing enclosure, using documented network capacity. Read-only; do not claim that any port was assigned or changed.",
+      "parameters": {
+        "enclosure_id": {
+          "type": "string",
+          "required": true,
+          "description": "The existing enclosure where port capacity is unavailable."
+        }
+      },
+      "handler": "services/remediation.findPortRemediation",
+      "read_only": true
+    },
+    {
+      "name": "findPowerRemediation",
+      "description": "Find deterministic remediation options for insufficient optical power margin on a documented fiber path. Read-only; return the calculated evidence and options without changing network records.",
+      "parameters": {
+        "core_id": {
+          "type": "string",
+          "required": true,
+          "description": "The existing fiber-core ID whose optical path has the power-margin issue."
+        },
+        "enclosure_id": {
+          "type": "string",
+          "required": false,
+          "description": "The existing enclosure at which a local remediation should be evaluated, when known."
+        }
+      },
+      "handler": "services/remediation.findPowerRemediation",
+      "read_only": true
+    },
+    {
+      "name": "findCoreRemediation",
+      "description": "Find the nearest documented enclosure with spare fiber capacity and return the ordered connected cable path back to the target enclosure. This is the existing BFS-based capacity search, not a write.",
+      "parameters": {
+        "enclosure_id": {
+          "type": "string",
+          "required": true,
+          "description": "The existing target enclosure that needs a spare core."
+        },
+        "exclude_self": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether the target enclosure itself should be excluded as a source; defaults to true.",
+          "default": true
+        }
+      },
+      "handler": "services/capacityGraph.findNearestSource",
+      "read_only": true
+    },
+    {
+      "name": "traceCore",
+      "description": "Trace an existing fiber core through documented cables, splices, mid-span continuations, splitter crossings, and customer termination. Read-only.",
+      "parameters": {
+        "core_id": {
+          "type": "string",
+          "required": true,
+          "description": "The existing fiber-core ID to trace."
+        }
+      },
+      "handler": "services/networkTools.traceCore",
+      "read_only": true
+    },
+    {
+      "name": "simulateFailure",
+      "description": "Simulate failure of an existing enclosure and report the deterministic downstream fiber, box, cable, and customer impact. This never changes the database and does not simulate a cable or pole failure.",
+      "parameters": {
+        "enclosure_id": {
+          "type": "string",
+          "required": true,
+          "description": "The existing enclosure to simulate as failed."
+        }
+      },
+      "handler": "services/networkTools.analyzeOutage",
+      "read_only": true
+    },
+    {
+      "name": "locateCustomer",
+      "description": "Build a deterministic physical connection plan for a customer location, including the nearest enclosure, exact available port or core choice, source path when capacity must be brought in, route basis, and optical budget. Read-only.",
+      "parameters": {
+        "address": {
+          "type": "string",
+          "required": false,
+          "description": "Customer street address, when coordinates are not available."
+        },
+        "lat": {
+          "type": "number",
+          "required": false,
+          "description": "Customer latitude. Provide with lng when using coordinates.",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "required": false,
+          "description": "Customer longitude. Provide with lat when using coordinates.",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "radius_m": {
+          "type": "number",
+          "required": false,
+          "description": "Maximum search radius in metres for candidate enclosures.",
+          "minimum": 1,
+          "maximum": 5000
+        },
+        "route": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether to request a street route when the route service is configured.",
+          "default": false
+        }
+      },
+      "handler": "services/connectionPlan.createConnectionPlan",
+      "read_only": true
+    },
+    {
+      "name": "lookupDocs",
+      "description": "Retrieve the most relevant approved Fiberline documentation chunks for a software or network-operations question. Use retrieved documentation rather than model memory; read-only.",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "The user's documentation or how-to question in plain language."
+        },
+        "top_k": {
+          "type": "integer",
+          "required": false,
+          "description": "Number of documentation chunks to retrieve, from 1 to 3; defaults to 3.",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 3
+        }
+      },
+      "handler": "services/docsLookup.lookupDocs",
+      "read_only": true
+    }
+  ]
+}
