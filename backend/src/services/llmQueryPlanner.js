@@ -28,11 +28,11 @@ const GEMINI_PLAN_SCHEMA = {
   properties: {
     intent: { type: 'STRING', enum: ['pole_outage', 'nearby_capacity', 'clarification'] },
     message: { type: 'STRING' },
-    pole_identifier: { type: ['STRING', 'NULL'] },
-    location_text: { type: ['STRING', 'NULL'] },
-    latitude: { type: ['NUMBER', 'NULL'] },
-    longitude: { type: ['NUMBER', 'NULL'] },
-    radius_m: { type: ['NUMBER', 'NULL'] },
+    pole_identifier: { type: 'STRING', nullable: true },
+    location_text: { type: 'STRING', nullable: true },
+    latitude: { type: 'NUMBER', nullable: true },
+    longitude: { type: 'NUMBER', nullable: true },
+    radius_m: { type: 'NUMBER', nullable: true },
   },
   required: ['intent', 'message', 'pole_identifier', 'location_text', 'latitude', 'longitude', 'radius_m'],
 };

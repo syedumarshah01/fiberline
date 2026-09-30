@@ -56,7 +56,10 @@ describe('LLM network-query planner', () => {
 
     assert.equal(request.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent');
     assert.equal(request.options.headers['x-goog-api-key'], 'gemini-test-key');
-    assert.equal(JSON.parse(request.options.body).generationConfig.responseMimeType, 'application/json');
+    const requestBody = JSON.parse(request.options.body);
+    assert.equal(requestBody.generationConfig.responseMimeType, 'application/json');
+    assert.equal(requestBody.generationConfig.responseSchema.properties.location_text.type, 'STRING');
+    assert.equal(requestBody.generationConfig.responseSchema.properties.location_text.nullable, true);
     assert.equal(plan.intent, 'nearby_capacity');
     assert.equal(plan.location.text, '12 Main Street');
   });
