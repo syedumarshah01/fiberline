@@ -5,6 +5,7 @@ const { resolveAddress } = require('./addressLookup');
 const { loadBoxDocumentation } = require('./boxDocumentation');
 const { traceFiber } = require('./fiberTrace');
 const { buildLossBudget } = require('./lossBudget');
+const { runReadOnlyQuery } = require('./readOnlyQuery');
 const MAX_LIMIT = 50;
 
 function limitValue(value, fallback = 20) {
@@ -242,6 +243,10 @@ async function lossBudget({ core_id, olt_type } = {}) {
   return { status: 'ok', core, budget: await buildLossBudget(coreId, { olt_type }) };
 }
 
+async function queryDatabase({ sql } = {}) {
+  return runReadOnlyQuery(sql);
+}
+
 async function approvals({ status = 'pending', limit = 20 } = {}) {
   const capped = limitValue(limit);
   const rows = await db('as_built_approvals as a')
@@ -266,6 +271,7 @@ const TOOL_HANDLERS = {
   get_box_documentation: boxDocumentation,
   trace_fiber_core: traceCore,
   get_loss_budget: lossBudget,
+  query_network_database: queryDatabase,
   list_approvals: approvals,
 };
 
@@ -291,6 +297,7 @@ module.exports = {
   boxDocumentation,
   traceCore,
   lossBudget,
+  queryDatabase,
   approvals,
   executeNetworkTool,
 };

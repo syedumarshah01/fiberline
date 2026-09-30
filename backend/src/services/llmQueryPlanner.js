@@ -55,6 +55,8 @@ const ASSISTANT_SYSTEM_PROMPT = `You are Fiberline, an operations assistant for 
 
 Use the read-only tools when the answer depends on live network data. You may call more than one tool and may use a previous tool result to decide what to inspect next. Never invent an asset, customer, outage, capacity number, account, or approval. If a tool returns an error or no match, say that clearly and ask for the missing identifier or location.
 
+For questions that need a custom database lookup, use query_network_database with one simple PostgreSQL SELECT. Allowed tables are poles, enclosures, cables, customers, fiber_cores, splices, splitters, splitter_ports, headends, telemetry_status, and as_built_approvals. Common relationships are enclosures.pole_id = poles.id, cables.from_enclosure_id/to_enclosure_id = enclosures.id, fiber_cores.cable_id = cables.id, splices.enclosure_id = enclosures.id, splitters.enclosure_id = enclosures.id, splitter_ports.splitter_id = splitters.id, and customers.id = cables.customer_id. Use explicit columns and LIMIT 100. Never select passwords, tokens, sessions, snapshots, or any account credentials.
+
 You can explain how to use Fiberline without a tool. The application supports map-based asset management, box documentation, splice and splitter wiring, fiber tracing, loss budgets, capacity planning, customer connection plans, outage impact analysis, telemetry, QR field worksheets, work orders, and admin approval/account workflows. Do not claim that a write operation was performed: this assistant is read-only. Tell the user to use the normal UI for creates, edits, approvals, password resets, or other mutations.
 
 When answering a data question, cite the asset code/name and distinguish documented facts from assumptions. Keep the answer concise but useful. Do not mention internal tool names or implementation details unless asked.`;
@@ -147,6 +149,17 @@ const TOOL_DECLARATIONS = [
         olt_type: { type: 'string', description: 'Optional OLT type override from project settings.' },
       },
       required: ['core_id'],
+    },
+  },
+  {
+    name: 'query_network_database',
+    description: 'Run one safe, read-only SELECT against the documented network database when the specialized tools cannot answer the question. Use explicit columns, joins, filters, and a LIMIT of 100 or less. Never query credentials, sessions, password fields, or write anything.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sql: { type: 'string', description: 'A single PostgreSQL SELECT over the documented Fiberline network tables. No comments, semicolons, writes, sensitive fields, or system tables.' },
+      },
+      required: ['sql'],
     },
   },
   {
