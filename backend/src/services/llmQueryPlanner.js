@@ -177,20 +177,22 @@ const TOOL_DECLARATIONS = [
 
 function config() {
   const provider = String(
-    process.env.LLM_PROVIDER || (process.env.GEMINI_API_KEY ? 'gemini' : 'openai'),
+    process.env.LLM_PROVIDER ||
+      (process.env.GEMINI_API_KEY ? 'gemini' : process.env.OPENROUTER_API_KEY ? 'openrouter' : 'openai'),
   ).toLowerCase();
   const gemini = provider === 'gemini';
+  const openrouter = provider === 'openrouter';
   const apiKey = process.env.LLM_API_KEY ||
-    (gemini ? process.env.GEMINI_API_KEY : process.env.OPENAI_API_KEY) || '';
+    (gemini ? process.env.GEMINI_API_KEY : openrouter ? process.env.OPENROUTER_API_KEY : process.env.OPENAI_API_KEY) || '';
   return {
     provider,
     apiKey,
     model: process.env.LLM_MODEL ||
-      (gemini ? process.env.GEMINI_MODEL : process.env.OPENAI_MODEL) ||
-      (gemini ? DEFAULT_MODEL : 'gpt-4o-mini'),
+      (gemini ? process.env.GEMINI_MODEL : openrouter ? process.env.OPENROUTER_MODEL : process.env.OPENAI_MODEL) ||
+      (gemini ? DEFAULT_MODEL : openrouter ? 'openai/gpt-4o' : 'gpt-4o-mini'),
     baseUrl: (process.env.LLM_BASE_URL ||
-      (gemini ? process.env.GEMINI_BASE_URL : process.env.OPENAI_BASE_URL) ||
-      (gemini ? DEFAULT_GEMINI_BASE_URL : DEFAULT_BASE_URL)).replace(/\/+$/, ''),
+      (gemini ? process.env.GEMINI_BASE_URL : openrouter ? process.env.OPENROUTER_BASE_URL : process.env.OPENAI_BASE_URL) ||
+      (gemini ? DEFAULT_GEMINI_BASE_URL : openrouter ? 'https://openrouter.ai/api/v1' : DEFAULT_BASE_URL)).replace(/\/+$/, ''),
     timeoutMs: Math.max(1000, Number(process.env.LLM_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)),
   };
 }

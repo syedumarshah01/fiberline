@@ -5,6 +5,7 @@ const {
 } = require('../services/naturalLanguageQuery');
 const { config, plannerMode } = require('../services/llmQueryPlanner');
 const { askGeminiNetwork } = require('../services/geminiAssistant');
+const { askOpenRouterNetwork } = require('../services/openRouterAssistant');
 
 const router = express.Router();
 
@@ -22,12 +23,16 @@ async function handleQuery(req, res, next) {
     }
 
     const conversationId = req.method === 'GET' ? req.query.conversation_id : req.body?.conversation_id;
-    const result = config().provider === 'gemini' && plannerMode() !== 'deterministic'
-      ? await askGeminiNetwork(query, {
-          conversation_id: typeof conversationId === 'string' ? conversationId : null,
-          userId: req.user?.id || 'anonymous',
-        })
-      : await executeNaturalLanguageQuery(query);
+    const assistantOptions = {
+      conversation_id: typeof conversationId === 'string' ? conversationId : null,
+      userId: req.user?.id || 'anonymous',
+    };
+    const provider = config().provider;
+    const result = plannerMode() !== 'deterministic' && provider === 'gemini'
+      ? await askGeminiNetwork(query, assistantOptions)
+      : plannerMode() !== 'deterministic' && provider === 'openrouter'
+        ? await askOpenRouterNetwork(query, assistantOptions)
+        : await executeNaturalLanguageQuery(query);
     const status = result.status === 'not_found' ? 404 : result.status === 'needs_location' || result.status === 'needs_clarification' ? 422 : 200;
     res.status(status).json(result);
   } catch (err) {
