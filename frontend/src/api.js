@@ -4,6 +4,8 @@ const BASE = "/api";
 const MAX_RETRIES = 3;
 const INITIAL_DELAY_MS = 1000;
 const MAX_DELAY_MS = 10000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const NETWORK_QUERY_TIMEOUT_MS = 210000;
 
 /**
  * Validates that the response data is not null or undefined.
@@ -44,14 +46,43 @@ async function safeRequest(path, options = {}) {
   }
 }
 
+/**
+ * Like request(), but for endpoints that answer text (the worksheet's plain-text
+ * form) instead of JSON.
+ */
+async function requestText(path, options = {}) {
+  const res = await fetch(`${BASE}${path}`, options);
+  const body = await res.text();
+  if (!res.ok) {
+    // The API answers errors as JSON even on text routes; surface its message.
+    let message = `Request failed: ${res.status}`;
+    try {
+      message = JSON.parse(body)?.error || message;
+    } catch {
+      /* not JSON — keep the status line */
+    }
+    throw new Error(`${message} (${path})`);
+  }
+  return body;
+}
+
 async function request(path, options = {}, retryCount = 0) {
+  let timeoutId;
+  let retryEnabled = true;
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
-
+    const {
+      headers: optionHeaders = {},
+      timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+      retry = true,
+      ...requestOptions
+    } = options;
+    retryEnabled = retry;
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
+      ...requestOptions,
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...csrfHeaders(requestOptions.method), ...optionHeaders },
       signal: controller.signal,
     });
 
@@ -61,9 +92,14 @@ async function request(path, options = {}, retryCount = 0) {
     const body = isJson ? await res.json().catch(() => null) : null;
 
     if (!res.ok) {
+      if (res.status === 401 && path !== "/auth/login" && typeof window !== "undefined") {
+        window.dispatchEvent(new Event("fiberline-auth-expired"));
+      }
       const errorMessage = body?.error || `Request failed: ${res.status}`;
       const error = new Error(errorMessage);
       error.status = res.status;
+      error.code = body?.code;
+      error.details = body;
       error.retryable = isRetryableError(res.status);
       throw error;
     }
@@ -77,11 +113,14 @@ async function request(path, options = {}, retryCount = 0) {
 
     return validateResponse(body, path);
   } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
     if (error.name === 'AbortError') {
-      throw new Error(`Request timeout for ${path}`);
+      const timeoutError = new Error(`Request timeout for ${path}`);
+      timeoutError.code = 'REQUEST_TIMEOUT';
+      throw timeoutError;
     }
 
-    if (error.retryable && retryCount < MAX_RETRIES) {
+    if (error.retryable && retryEnabled && retryCount < MAX_RETRIES) {
       const delay = calculateDelay(retryCount);
       console.warn(`Retrying ${path} (attempt ${retryCount + 1}/${MAX_RETRIES})`);
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -95,7 +134,71 @@ async function request(path, options = {}, retryCount = 0) {
   }
 }
 
+/**
+ * URL of a QR image for arbitrary text, rendered by the API as SVG. Used as an
+ * `<img src>` so the browser fetches it directly — no blob juggling, and the
+ * image survives a re-render.
+ */
+export function qrSvgUrl(data, { ec = "M", scale = 6, quiet = 4 } = {}) {
+  const query = new URLSearchParams({ data: String(data), ec, scale: String(scale), quiet: String(quiet) });
+  return `${BASE}/qr/svg?${query}`;
+}
+
+/** The link a tag for this thing carries — the frontend builds it, because it
+ *  knows its own origin (the deployed app is not always on the API's host). */
+export function qrLink(kind, id, { base = "" } = {}) {
+  const params = { pole: "pole", box: "box", enclosure: "box", cable: "cable", customer: "customer" };
+  const param = params[String(kind).toLowerCase()];
+  if (!param || !id) return null;
+  return {
+    kind: param,
+    id,
+    link: `${String(base).replace(/\/+$/, "")}/?${param}=${encodeURIComponent(id)}`,
+  };
+}
+
+function boxRevisionHeaders(revision) {
+  return revision ? { "If-Match": revision } : {};
+}
+
+function cookieValue(name) {
+  if (typeof document === "undefined") return null;
+  const part = document.cookie.split('; ').find((entry) => entry.startsWith(`${name}=`));
+  return part ? decodeURIComponent(part.slice(name.length + 1)) : null;
+}
+
+function csrfHeaders(method) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(method || 'GET').toUpperCase())) return {};
+  const token = cookieValue('fiberline_csrf');
+  return token ? { 'X-CSRF-Token': token } : {};
+}
+
 export const api = {
+  // Authentication
+  me: () => request("/auth/me"),
+  login: (username, password) =>
+    request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => request("/auth/logout", { method: "POST" }),
+  changePassword: (currentPassword, newPassword) =>
+    request("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+  listUsers: () => request("/auth/users"),
+  createUser: (username, password, role = "technician") =>
+    request("/auth/users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, role }),
+    }),
+  updateUser: (id, data) =>
+    request(`/auth/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
   // Poles
   listPoles: () => request("/poles"),
   createPole: (data) =>
@@ -106,10 +209,32 @@ export const api = {
   listEnclosures: () => request("/enclosures"),
   createEnclosure: (data) =>
     request("/enclosures", { method: "POST", body: JSON.stringify(data) }),
-  getBoxDocumentation: (id) => request(`/enclosures/${id}/documentation`),
+  // Documentation changes after cable splitting/insertion; bust an intermediary
+  // GET cache so the open upstream box immediately sees the new OUT segment and
+  // its core statuses.
+  getBoxDocumentation: (id) =>
+    request(`/enclosures/${id}/documentation?refresh=${Date.now()}`),
+
+  // Field work: a worksheet generated from a box's documentation, and the QR
+  // tags that open that documentation when scanned.
+  getWorkOrder: (boxId, { by = null, kind = null } = {}) => {
+    const query = new URLSearchParams();
+    if (by) query.set("by", by);
+    if (kind) query.set("kind", kind);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request(`/work-orders/${boxId}${suffix}`);
+  },
+  getWorkOrderText: (boxId, { by = null, kind = null } = {}) => {
+    const query = new URLSearchParams();
+    if (by) query.set("by", by);
+    if (kind) query.set("kind", kind);
+    const suffix = query.toString() ? `?${query}` : "";
+    return requestText(`/work-orders/${boxId}/text${suffix}`);
+  },
+  qrLinkInfo: (kind, id, params = {}) => qrLink(kind, id, params),
   getVisualization: (id) => request(`/enclosures/${id}/visualization`),
-  updateEnclosure: (id, data) =>
-    request(`/enclosures/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  updateEnclosure: (id, data, revision = null) =>
+    request(`/enclosures/${id}`, { method: "PATCH", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
   deleteEnclosure: (id) => request(`/enclosures/${id}`, { method: "DELETE" }),
 
   // Cables
@@ -138,37 +263,67 @@ export const api = {
     request("/customers", { method: "POST", body: JSON.stringify(data) }),
 
   // Splices
-  createSplice: (data) =>
-    request("/splices", { method: "POST", body: JSON.stringify(data) }),
-  updateSplice: (id, data) =>
-    request(`/splices/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteSplice: (id) => request(`/splices/${id}`, { method: "DELETE" }),
-  unspliceCore: (coreId) => request(`/splices/by-core/${coreId}`, { method: "DELETE" }),
+  createSplice: (data, revision = null) =>
+    request("/splices", { method: "POST", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  updateSplice: (id, data, revision = null) =>
+    request(`/splices/${id}`, { method: "PATCH", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  deleteSplice: (id, revision = null) =>
+    request(`/splices/${id}`, { method: "DELETE", headers: boxRevisionHeaders(revision) }),
+  unspliceCore: (coreId, enclosureId = null, revision = null) => {
+    const suffix = enclosureId ? `?enclosure_id=${encodeURIComponent(enclosureId)}` : "";
+    return request(`/splices/by-core/${coreId}${suffix}`, { method: "DELETE", headers: boxRevisionHeaders(revision) });
+  },
 
   // Splitters
   listSplitters: (enclosureId) => request(`/splitters?enclosureId=${enclosureId}`),
   getSplitter: (id) => request(`/splitters/${id}`),
-  createSplitter: (data) =>
-    request("/splitters", { method: "POST", body: JSON.stringify(data) }),
-  updateSplitter: (id, data) =>
-    request(`/splitters/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteSplitter: (id) => request(`/splitters/${id}`, { method: "DELETE" }),
-  assignCoreToPort: (splitterId, portNumber, coreId) =>
+  createSplitter: (data, revision = null) =>
+    request("/splitters", { method: "POST", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  updateSplitter: (id, data, revision = null) =>
+    request(`/splitters/${id}`, { method: "PATCH", body: JSON.stringify(data), headers: boxRevisionHeaders(revision) }),
+  deleteSplitter: (id, revision = null) =>
+    request(`/splitters/${id}`, { method: "DELETE", headers: boxRevisionHeaders(revision) }),
+  assignCoreToPort: (splitterId, portNumber, coreId, revision = null) =>
     request(`/splitters/${splitterId}/assign-port`, {
       method: "POST",
       body: JSON.stringify({ port_number: portNumber, core_id: coreId }),
+      headers: boxRevisionHeaders(revision),
     }),
-  unassignCoreFromPort: (splitterId, portNumber) =>
+  unassignCoreFromPort: (splitterId, portNumber, revision = null) =>
     request(`/splitters/${splitterId}/assign-port?port_number=${portNumber}`, {
       method: "DELETE",
+      headers: boxRevisionHeaders(revision),
+    }),
+
+  // As-built approval workflow
+  listApprovals: (enclosureId, status = "pending") => {
+    const query = new URLSearchParams();
+    if (enclosureId) query.set("enclosure_id", enclosureId);
+    if (status) query.set("status", status);
+    return request(`/approvals?${query}`);
+  },
+  approveAsBuilt: (id, comment = "") =>
+    request(`/approvals/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+    }),
+  rejectAsBuilt: (id, comment = "") =>
+    request(`/approvals/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
     }),
 
   // Fiber cores
   traceFiber: (coreId) => request(`/fiber-cores/${coreId}/trace`),
-  updateCore: (id, data) =>
+  getLossBudget: (coreId, oltType) =>
+    request(
+      `/fiber-cores/${coreId}/loss-budget${oltType ? `?olt_type=${oltType}` : ""}`,
+    ),
+  updateCore: (id, data, revision = null) =>
     request(`/fiber-cores/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
+      headers: boxRevisionHeaders(revision),
     }),
 
   // Capacity
@@ -179,6 +334,61 @@ export const api = {
     request(`/capacity/customer-lookup?lat=${lat}&lng=${lng}&radius=${radius}`),
   getCustomerRoute: (customerLat, customerLng, enclosureId) =>
     request(`/capacity/customer-route?customerLat=${customerLat}&customerLng=${customerLng}&enclosureId=${enclosureId}`),
+
+  // Project settings (loss budget: OLT type, budget / safety-margin overrides)
+  getSettings: () => request("/settings"),
+  updateSettings: (data) =>
+    request("/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  // Outage / impact analysis — simulate a box failure only. The backend follows
+  // connected fibres and splitter ports downstream; it never treats the input
+  // cable as the failed element.
+  simulateImpact: (kind, id) => {
+    const params = new URLSearchParams({ kind, id });
+    return request(`/impact/simulate?${params.toString()}`);
+  },
+
+  // Headends — the network root (OLT/CO) that gives every trace a direction
+  listHeadends: () => request("/headends"),
+  createHeadend: (data) =>
+    request("/headends", { method: "POST", body: JSON.stringify(data) }),
+  updateHeadend: (id, data) =>
+    request(`/headends/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteHeadend: (id) => request(`/headends/${id}`, { method: "DELETE" }),
+
+  // Customer planning — one physical design response for the clicked point.
+  // It names the exact splitter port/core or the connected source path and
+  // carries the optical budget beside the ordered installation steps.
+  customerConnectionPlan: ({ address, lat, lng, radiusM, limit, route } = {}) => {
+    const params = new URLSearchParams();
+    if (address) params.set("address", address);
+    if (lat != null && lng != null) {
+      params.set("lat", String(lat));
+      params.set("lng", String(lng));
+    }
+    if (radiusM != null) params.set("radius_m", String(radiusM));
+    if (limit != null) params.set("limit", String(limit));
+    if (route === false) params.set("route", "0");
+    return request(`/customer-plans/plan?${params.toString()}`);
+  },
+
+  // Natural-language network graph queries. The backend translates the text into
+  // a validated graph operation and returns both the answer and its assumptions.
+  // Local 1B models can spend time loading weights and executing several tool
+  // rounds. Do not retry this request: retrying would duplicate model work and
+  // can make a slow local model appear hung.
+  networkQuery: (query, conversationId = null) =>
+    request("/network/query", {
+      method: "POST",
+      timeoutMs: NETWORK_QUERY_TIMEOUT_MS,
+      retry: false,
+      body: JSON.stringify({ query, ...(conversationId ? { conversation_id: conversationId } : {}) }),
+    }),
+  confirmNetworkAction: (actionId) => request(`/network/actions/${actionId}/confirm`, { method: "POST" }),
+  cancelNetworkAction: (actionId) => request(`/network/actions/${actionId}/cancel`, { method: "POST" }),
 
   // Health check
   health: () => safeRequest("/health"),
