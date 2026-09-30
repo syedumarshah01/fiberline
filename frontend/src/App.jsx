@@ -165,6 +165,11 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showNetworkQuery, setShowNetworkQuery] = useState(false);
+  const [networkVisualization, setNetworkVisualization] = useState(null);
+
+  const handleNetworkVisualize = useCallback((visualization) => {
+    setNetworkVisualization(visualization || null);
+  }, []);
 
   useEffect(() => {
     const expire = () => {
@@ -815,7 +820,7 @@ export default function App() {
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
       {showUserManagement && authUser.role === "admin" && <UserManagement currentUser={authUser} onClose={() => setShowUserManagement(false)} />}
-      {showNetworkQuery && <NetworkQuery onClose={() => setShowNetworkQuery(false)} />}
+      {showNetworkQuery && <NetworkQuery onClose={() => setShowNetworkQuery(false)} onVisualize={handleNetworkVisualize} />}
       <div className="topbar">
         <div className="brand">
           FIBER<span>LINE</span>
@@ -882,7 +887,7 @@ export default function App() {
         <span className="session-user" title={`Signed in as ${authUser.username}`}>
           {authUser.username} · {authUser.role}
         </span>
-        <button className="btn btn-primary" onClick={() => setShowNetworkQuery(true)} style={{ padding: "4px 10px" }}>Ask network</button>
+        <button className="btn btn-primary" onClick={() => { setNetworkVisualization(null); setShowNetworkQuery(true); }} style={{ padding: "4px 10px" }}>Ask network</button>
         {authUser.role === "admin" && <button className="btn" onClick={() => setShowUserManagement(true)} style={{ padding: "4px 10px" }}>Team</button>}
         <button className="btn" onClick={handleLogout} style={{ padding: "4px 10px" }}>Sign out</button>
         <div className="topbar-hint">{HINTS[mode]}</div>
@@ -954,6 +959,7 @@ export default function App() {
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
+              networkVisualization={networkVisualization}
               onMapClick={handleMapClick}
               onPoleClick={handlePoleClick}
               onEnclosureClick={handleEnclosureClick}
@@ -985,6 +991,7 @@ export default function App() {
                 splitPointLngLat={splitPointLngLat}
                 userPosition={userPosition}
                 customerRoute={customerRoute}
+              networkVisualization={networkVisualization}
                 onMapClick={handleMapClick}
                 onPoleClick={handlePoleClick}
                 onEnclosureClick={handleEnclosureClick}
@@ -1016,6 +1023,7 @@ export default function App() {
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
+              networkVisualization={networkVisualization}
               onMapClick={handleMapClick}
               onPoleClick={handlePoleClick}
               onEnclosureClick={handleEnclosureClick}

@@ -5,6 +5,7 @@ import {
   Marker,
   Polyline,
   CircleMarker,
+  Circle,
   Tooltip,
   useMapEvents,
   useMap,
@@ -91,7 +92,7 @@ function ClickCatcher({ onMapClick }) {
   return null;
 }
 
-function MapFlyTo({ targetLatLng, locateLatLng }) {
+function MapFlyTo({ targetLatLng, locateLatLng, queryLatLng }) {
   const map = useMapEvents({});
   useEffect(() => {
     if (targetLatLng && map) {
@@ -100,6 +101,11 @@ function MapFlyTo({ targetLatLng, locateLatLng }) {
       });
     }
   }, [targetLatLng, map]);
+  useEffect(() => {
+    if (queryLatLng && map) {
+      map.flyTo(queryLatLng, Math.max(map.getZoom(), 16), { duration: 0.8 });
+    }
+  }, [queryLatLng, map]);
   // Only the explicit "locate me" click is allowed to move the map to the
   // user's position — never as a side effect of selection changes.
   useEffect(() => {
@@ -156,6 +162,7 @@ export default function MapView({
   userPosition,
   locateNonce,
   customerRoute,
+  networkVisualization,
   onMapClick,
   onPoleClick,
   onEnclosureClick,
@@ -193,6 +200,13 @@ export default function MapView({
     return null;
   }, [locateNonce, userPosition]);
 
+  const queryLatLng = useMemo(() => {
+    const center = networkVisualization?.center;
+    return center?.lat != null && center?.lng != null ? [Number(center.lat), Number(center.lng)] : null;
+  }, [networkVisualization]);
+
+  const queryBoxIds = useMemo(() => new Set(networkVisualization?.box_ids || []), [networkVisualization]);
+
   const center = useMemo(() => {
     if (poles.length && poles[0].lat != null && poles[0].lng != null) return [poles[0].lat, poles[0].lng];
     return [34.0083, 71.5788]; // Peshawar, as a sensible default center
@@ -209,8 +223,15 @@ export default function MapView({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <ClickCatcher onMapClick={onMapClick} />
-      <MapFlyTo targetLatLng={flyToTarget} locateLatLng={locateLatLng} />
+      <MapFlyTo targetLatLng={flyToTarget} locateLatLng={locateLatLng} queryLatLng={queryLatLng} />
       <ZoomTracker onZoomChange={setZoom} />
+
+      {networkVisualization?.type === "nearby_boxes" && queryLatLng && (
+        <Circle center={queryLatLng} radius={Number(networkVisualization.radius_m) || 500} pathOptions={{ color: "#3fd0c9", weight: 2, dashArray: "7 6", fillColor: "#3fd0c9", fillOpacity: 0.08 }} />
+      )}
+      {enclosures.filter((enc) => queryBoxIds.has(enc.id) && enc.lat != null && enc.lng != null).map((enc) => (
+        <CircleMarker key={`query-${enc.id}`} center={[enc.lat, enc.lng]} radius={11} pathOptions={{ color: "#ff6b35", weight: 3, fillColor: "#ff6b35", fillOpacity: 0.12 }} />
+      ))}
 
       {pendingCableRoute.length >= 2 && (
         <Polyline

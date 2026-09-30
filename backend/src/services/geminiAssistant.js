@@ -30,6 +30,7 @@ async function askGeminiNetwork(query, { fetchImpl = fetch } = {}) {
 
   const contents = [{ role: 'user', parts: [{ text: String(query) }] }];
   const toolCalls = [];
+  let visualization = null;
   const timerController = () => new AbortController();
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -80,6 +81,7 @@ async function askGeminiNetwork(query, { fetchImpl = fetch } = {}) {
         planner_source: 'gemini-tools',
         answer_text: answer,
         tool_calls: toolCalls,
+        visualization,
       };
     }
 
@@ -91,6 +93,20 @@ async function askGeminiNetwork(query, { fetchImpl = fetch } = {}) {
         try { args = JSON.parse(args); } catch { args = {}; }
       }
       const result = await executeNetworkTool(name, args);
+      if (name === 'find_nearby_boxes' && result?.center && Array.isArray(result.boxes)) {
+        visualization = {
+          type: 'nearby_boxes',
+          center: result.center,
+          radius_m: result.radius_m,
+          box_ids: result.boxes.map((box) => box.id).filter(Boolean),
+        };
+      } else if (name === 'analyze_outage' && result?.status === 'ok') {
+        visualization = {
+          type: 'asset_boxes',
+          box_ids: (result.mounted_boxes || result.affected?.boxes || []).map((box) => box.id).filter(Boolean),
+          center: result.pole?.lat != null ? { lat: Number(result.pole.lat), lng: Number(result.pole.lng) } : null,
+        };
+      }
       toolCalls.push({ name, arguments: args, ok: !result?.error });
       functionResponses.push({ functionResponse: { name, response: result } });
     }

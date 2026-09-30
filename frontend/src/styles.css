@@ -1036,6 +1036,23 @@ code, .mono { font-family: var(--font-mono); }
   box-shadow: 0 20px 70px rgba(0, 0, 0, .4);
 }
 .network-query-form { display: grid; gap: 8px; margin-top: 18px; }
+.voice-query-hero { display: grid; justify-items: center; gap: 12px; min-height: 300px; align-content: center; text-align: center; }
+.voice-mic { position: relative; display: grid; place-items: center; width: 104px; height: 104px; border: 0; border-radius: 50%; background: radial-gradient(circle at 50% 42%, #61e4dc 0 16%, #2daba9 17% 36%, #176b75 37% 100%); color: white; cursor: pointer; box-shadow: 0 0 0 0 rgba(63, 208, 201, .55); transition: transform .2s ease, box-shadow .2s ease; }
+.voice-mic:hover { transform: scale(1.04); }
+.voice-mic.is-listening { animation: voice-pulse 1.35s ease-out infinite; }
+.voice-mic-icon { display: block; width: 25px; height: 36px; overflow: hidden; border: 3px solid white; border-radius: 14px; color: transparent; }
+.voice-mic-icon::after { content: ""; display: block; width: 3px; height: 15px; margin: 32px auto 0; background: white; box-shadow: -9px 15px 0 -1px white, 9px 15px 0 -1px white; }
+.voice-mic-waves { position: absolute; inset: 12px; border: 2px solid rgba(255,255,255,.28); border-radius: 50%; opacity: 0; }
+.voice-mic.is-listening .voice-mic-waves { animation: voice-wave 1.35s ease-out infinite; }
+.voice-query-hint { max-width: 430px; color: var(--text-muted); font-size: 11px; }
+.voice-transcript { max-width: 540px; margin: 0; color: var(--text); font-size: 13px; }
+.voice-thinking { display: flex; gap: 8px; align-items: center; height: 104px; }
+.voice-thinking span { width: 12px; height: 12px; border-radius: 50%; background: var(--teal); animation: voice-thinking 1s ease-in-out infinite; }
+.voice-thinking span:nth-child(2) { animation-delay: .15s; }
+.voice-thinking span:nth-child(3) { animation-delay: .3s; }
+@keyframes voice-pulse { 0% { box-shadow: 0 0 0 0 rgba(63, 208, 201, .55); } 70% { box-shadow: 0 0 0 24px rgba(63, 208, 201, 0); } 100% { box-shadow: 0 0 0 0 rgba(63, 208, 201, 0); } }
+@keyframes voice-wave { 0% { transform: scale(.7); opacity: .7; } 100% { transform: scale(1.35); opacity: 0; } }
+@keyframes voice-thinking { 0%, 100% { transform: translateY(0); opacity: .45; } 50% { transform: translateY(-10px); opacity: 1; } }
 .network-query-form label { color: var(--text-muted); font-size: 11px; font-weight: 600; }
 .network-query-form textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 76px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--text); font: inherit; }
 .network-query-actions { display: flex; justify-content: flex-end; }
