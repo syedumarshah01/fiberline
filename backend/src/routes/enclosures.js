@@ -5,6 +5,7 @@ const { normalizeEditableCode } = require('../utils/codegen');
 const { BAD_SPLICE_LOSS_DB } = require('../utils/lossBudget');
 const { loadBoxDocumentation } = require('../services/boxDocumentation');
 const { assertBoxRevision, expectedRevision } = require('../services/boxRevision');
+const { snapshotBox, recordAsBuiltChange } = require('../services/asBuiltApproval');
 const router = express.Router();
 
 // GET /api/enclosures — all boxes, with parent pole coordinates or direct location
@@ -59,19 +60,23 @@ router.post('/', validateEnclosureData, async (req, res, next) => {
 
 // PATCH /api/enclosures/:id
 router.patch('/:id', async (req, res, next) => {
-  const trx = expectedRevision(req) ? await db.transaction() : null;
-  const executor = trx || db;
+  // Approval capture is transactional even for legacy callers that omit
+  // If-Match: the edit is visible immediately, but can still be rolled back by
+  // an administrator without exposing an intermediate partial snapshot.
+  const trx = await db.transaction();
   try {
-    if (trx) {
-      const box = await trx('enclosures').where({ id: req.params.id }).forUpdate().first();
-      if (!box) {
-        await trx.rollback();
-        return res.status(404).json({ error: 'Enclosure not found' });
-      }
+    const box = await trx('enclosures').where({ id: req.params.id }).forUpdate().first();
+    if (!box) {
+      await trx.rollback();
+      return res.status(404).json({ error: 'Enclosure not found' });
+    }
+    const beforeSnapshot = await snapshotBox(req.params.id, trx);
+    if (expectedRevision(req)) {
       await assertBoxRevision({ req, enclosureId: req.params.id, executor: trx });
     }
+
     const fields = ['name', 'type', 'capacity', 'status', 'mounting', 'notes'];
-    const updates = { updated_at: executor.fn.now() };
+    const updates = { updated_at: trx.fn.now() };
     for (const f of fields) if (req.body[f] !== undefined) updates[f] = req.body[f];
 
     // `code` (the box code shown on the map and in documentation) is editable,
@@ -80,28 +85,38 @@ router.patch('/:id', async (req, res, next) => {
     if (req.body.code !== undefined) {
       const code = normalizeEditableCode(req.body.code);
       if (!code) {
+        await trx.rollback();
         return res.status(400).json({ error: 'code must be a non-empty string' });
       }
-      const clash = await executor('enclosures')
+      const clash = await trx('enclosures')
         .where({ code })
         .whereNot({ id: req.params.id })
         .first();
       if (clash) {
-        if (trx) await trx.rollback();
+        await trx.rollback();
         return res.status(409).json({ error: `Another box already uses code ${code}` });
       }
       updates.code = code;
     }
 
-    const changed = await executor('enclosures').where({ id: req.params.id }).update(updates);
+    const changed = await trx('enclosures').where({ id: req.params.id }).update(updates);
     if (!changed) {
-      if (trx) await trx.rollback();
+      await trx.rollback();
       return res.status(404).json({ error: 'Enclosure not found' });
     }
-    if (trx) await trx.commit();
-    res.json({ ok: true });
+    const afterSnapshot = await snapshotBox(req.params.id, trx);
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: req.params.id,
+      changeType: 'enclosure_metadata',
+      summary: `Updated box ${box.code}`,
+      beforeSnapshot,
+      afterSnapshot,
+    });
+    await trx.commit();
+    res.json({ ok: true, approval_id: approval.id });
   } catch (err) {
-    if (trx) await trx.rollback();
+    await trx.rollback();
     next(err);
   }
 });

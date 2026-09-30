@@ -951,6 +951,38 @@ code, .mono { font-family: var(--font-mono); }
 }
 .box-edit-conflict .btn { justify-self: start; }
 
+.as-built-approvals {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(75, 190, 180, 0.06);
+}
+.approval-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.approval-live {
+  color: var(--teal);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.approval-explainer { margin: 6px 0 8px; }
+.approval-card {
+  display: grid;
+  gap: 3px;
+  margin-top: 7px;
+  padding: 8px;
+  border-left: 3px solid var(--amber);
+  background: rgba(240, 180, 41, 0.08);
+  font-size: 11px;
+}
+.approval-revision, .approval-admin-note { color: var(--text-muted); font-size: 10px; }
+.approval-actions { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+
 /* Live OLT/ONT telemetry */
 .telemetry-banner {
   position: absolute;

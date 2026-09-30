@@ -145,6 +145,22 @@ function boxRevisionHeaders(revision) {
   return revision ? { "If-Match": revision } : {};
 }
 
+// The app currently has no login provider. Deployments can bridge their
+// authenticated session by setting these values, which the API enforces for
+// approval actions. Never treat the UI flag as the security boundary.
+export function approvalRole() {
+  if (typeof localStorage === "undefined") return "technician";
+  return localStorage.getItem("fiberline-user-role") || "technician";
+}
+
+export function approvalHeaders() {
+  if (typeof localStorage === "undefined") return {};
+  const headers = { "X-User-Role": approvalRole() };
+  const userId = localStorage.getItem("fiberline-user-id");
+  if (userId) headers["X-User-Id"] = userId;
+  return headers;
+}
+
 export const api = {
   // Poles
   listPoles: () => request("/poles"),
@@ -240,6 +256,26 @@ export const api = {
     request(`/splitters/${splitterId}/assign-port?port_number=${portNumber}`, {
       method: "DELETE",
       headers: boxRevisionHeaders(revision),
+    }),
+
+  // As-built approval workflow
+  listApprovals: (enclosureId, status = "pending") => {
+    const query = new URLSearchParams();
+    if (enclosureId) query.set("enclosure_id", enclosureId);
+    if (status) query.set("status", status);
+    return request(`/approvals?${query}`);
+  },
+  approveAsBuilt: (id, comment = "") =>
+    request(`/approvals/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+      headers: approvalHeaders(),
+    }),
+  rejectAsBuilt: (id, comment = "") =>
+    request(`/approvals/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+      headers: approvalHeaders(),
     }),
 
   // Fiber cores

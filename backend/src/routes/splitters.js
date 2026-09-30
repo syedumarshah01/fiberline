@@ -3,6 +3,7 @@ const db = require('../db');
 const { validateSplitterData } = require('../middleware/validation');
 const { canBranchFromCore } = require('../utils/branching');
 const { assertBoxRevision, expectedRevision } = require('../services/boxRevision');
+const { snapshotBox, recordAsBuiltChange } = require('../services/asBuiltApproval');
 const {
   defaultSplitterName,
   splitterInputNote,
@@ -16,14 +17,15 @@ const {
 const router = express.Router();
 
 async function checkBoxRevision(trx, req, enclosureId) {
-  if (!expectedRevision(req)) return;
   const box = await trx('enclosures').where({ id: enclosureId }).forUpdate().first();
   if (!box) {
     const error = new Error('Enclosure not found');
     error.status = 404;
     throw error;
   }
-  await assertBoxRevision({ req, enclosureId, executor: trx });
+  if (expectedRevision(req)) {
+    await assertBoxRevision({ req, enclosureId, executor: trx });
+  }
 }
 
 // Columns every port listing exposes — including a possible cascaded child
@@ -163,6 +165,11 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       notes,
     } = req.body;
 
+    const beforeSnapshot = await snapshotBox(enclosure_id, trx);
+    if (!beforeSnapshot) {
+      await trx.rollback();
+      return res.status(404).json({ error: 'Enclosure not found' });
+    }
     await checkBoxRevision(trx, req, enclosure_id);
     if (!SUPPORTED_SPLIT_COUNTS.includes(Number(split_count))) {
       await trx.rollback();
@@ -290,8 +297,15 @@ router.post('/', validateSplitterData, async (req, res, next) => {
       });
     }
 
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: enclosure_id,
+      changeType: 'splitter_create',
+      summary: `Added splitter ${splitterName} in box ${enclosure_id}`,
+      beforeSnapshot,
+    });
     await trx.commit();
-    res.status(201).json(splitter);
+    res.status(201).json({ ...splitter, approval_id: approval.id });
   } catch (err) {
     await trx.rollback();
     next(err);
@@ -317,6 +331,7 @@ router.post('/:id/assign-port', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'Splitter not found' });
     }
+    const beforeSnapshot = await snapshotBox(splitter.enclosure_id, trx);
     await checkBoxRevision(trx, req, splitter.enclosure_id);
 
     const port = await trx('splitter_ports')
@@ -354,8 +369,15 @@ router.post('/:id/assign-port', async (req, res, next) => {
       updated_at: trx.fn.now(),
     });
 
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splitter.enclosure_id,
+      changeType: 'splitter_port_assign',
+      summary: `Assigned a core to splitter ${splitter.name || splitter.id} port ${port_number}`,
+      beforeSnapshot,
+    });
     await trx.commit();
-    res.json({ message: 'Core assigned to port', port_id: port.id, core_id });
+    res.json({ message: 'Core assigned to port', port_id: port.id, core_id, approval_id: approval.id });
   } catch (err) {
     await trx.rollback();
     next(err);
@@ -384,6 +406,7 @@ router.delete('/:id/assign-port', async (req, res,next) => {
     }
 
     const splitter = await trx('splitters').where({ id: req.params.id }).first();
+    const beforeSnapshot = splitter ? await snapshotBox(splitter.enclosure_id, trx) : null;
     await checkBoxRevision(trx, req, splitter?.enclosure_id);
     await trx('fiber_cores').where({ id: port.output_core_id }).update({
       status: 'available',
@@ -393,8 +416,15 @@ router.delete('/:id/assign-port', async (req, res,next) => {
 
     await trx('splitter_ports').where({ id: port.id }).update({ output_core_id: null });
 
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splitter.enclosure_id,
+      changeType: 'splitter_port_unassign',
+      summary: `Unassigned splitter ${splitter.name || splitter.id} port ${port_number}`,
+      beforeSnapshot,
+    });
     await trx.commit();
-    res.json({ message: 'Core unassigned from port', port_id: port.id });
+    res.json({ message: 'Core unassigned from port', port_id: port.id, approval_id: approval.id });
   } catch (err) {
     await trx.rollback();
     next(err);
@@ -405,33 +435,38 @@ router.delete('/:id/assign-port', async (req, res,next) => {
 // the name, the notes, who spliced it and the measured loss. Port structure
 // (split_count / port assignments) is NOT editable here by design.
 router.patch('/:id', async (req, res, next) => {
-  const trx = expectedRevision(req) ? await db.transaction() : null;
-  const executor = trx || db;
+  const trx = await db.transaction();
   try {
-    const splitterQuery = executor('splitters').where({ id: req.params.id });
-    if (trx) splitterQuery.forUpdate();
-    const splitter = await splitterQuery.first();
+    const splitter = await trx('splitters').where({ id: req.params.id }).forUpdate().first();
     if (!splitter) {
-      if (trx) await trx.rollback();
+      await trx.rollback();
       return res.status(404).json({ error: 'Splitter not found' });
     }
-    if (trx) await checkBoxRevision(trx, req, splitter.enclosure_id);
+    const beforeSnapshot = await snapshotBox(splitter.enclosure_id, trx);
+    if (expectedRevision(req)) await checkBoxRevision(trx, req, splitter.enclosure_id);
 
     const { updates, error } = sanitizeSplitterPatch(req.body || {});
     if (error) {
-      if (trx) await trx.rollback();
+      await trx.rollback();
       return res.status(400).json({ error });
     }
 
-    updates.updated_at = executor.fn.now();
-    const [updated] = await executor('splitters')
+    updates.updated_at = trx.fn.now();
+    const [updated] = await trx('splitters')
       .where({ id: req.params.id })
       .update(updates)
       .returning('*');
-    if (trx) await trx.commit();
-    res.json(updated);
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splitter.enclosure_id,
+      changeType: 'splitter_update',
+      summary: `Updated splitter ${splitter.name || splitter.id}`,
+      beforeSnapshot,
+    });
+    await trx.commit();
+    res.json({ ...updated, approval_id: approval.id });
   } catch (err) {
-    if (trx) await trx.rollback();
+    await trx.rollback();
     next(err);
   }
 });
@@ -445,6 +480,7 @@ router.delete('/:id', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'Splitter not found' });
     }
+    const beforeSnapshot = await snapshotBox(splitter.enclosure_id, trx);
     await checkBoxRevision(trx, req, splitter.enclosure_id);
 
     // Cascading guard: refuse to delete while another splitter hangs off one
@@ -497,6 +533,13 @@ router.delete('/:id', async (req, res, next) => {
     await trx('splitter_ports').where({ splitter_id: req.params.id }).del();
     await trx('splitters').where({ id: req.params.id }).del();
 
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splitter.enclosure_id,
+      changeType: 'splitter_delete',
+      summary: `Removed splitter ${splitter.name || splitter.id}`,
+      beforeSnapshot,
+    });
     await trx.commit();
     res.status(204).send();
   } catch (err) {

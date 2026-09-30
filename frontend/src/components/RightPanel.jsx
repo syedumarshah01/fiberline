@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, approvalRole } from "../api";
 import VisualDocumentation from "./VisualDocumentation";
 import CorePicker from "./CorePicker";
 import ImpactPanel from "./ImpactPanel.jsx";
@@ -103,6 +103,73 @@ function getFiberColorName(coreNumber) {
     return `${baseName} (with black stripe)`;
   }
   return baseName;
+}
+
+function AsBuiltApprovalPanel({ enclosureId, networkRevision, onChanged }) {
+  const [approvals, setApprovals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const isAdmin = approvalRole().toLowerCase() === "admin";
+
+  function loadApprovals() {
+    setLoading(true);
+    api.listApprovals(enclosureId)
+      .then(setApprovals)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    loadApprovals();
+  }, [enclosureId, networkRevision]);
+
+  async function review(approval, action) {
+    const promptText = action === "approve"
+      ? "Optional approval note"
+      : "Why is this as-built change being rejected?";
+    const comment = window.prompt(promptText, "");
+    if (comment === null || (action === "reject" && !comment.trim())) return;
+    try {
+      if (action === "approve") await api.approveAsBuilt(approval.id, comment.trim());
+      else await api.rejectAsBuilt(approval.id, comment.trim());
+      loadApprovals();
+      onChanged?.();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  return (
+    <section className="as-built-approvals" aria-label="As-built approvals">
+      <div className="approval-heading">
+        <span className="section-title" style={{ margin: 0 }}>As-built review</span>
+        <span className="approval-live">Live · pending</span>
+      </div>
+      <p className="empty-state approval-explainer">
+        Field changes are visible now. Approve to keep them, or reject to restore the last approved documentation.
+      </p>
+      {loading && <p className="loading-row">Checking pending reviews…</p>}
+      {error && <p className="error-row">{error}</p>}
+      {!loading && !error && approvals.length === 0 && (
+        <p className="empty-state">No pending as-built changes for this box.</p>
+      )}
+      {approvals.map((approval) => (
+        <div className="approval-card" key={approval.id}>
+          <b>{approval.summary}</b>
+          <span>{approval.change_type.replaceAll("_", " ")} · {approval.submitted_by}</span>
+          <span className="approval-revision">Submitted {new Date(approval.created_at).toLocaleString()}</span>
+          {isAdmin ? (
+            <div className="approval-actions">
+              <button className="btn btn-primary" onClick={() => review(approval, "approve")}>Approve</button>
+              <button className="btn btn-danger" onClick={() => review(approval, "reject")}>Reject and revert</button>
+            </div>
+          ) : (
+            <span className="approval-admin-note">Admin reviewer required</span>
+          )}
+        </div>
+      ))}
+    </section>
+  );
 }
 
 function documentationDiff(before, after) {
@@ -545,6 +612,7 @@ function BoxDocumentation({ enclosureId, onChanged, networkRevision = 0, onDelet
           <button className="btn" onClick={() => setConflict(null)}>Review latest</button>
         </div>
       )}
+      <AsBuiltApprovalPanel enclosureId={enclosureId} networkRevision={networkRevision} onChanged={onChanged} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 6, flexWrap: "wrap" }}>
         <p className="section-title" style={{ margin: 0 }}>{doc.enclosure.code} — box documentation</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

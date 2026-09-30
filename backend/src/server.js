@@ -17,6 +17,7 @@ const qrRouter = require('./routes/qr');
 const workOrdersRouter = require('./routes/workOrders');
 const connectionPlansRouter = require('./routes/connectionPlans');
 const telemetryRouter = require('./routes/telemetry');
+const approvalsRouter = require('./routes/approvals');
 const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
 app.use(cors());
@@ -42,6 +43,9 @@ app.use('/api/work-orders', workOrdersRouter);
 app.use('/api/customer-plans', connectionPlansRouter);
 // OLT/ONT status feed: POST current events, then consume /status or /stream.
 app.use('/api/telemetry', telemetryRouter);
+// As-built field changes are visible immediately but remain pending until an
+// administrator approves them; rejection restores the pre-change snapshot.
+app.use('/api/approvals', approvalsRouter);
 // Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err);
@@ -50,6 +54,7 @@ app.use((err, req, res, next) => {
     error: err.message || 'Internal server error',
     ...(err.code ? { code: err.code } : {}),
     ...(err.conflict ? { conflict: err.conflict } : {}),
+    ...(err.approval ? { approval: err.approval } : {}),
   });
 });
 

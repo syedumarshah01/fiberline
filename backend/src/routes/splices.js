@@ -3,17 +3,19 @@ const db = require('../db');
 const { validateSpliceData } = require('../middleware/validation');
 const { canBranchFromCore } = require('../utils/branching');
 const { assertBoxRevision, expectedRevision } = require('../services/boxRevision');
+const { snapshotBox, recordAsBuiltChange } = require('../services/asBuiltApproval');
 const router = express.Router();
 
 async function checkBoxRevision(trx, req, enclosureId) {
-  if (!expectedRevision(req)) return;
   const box = await trx('enclosures').where({ id: enclosureId }).forUpdate().first();
   if (!box) {
     const error = new Error('Enclosure not found');
     error.status = 404;
     throw error;
   }
-  await assertBoxRevision({ req, enclosureId, executor: trx });
+  if (expectedRevision(req)) {
+    await assertBoxRevision({ req, enclosureId, executor: trx });
+  }
 }
 
 // GET /api/splices/:id
@@ -149,6 +151,11 @@ router.post('/', validateSpliceData, async (req, res, next) => {
       loss_db, technician, splice_date, notes,
     } = req.body;
 
+    const beforeSnapshot = await snapshotBox(enclosure_id, trx);
+    if (!beforeSnapshot) {
+      await trx.rollback();
+      return res.status(404).json({ error: 'Enclosure not found' });
+    }
     await checkBoxRevision(trx, req, enclosure_id);
     const cores = await trx('fiber_cores').whereIn('id', [core_a_id, core_b_id]).forUpdate();
     if (cores.length !== 2) {
@@ -219,8 +226,15 @@ router.post('/', validateSpliceData, async (req, res, next) => {
 
     await trx('fiber_cores').whereIn('id', coresToUpdate).update({ status: 'spliced', updated_at: trx.fn.now() });
 
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: enclosure_id,
+      changeType: 'splice_create',
+      summary: `Added splice in box ${enclosure_id}`,
+      beforeSnapshot,
+    });
     await trx.commit();
-    res.status(201).json(splice);
+    res.status(201).json({ ...splice, approval_id: approval.id });
   } catch (err) {
     await trx.rollback();
     next(err);
@@ -240,6 +254,7 @@ router.patch('/:id', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'Splice not found' });
     }
+    const beforeSnapshot = await snapshotBox(splice.enclosure_id, trx);
     await checkBoxRevision(trx, req, splice.enclosure_id);
 
     const allowed = ['splice_type', 'tray_number', 'tray_position', 'loss_db', 'technician', 'splice_date', 'notes'];
@@ -333,8 +348,15 @@ router.patch('/:id', async (req, res, next) => {
     }
 
     const [updated] = await trx('splices').where({ id: req.params.id }).update(updates).returning('*');
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splice.enclosure_id,
+      changeType: 'splice_update',
+      summary: `Updated splice ${splice.id}`,
+      beforeSnapshot,
+    });
     await trx.commit();
-    res.json(updated);
+    res.json({ ...updated, approval_id: approval.id });
   } catch (err) {
     await trx.rollback();
     next(err);
@@ -368,15 +390,23 @@ router.delete('/by-core/:coreId', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'No splice found for this core' });
     }
+    const beforeSnapshot = await snapshotBox(splice.enclosure_id, trx);
     await checkBoxRevision(trx, req, splice.enclosure_id);
 
     await repairLegacyPassThroughReferences(trx, splice);
     await releaseCoreIfOrphaned(trx, splice.core_a_id, splice.id);
     await releaseCoreIfOrphaned(trx, splice.core_b_id, splice.id);
     await trx('splices').where({ id: splice.id }).del();
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splice.enclosure_id,
+      changeType: 'splice_delete',
+      summary: `Removed splice ${splice.id}`,
+      beforeSnapshot,
+    });
     await trx.commit();
 
-    res.json({ message: 'Splice removed', splice_id: splice.id });
+    res.json({ message: 'Splice removed', splice_id: splice.id, approval_id: approval.id });
   } catch (err) {
     await trx.rollback();
     next(err);
@@ -393,12 +423,20 @@ router.delete('/:id', async (req, res, next) => {
       await trx.rollback();
       return res.status(404).json({ error: 'Splice not found' });
     }
+    const beforeSnapshot = await snapshotBox(splice.enclosure_id, trx);
     await checkBoxRevision(trx, req, splice.enclosure_id);
 
     await repairLegacyPassThroughReferences(trx, splice);
     await releaseCoreIfOrphaned(trx, splice.core_a_id, splice.id);
     await releaseCoreIfOrphaned(trx, splice.core_b_id, splice.id);
     await trx('splices').where({ id: req.params.id }).del();
+    const approval = await recordAsBuiltChange(trx, {
+      req,
+      enclosureId: splice.enclosure_id,
+      changeType: 'splice_delete',
+      summary: `Removed splice ${splice.id}`,
+      beforeSnapshot,
+    });
     await trx.commit();
     res.status(204).send();
   } catch (err) {
