@@ -3,7 +3,6 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RADIUS_M = 10000;
-const MAX_TOOL_ROUNDS = 4;
 
 const PLAN_SCHEMA = {
   type: 'object',
@@ -82,20 +81,6 @@ const TOOL_DECLARATIONS = [
         visible: { type: 'boolean' },
       },
       required: ['action'],
-    },
-  },
-  {
-    name: 'set_map_visualization',
-    description: 'Change only the current map display, not database data. Use this when the user asks to mark, color, highlight, hide, or visualize boxes, poles, or cables.',
-    parameters: {
-      type: 'object',
-      properties: {
-        kind: { type: 'string', enum: ['enclosure', 'pole', 'cable'] },
-        scope: { type: 'string', enum: ['all', 'selected'] },
-        color: { type: 'string', enum: ['yellow', 'red', 'green', 'blue', 'orange', 'teal', 'purple'] },
-        ids: { type: 'array', items: { type: 'string' }, description: 'Asset IDs when scope is selected.' },
-      },
-      required: ['kind', 'scope', 'color'],
     },
   },
   {

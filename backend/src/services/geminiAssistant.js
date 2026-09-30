@@ -124,8 +124,6 @@ async function askGeminiNetwork(query, { fetchImpl = fetch, conversation_id = nu
       const result = await executeNetworkTool(name, args, { userId, userRole });
       if (name === 'control_map' && result?.map_command) {
         visualization = result.map_command;
-      } else if (name === 'set_map_visualization' && result?.visualization) {
-        visualization = result.visualization;
       } else if (name === 'find_nearby_boxes' && result?.center && Array.isArray(result.boxes)) {
         visualization = {
           type: 'nearby_boxes',

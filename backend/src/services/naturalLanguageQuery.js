@@ -140,10 +140,6 @@ function customerKey(customer) {
   return customer.customer_id || customer.id || customer.key || customer.customer_code || customer.customer_label;
 }
 
-function customerLabel(customer) {
-  return customer.customer_name || customer.customer_label || customer.customer_code || customer.customer_id || customer.key;
-}
-
 async function executePoleOutage(parsed) {
   const lookup = await findPole(parsed.target.text);
   if (!lookup.pole) {

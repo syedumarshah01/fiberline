@@ -1,8 +1,5 @@
 const express = require('express');
-const {
-  executeNaturalLanguageQuery,
-  parseNaturalLanguageQuery,
-} = require('../services/naturalLanguageQuery');
+const { executeNaturalLanguageQuery } = require('../services/naturalLanguageQuery');
 const { config, plannerMode } = require('../services/llmQueryPlanner');
 const { askGeminiNetwork } = require('../services/geminiAssistant');
 const { askOpenRouterNetwork } = require('../services/openRouterAssistant');
@@ -68,8 +65,5 @@ router.post('/actions/:id/cancel', async (req, res, next) => {
     next(err);
   }
 });
-
-// Exported for focused route tests without exposing a second execution path.
-router.parseNaturalLanguageQuery = parseNaturalLanguageQuery;
 
 module.exports = router;

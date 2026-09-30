@@ -276,12 +276,6 @@ function mapStyle({ kind = 'enclosure', scope = 'all', color = 'yellow', ids = [
   };
 }
 
-async function setMapVisualization(args = {}) {
-  const style = mapStyle(args);
-  if (style.error) return style;
-  return { status: 'ok', visualization: style };
-}
-
 async function controlMap({ action, kind = 'enclosure', identifier, address, latitude, longitude, radius_m, scope = 'all', color = 'yellow', ids = [], layer, visible } = {}) {
   const normalizedAction = String(action || '').toLowerCase();
   if (normalizedAction === 'clear') return { status: 'ok', map_command: { type: 'map_command', action: 'clear' } };
@@ -356,7 +350,6 @@ const TOOL_HANDLERS = {
   get_loss_budget: lossBudget,
   query_network_database: queryDatabase,
   request_agent_action: requestAgentAction,
-  set_map_visualization: setMapVisualization,
   control_map: controlMap,
   list_approvals: approvals,
 };
@@ -385,7 +378,6 @@ module.exports = {
   lossBudget,
   queryDatabase,
   requestAgentAction,
-  setMapVisualization,
   controlMap,
   approvals,
   executeNetworkTool,
