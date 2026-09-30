@@ -12,6 +12,8 @@
 
 The API uses database-backed opaque sessions in an HttpOnly cookie and a CSRF token for browser mutations. All `/api` routes except login require authentication. Users are stored in `users` with `technician` or `admin` roles; do not seed a default password. Put the frontend origin in `FRONTEND_ORIGIN` and set `COOKIE_SECURE=true` when serving over HTTPS. An authenticated admin can create and manage employee accounts through `POST /api/auth/users`, `GET /api/auth/users`, and `PATCH /api/auth/users/:id`; the web console exposes these actions through the **Team** button.
 
+The authenticated read-only natural-language graph endpoint is `POST /api/network/query` with `{ "query": "..." }` (a `GET /api/network/query?q=...` form is also available). It currently supports pole outage impact questions and nearby box spare-capacity questions. The response includes the parsed intent, target/location resolution, graph result, and any direction or geocoding warnings. The executor accepts only validated structured intents; it does not execute model-generated SQL. Set `GEOCODE_BASE_URL` to a Nominatim-compatible `/search` service when users need addresses that are not already stored in the network.
+
 ## Is my database up to date?
 
 ```bash

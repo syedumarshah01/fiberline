@@ -19,6 +19,7 @@ const connectionPlansRouter = require('./routes/connectionPlans');
 const telemetryRouter = require('./routes/telemetry');
 const approvalsRouter = require('./routes/approvals');
 const authRouter = require('./routes/auth');
+const networkQueryRouter = require('./routes/networkQuery');
 const { attachUser, requireAuth, requireCsrf, allowTelemetryIngest } = require('./services/auth');
 const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
 const app = express();
@@ -56,6 +57,9 @@ app.use('/api/headends', headendsRouter);
 app.use('/api/qr', qrRouter);
 app.use('/api/work-orders', workOrdersRouter);
 app.use('/api/customer-plans', connectionPlansRouter);
+// Natural-language read-only graph queries. The route executes only validated
+// graph intents; it never lets generated text become SQL or an asset ID.
+app.use('/api/network', networkQueryRouter);
 // OLT/ONT status feed: POST current events, then consume /status or /stream.
 app.use('/api/telemetry', telemetryRouter);
 // As-built field changes are visible immediately but remain pending until an

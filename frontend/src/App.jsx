@@ -4,6 +4,7 @@ import MapViewGoogle from "./components/MapViewGoogle.jsx";
 import MapViewMapbox from "./components/MapViewMapbox.jsx";
 import LeftPanel from "./components/LeftPanel.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import NetworkQuery from "./components/NetworkQuery.jsx";
 import { parseDeepLink, syncLocation } from "./utils/deepLink.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
@@ -163,6 +164,7 @@ export default function App() {
   const [authError, setAuthError] = useState(null);
   const [loginLoading, setLoginLoading] = useState(false);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showNetworkQuery, setShowNetworkQuery] = useState(false);
 
   useEffect(() => {
     const expire = () => {
@@ -813,6 +815,7 @@ export default function App() {
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
       {showUserManagement && authUser.role === "admin" && <UserManagement currentUser={authUser} onClose={() => setShowUserManagement(false)} />}
+      {showNetworkQuery && <NetworkQuery onClose={() => setShowNetworkQuery(false)} />}
       <div className="topbar">
         <div className="brand">
           FIBER<span>LINE</span>
@@ -879,6 +882,7 @@ export default function App() {
         <span className="session-user" title={`Signed in as ${authUser.username}`}>
           {authUser.username} · {authUser.role}
         </span>
+        <button className="btn btn-primary" onClick={() => setShowNetworkQuery(true)} style={{ padding: "4px 10px" }}>Ask network</button>
         {authUser.role === "admin" && <button className="btn" onClick={() => setShowUserManagement(true)} style={{ padding: "4px 10px" }}>Team</button>}
         <button className="btn" onClick={handleLogout} style={{ padding: "4px 10px" }}>Sign out</button>
         <div className="topbar-hint">{HINTS[mode]}</div>

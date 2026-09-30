@@ -1024,6 +1024,32 @@ code, .mono { font-family: var(--font-mono); }
   padding: 20px;
   background: rgba(0, 0, 0, .62);
 }
+.network-query {
+  width: min(100%, 760px);
+  max-height: min(90vh, 820px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, .4);
+}
+.network-query-form { display: grid; gap: 8px; margin-top: 18px; }
+.network-query-form label { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.network-query-form textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 76px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--text); font: inherit; }
+.network-query-actions { display: flex; justify-content: flex-end; }
+.network-query-examples { display: grid; gap: 5px; margin: 10px 0 16px; color: var(--text-muted); }
+.link-button { padding: 0; border: 0; background: transparent; color: var(--teal); cursor: pointer; font: inherit; text-align: left; }
+.query-results { display: grid; gap: 9px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.query-result-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.query-note { margin: 0; color: var(--text-muted); font-size: 11px; }
+.query-list { display: grid; gap: 6px; max-height: 270px; overflow: auto; }
+.query-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 9px; border: 1px solid var(--border-soft); border-radius: var(--radius); font-size: 12px; }
+.query-row span, .query-row b { display: grid; gap: 2px; }
+.query-row small { color: var(--text-muted); font-size: 10px; }
+.query-warnings { margin-top: 12px; padding: 9px 11px; border-left: 3px solid var(--amber); background: rgba(245, 166, 35, .08); color: var(--text-muted); font-size: 11px; }
+.query-warnings p { margin: 3px 0; }
 .user-management {
   width: min(100%, 700px);
   max-height: min(90vh, 760px);

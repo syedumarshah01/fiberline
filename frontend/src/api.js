@@ -370,6 +370,14 @@ export const api = {
     return request(`/customer-plans/plan?${params.toString()}`);
   },
 
+  // Natural-language network graph queries. The backend translates the text into
+  // a validated graph operation and returns both the answer and its assumptions.
+  networkQuery: (query) =>
+    request("/network/query", {
+      method: "POST",
+      body: JSON.stringify({ query }),
+    }),
+
   // Health check
   health: () => safeRequest("/health"),
 };
