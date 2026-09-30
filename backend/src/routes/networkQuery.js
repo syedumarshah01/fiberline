@@ -6,6 +6,7 @@ const {
 const { config, plannerMode } = require('../services/llmQueryPlanner');
 const { askGeminiNetwork } = require('../services/geminiAssistant');
 const { askOpenRouterNetwork } = require('../services/openRouterAssistant');
+const { askGroqNetwork } = require('../services/groqAssistant');
 
 const router = express.Router();
 
@@ -32,7 +33,9 @@ async function handleQuery(req, res, next) {
       ? await askGeminiNetwork(query, assistantOptions)
       : plannerMode() !== 'deterministic' && provider === 'openrouter'
         ? await askOpenRouterNetwork(query, assistantOptions)
-        : await executeNaturalLanguageQuery(query);
+        : plannerMode() !== 'deterministic' && provider === 'groq'
+          ? await askGroqNetwork(query, assistantOptions)
+          : await executeNaturalLanguageQuery(query);
     const status = result.status === 'not_found' ? 404 : result.status === 'needs_location' || result.status === 'needs_clarification' ? 422 : 200;
     res.status(status).json(result);
   } catch (err) {
