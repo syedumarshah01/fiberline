@@ -175,6 +175,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
     }),
+  listUsers: () => request("/auth/users"),
+  createUser: (username, password, role = "technician") =>
+    request("/auth/users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, role }),
+    }),
+  updateUser: (id, data) =>
+    request(`/auth/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
 
   // Poles
   listPoles: () => request("/poles"),

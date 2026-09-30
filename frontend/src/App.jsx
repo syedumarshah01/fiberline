@@ -56,11 +56,113 @@ function LoginScreen({ onLogin, error, loading }) {
   );
 }
 
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@$%";
+  const values = new Uint32Array(18);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(values);
+  else values.fill(Date.now());
+  return Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+}
+
+function UserManagement({ onClose, currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState({ username: "", password: "", confirm: "", role: "technician" });
+  const [createdCredentials, setCreatedCredentials] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  function loadUsers() {
+    setLoading(true);
+    api.listUsers().then(setUsers).catch((err) => setError(err.message)).finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    if (currentUser?.role === "admin") loadUsers();
+  }, [currentUser?.role]);
+
+  async function createEmployee(event) {
+    event.preventDefault();
+    setError(null);
+    if (form.password.length < 12) return setError("Password must be at least 12 characters");
+    if (form.password !== form.confirm) return setError("Passwords do not match");
+    setSaving(true);
+    try {
+      await api.createUser(form.username, form.password, form.role);
+      setCreatedCredentials({ username: form.username.trim().toLowerCase(), password: form.password });
+      setForm({ username: "", password: "", confirm: "", role: "technician" });
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleActive(user) {
+    try {
+      await api.updateUser(user.id, { active: !user.active });
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function resetPassword(user) {
+    const password = window.prompt(`New password for ${user.username} (12+ characters):`, generateTemporaryPassword());
+    if (password === null) return;
+    if (password.length < 12) return setError("Password must be at least 12 characters");
+    try {
+      await api.updateUser(user.id, { password });
+      setCreatedCredentials({ username: user.username, password });
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function copyCredentials() {
+    if (!createdCredentials) return;
+    await navigator.clipboard?.writeText(`${createdCredentials.username}\n${createdCredentials.password}`);
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="user-management" role="dialog" aria-modal="true" aria-label="Employee accounts">
+        <div className="user-management-header">
+          <div><p className="section-title" style={{ margin: 0 }}>Employee accounts</p><p className="empty-state">Create technician logins and issue their credentials securely.</p></div>
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+        {error && <p className="error-row" role="alert">{error}</p>}
+        {createdCredentials && (
+          <div className="credential-receipt">
+            <b>Give these credentials to the employee now</b>
+            <code>Username: {createdCredentials.username}\nPassword: {createdCredentials.password}</code>
+            <div><button className="btn btn-primary" onClick={copyCredentials}>Copy credentials</button><button className="btn" onClick={() => setCreatedCredentials(null)}>Hide</button></div>
+            <small>The password is not recoverable and will not be shown again after hiding this receipt.</small>
+          </div>
+        )}
+        <form className="employee-form" onSubmit={createEmployee}>
+          <h3>Create account</h3>
+          <input placeholder="Username" autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required />
+          <input placeholder="Temporary password (12+ characters)" type="password" autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
+          <input placeholder="Repeat password" type="password" autoComplete="new-password" value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} required />
+          <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="technician">Technician</option><option value="admin">Administrator</option></select>
+          <div><button className="btn" type="button" onClick={() => setForm({ ...form, password: generateTemporaryPassword(), confirm: "" })}>Generate password</button><button className="btn btn-primary" disabled={saving} type="submit">{saving ? "Creating…" : "Create account"}</button></div>
+        </form>
+        <h3>Existing accounts</h3>
+        {loading ? <p className="loading-row">Loading accounts…</p> : <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><span><b>{user.username}</b><small>{user.role} · {user.active ? "active" : "disabled"}</small></span><span><button className="btn" onClick={() => resetPassword(user)}>Reset password</button>{user.id !== currentUser.id && <button className="btn" onClick={() => toggleActive(user)}>{user.active ? "Disable" : "Enable"}</button>}</span></div>)}</div>}
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [authUser, setAuthUser] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [authError, setAuthError] = useState(null);
   const [loginLoading, setLoginLoading] = useState(false);
+  const [showUserManagement, setShowUserManagement] = useState(false);
 
   useEffect(() => {
     const expire = () => {
@@ -710,6 +812,7 @@ export default function App() {
 
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
+      {showUserManagement && authUser.role === "admin" && <UserManagement currentUser={authUser} onClose={() => setShowUserManagement(false)} />}
       <div className="topbar">
         <div className="brand">
           FIBER<span>LINE</span>
@@ -776,6 +879,7 @@ export default function App() {
         <span className="session-user" title={`Signed in as ${authUser.username}`}>
           {authUser.username} · {authUser.role}
         </span>
+        {authUser.role === "admin" && <button className="btn" onClick={() => setShowUserManagement(true)} style={{ padding: "4px 10px" }}>Team</button>}
         <button className="btn" onClick={handleLogout} style={{ padding: "4px 10px" }}>Sign out</button>
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>

@@ -1015,6 +1015,39 @@ code, .mono { font-family: var(--font-mono); }
 }
 .auth-submit { margin-top: 12px; }
 .session-user { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, .62);
+}
+.user-management {
+  width: min(100%, 700px);
+  max-height: min(90vh, 760px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, .4);
+}
+.user-management-header { display: flex; justify-content: space-between; gap: 15px; align-items: flex-start; }
+.user-management h3 { margin: 18px 0 8px; font-size: 13px; }
+.employee-form { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.employee-form input, .employee-form select { box-sizing: border-box; width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
+.employee-form > div { display: flex; gap: 7px; flex-wrap: wrap; }
+.credential-receipt { display: grid; gap: 7px; margin-top: 12px; padding: 11px; border: 1px solid rgba(63, 208, 201, .55); border-left: 3px solid var(--teal); border-radius: var(--radius); background: rgba(63, 208, 201, .08); }
+.credential-receipt code { white-space: pre-wrap; padding: 8px; border-radius: var(--radius); background: var(--bg); color: var(--text); }
+.credential-receipt small { color: var(--text-muted); }
+.user-list { display: grid; gap: 6px; }
+.user-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius); }
+.user-row span:first-child { display: grid; gap: 2px; }
+.user-row small { color: var(--text-muted); }
+.user-row span:last-child { display: flex; gap: 5px; flex-wrap: wrap; }
 
 /* Live OLT/ONT telemetry */
 .telemetry-banner {

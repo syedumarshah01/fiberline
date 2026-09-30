@@ -10,7 +10,7 @@
 6. Create the first administrator out-of-band, using a password of at least 12 characters:
    `ADMIN_USERNAME=admin ADMIN_PASSWORD='use-a-long-random-password' npm run create-admin`
 
-The API uses database-backed opaque sessions in an HttpOnly cookie and a CSRF token for browser mutations. All `/api` routes except login require authentication. Users are stored in `users` with `technician` or `admin` roles; do not seed a default password. Put the frontend origin in `FRONTEND_ORIGIN` and set `COOKIE_SECURE=true` when serving over HTTPS.
+The API uses database-backed opaque sessions in an HttpOnly cookie and a CSRF token for browser mutations. All `/api` routes except login require authentication. Users are stored in `users` with `technician` or `admin` roles; do not seed a default password. Put the frontend origin in `FRONTEND_ORIGIN` and set `COOKIE_SECURE=true` when serving over HTTPS. An authenticated admin can create and manage employee accounts through `POST /api/auth/users`, `GET /api/auth/users`, and `PATCH /api/auth/users/:id`; the web console exposes these actions through the **Team** button.
 
 ## Is my database up to date?
 
