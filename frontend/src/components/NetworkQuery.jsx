@@ -26,9 +26,10 @@ export default function NetworkQuery({ onClose }) {
     try {
       setResult(await api.networkQuery(query.trim()));
     } catch (requestError) {
-      // Validation/clarification responses are still useful to the person asking.
-      if (requestError.details) setResult(requestError.details);
-      else setError(requestError.message);
+      // Validation/clarification responses are still useful to the person asking;
+      // a provider/configuration error should remain visibly an error.
+      if (requestError.details?.intent || requestError.details?.status) setResult(requestError.details);
+      else setError(requestError.details?.error || requestError.message);
     } finally {
       setLoading(false);
     }

@@ -2,6 +2,7 @@ const db = require('../db');
 const { getAvailableCoreCounts } = require('./capacityGraph');
 const { simulateFailure } = require('./impactAnalysis');
 const { resolveAddress } = require('./addressLookup');
+const { planNetworkQuery } = require('./llmQueryPlanner');
 
 const DEFAULT_RADIUS_M = 500;
 const MAX_RADIUS_M = 10000;
@@ -302,8 +303,16 @@ async function executeNearbyCapacity(parsed) {
   };
 }
 
-async function executeNaturalLanguageQuery(input) {
-  const parsed = typeof input === 'string' ? parseNaturalLanguageQuery(input) : input;
+async function executeNaturalLanguageQuery(input, options = {}) {
+  let parsed;
+  if (typeof input === 'string') {
+    const planned = await planNetworkQuery(input, options);
+    parsed = planned
+      ? { ...planned, query: cleanText(input), planner_source: 'llm' }
+      : { ...parseNaturalLanguageQuery(input), planner_source: 'deterministic' };
+  } else {
+    parsed = input;
+  }
   if (!parsed || parsed.intent === 'clarification') return parsed;
   if (parsed.intent === 'pole_outage') return executePoleOutage(parsed);
   if (parsed.intent === 'nearby_capacity') return executeNearbyCapacity(parsed);
