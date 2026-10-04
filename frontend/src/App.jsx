@@ -1,11 +1,14 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import MapView from "./components/MapView.jsx";
 import MapViewGoogle from "./components/MapViewGoogle.jsx";
 import MapViewMapbox from "./components/MapViewMapbox.jsx";
 import LeftPanel from "./components/LeftPanel.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import NetworkQuery from "./components/NetworkQuery.jsx";
+import { parseDeepLink, syncLocation } from "./utils/deepLink.js";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { api } from "./api";
+import { impactOverlay, overlayHeadline, failureTitle } from "./utils/impactOverlay.js";
 import { LoadScript } from "@react-google-maps/api";
 import { LocateFixed, Sun, Moon, Type } from "lucide-react";
 
@@ -34,7 +37,175 @@ const HINTS = {
   "locate-customer": "Click the map at the customer's location.",
 };
 
+function LoginScreen({ onLogin, error, loading }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  return (
+    <main className="auth-shell">
+      <form className="auth-card" onSubmit={(event) => { event.preventDefault(); onLogin(username, password); }}>
+        <div className="brand">FIBER<span>LINE</span></div>
+        <h1>Sign in</h1>
+        <p className="empty-state">Use your network account to access the operations console.</p>
+        {error && <p className="error-row" role="alert">{error}</p>}
+        <label className="auth-label" htmlFor="login-username">Username</label>
+        <input id="login-username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
+        <label className="auth-label" htmlFor="login-password">Password</label>
+        <input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+        <button className="btn btn-primary auth-submit" disabled={loading} type="submit">{loading ? "Signing in…" : "Sign in"}</button>
+      </form>
+    </main>
+  );
+}
+
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@$%";
+  const values = new Uint32Array(18);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(values);
+  else values.fill(Date.now());
+  return Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+}
+
+function UserManagement({ onClose, currentUser }) {
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState({ username: "", password: "", confirm: "", role: "technician" });
+  const [createdCredentials, setCreatedCredentials] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  function loadUsers() {
+    setLoading(true);
+    api.listUsers().then(setUsers).catch((err) => setError(err.message)).finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    if (currentUser?.role === "admin") loadUsers();
+  }, [currentUser?.role]);
+
+  async function createEmployee(event) {
+    event.preventDefault();
+    setError(null);
+    if (form.password.length < 12) return setError("Password must be at least 12 characters");
+    if (form.password !== form.confirm) return setError("Passwords do not match");
+    setSaving(true);
+    try {
+      await api.createUser(form.username, form.password, form.role);
+      setCreatedCredentials({ username: form.username.trim().toLowerCase(), password: form.password });
+      setForm({ username: "", password: "", confirm: "", role: "technician" });
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleActive(user) {
+    try {
+      await api.updateUser(user.id, { active: !user.active });
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function resetPassword(user) {
+    const password = window.prompt(`New password for ${user.username} (12+ characters):`, generateTemporaryPassword());
+    if (password === null) return;
+    if (password.length < 12) return setError("Password must be at least 12 characters");
+    try {
+      await api.updateUser(user.id, { password });
+      setCreatedCredentials({ username: user.username, password });
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function copyCredentials() {
+    if (!createdCredentials) return;
+    await navigator.clipboard?.writeText(`${createdCredentials.username}\n${createdCredentials.password}`);
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="user-management" role="dialog" aria-modal="true" aria-label="Employee accounts">
+        <div className="user-management-header">
+          <div><p className="section-title" style={{ margin: 0 }}>Employee accounts</p><p className="empty-state">Create technician logins and issue their credentials securely.</p></div>
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+        {error && <p className="error-row" role="alert">{error}</p>}
+        {createdCredentials && (
+          <div className="credential-receipt">
+            <b>Give these credentials to the employee now</b>
+            <code>Username: {createdCredentials.username}\nPassword: {createdCredentials.password}</code>
+            <div><button className="btn btn-primary" onClick={copyCredentials}>Copy credentials</button><button className="btn" onClick={() => setCreatedCredentials(null)}>Hide</button></div>
+            <small>The password is not recoverable and will not be shown again after hiding this receipt.</small>
+          </div>
+        )}
+        <form className="employee-form" onSubmit={createEmployee}>
+          <h3>Create account</h3>
+          <input placeholder="Username" autoComplete="off" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required />
+          <input placeholder="Temporary password (12+ characters)" type="password" autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
+          <input placeholder="Repeat password" type="password" autoComplete="new-password" value={form.confirm} onChange={(event) => setForm({ ...form, confirm: event.target.value })} required />
+          <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="technician">Technician</option><option value="admin">Administrator</option></select>
+          <div><button className="btn" type="button" onClick={() => setForm({ ...form, password: generateTemporaryPassword(), confirm: "" })}>Generate password</button><button className="btn btn-primary" disabled={saving} type="submit">{saving ? "Creating…" : "Create account"}</button></div>
+        </form>
+        <h3>Existing accounts</h3>
+        {loading ? <p className="loading-row">Loading accounts…</p> : <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><span><b>{user.username}</b><small>{user.role} · {user.active ? "active" : "disabled"}</small></span><span><button className="btn" onClick={() => resetPassword(user)}>Reset password</button>{user.id !== currentUser.id && <button className="btn" onClick={() => toggleActive(user)}>{user.active ? "Disable" : "Enable"}</button>}</span></div>)}</div>}
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
+  const [authUser, setAuthUser] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authError, setAuthError] = useState(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showNetworkQuery, setShowNetworkQuery] = useState(false);
+  const [networkVisualization, setNetworkVisualization] = useState(null);
+
+  const handleNetworkVisualize = useCallback((visualization) => {
+    setNetworkVisualization(visualization || null);
+  }, []);
+
+  useEffect(() => {
+    const expire = () => {
+      setAuthUser(null);
+      setAuthError("Your session expired. Please sign in again.");
+    };
+    window.addEventListener("fiberline-auth-expired", expire);
+    api.me()
+      .then((result) => setAuthUser(result.user))
+      .catch(() => setAuthUser(null))
+      .finally(() => setAuthChecking(false));
+    return () => window.removeEventListener("fiberline-auth-expired", expire);
+  }, []);
+
+  async function handleLogin(username, password) {
+    setLoginLoading(true);
+    setAuthError(null);
+    try {
+      const result = await api.login(username, password);
+      setAuthUser(result.user);
+    } catch (error) {
+      setAuthError(error.message || "Unable to sign in");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } catch (_) {
+      // The session may already have expired; the local app still signs out.
+    }
+    setAuthUser(null);
+  }
+
   const [poles, setPoles] = useState([]);
   const [enclosures, setEnclosures] = useState([]);
   const [cables, setCables] = useState([]);
@@ -58,6 +229,14 @@ export default function App() {
   const [selectedEnclosure, setSelectedEnclosure] = useState(null);
   const [selectedCable, setSelectedCable] = useState(null);
   // Cable spotlighted because one of its fibers is hovered in the splice form
+  // Outage simulation: the result of /api/impact/simulate, the request that
+  // produced it (kept so it can be re-run after fixing the network root), and
+  // the network roots themselves.
+  const [impact, setImpact] = useState(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactError, setImpactError] = useState(null);
+  const [failureTarget, setFailureTarget] = useState(null);
+  const [headends, setHeadends] = useState([]);
   const [highlightCableId, setHighlightCableId] = useState(null);
   const [splitPointLngLat, setSplitPointLngLat] = useState(null);
   const [splitRatio, setSplitRatio] = useState(null);
@@ -76,23 +255,42 @@ export default function App() {
     return Number.isFinite(saved) ? Math.min(1, Math.max(0.2, saved)) : 1;
   });
   
-  // Customer route (for locate-customer mode)
+  // Locate-customer mode: one connection-plan response drives both the design
+  // panel and the map line, so the route basis and distance cannot disagree.
   const [customerRoute, setCustomerRoute] = useState(null);
+  const [customerPlan, setCustomerPlan] = useState(null);
+  const [customerPlanLoading, setCustomerPlanLoading] = useState(false);
+  const [customerPlanError, setCustomerPlanError] = useState(null);
   
   // Theme state
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("fiberline-theme") || "dark";
   });
   
+  // A scanned QR code lands here with `?box=…` (or pole/cable/customer). State
+  // for what was requested, so it opens once the network has loaded.
+  const [qrNotice, setQrNotice] = useState(null);
+
   // Resizable right panel state
   const [rightPanelWidth, setRightPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
+  // Bump this whenever network data changes so an already-open documentation
+  // panel refetches after operations such as inserting a mid-span enclosure.
+  const [networkRevision, setNetworkRevision] = useState(0);
 
   const reloadAll = useCallback(() => {
+    setNetworkRevision((revision) => revision + 1);
     api.listPoles().then(setPoles).catch(console.error);
     api.listEnclosures().then(setEnclosures).catch(console.error);
     api.listCables().then(setCables).catch(console.error);
     api.listCustomers().then(setCustomers).catch(console.error);
+    // Root list drives the "is this network rooted?" affordances. A database
+    // that has not run the headends migration answers 404 — treat that as
+    // "no roots yet" rather than an error.
+    api
+      .listHeadends()
+      .then(setHeadends)
+      .catch(() => setHeadends([]));
     api
       .capacityByEnclosure()
       .then((rows) =>
@@ -104,8 +302,50 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    reloadAll();
-  }, [reloadAll]);
+    if (authUser) reloadAll();
+  }, [reloadAll, authUser]);
+
+  /**
+   * Open whatever a scanned tag asked for. Runs when the network finishes
+   * loading (and once more if the target arrives late), because a QR link is
+   * often the very first request this browser ever made to the app.
+   *
+   * A tag whose thing has since been deleted says so instead of opening an empty
+   * panel — the sticker on the pole outlives the records.
+   */
+  const deepLink = useRef(parseDeepLink(typeof window === "undefined" ? "" : window.location.search));
+  useEffect(() => {
+    const target = deepLink.current;
+    if (!target) return;
+    const table = { pole: poles, box: enclosures, cable: cables, customer: customers }[target.kind] || [];
+    if (!table.length) return; // still loading
+    const match = table.find((row) => String(row.id) === String(target.id));
+    if (!match) {
+      setQrNotice(`That ${target.kind === "box" ? "box" : target.kind} (${target.id.slice(0, 8)}…) is not in this network any more.`);
+      deepLink.current = null;
+      return;
+    }
+    if (target.kind === "pole") handleSelectPole(match);
+    else if (target.kind === "box") handleSelectEnclosure(match);
+    else if (target.kind === "cable") handleSelectCable(match);
+    else {
+      // A customer's tag lives on their drop: what a technician needs from it is
+      // the box serving them, so open that box and say why.
+      const serving = enclosures.find((enc) => String(enc.id) === String(match.enclosure_id));
+      if (serving) {
+        handleSelectEnclosure(serving);
+        setQrNotice(`${match.code ? `${match.code} — ` : ""}served from ${serving.code}.`);
+        deepLink.current = null;
+        return;
+      }
+      setQrNotice(`Customer ${match.code || match.id.slice(0, 8)} has no box recorded.`);
+      deepLink.current = null;
+      return;
+    }
+    setQrNotice(null);
+    deepLink.current = null; // open it once, not on every reload
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poles, enclosures, cables, customers]);
 
   // Save theme preference
   useEffect(() => {
@@ -136,6 +376,56 @@ export default function App() {
   function handleModeChange(next) {
     setMode(next);
     resetPending();
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  function clearImpact() {
+    setImpact(null);
+    setImpactError(null);
+    setImpactLoading(false);
+  }
+
+  /**
+   * Take the selected box out of the network and report the downstream fallout.
+   * A failure is intentionally anchored at a box: the graph can then follow
+   * connected fibres and splitter ports away from that box without treating the
+   * input span as a failed cable.
+   */
+  async function handleSimulateFailure(target) {
+    if (!target || target.kind !== "box") return;
+    setFailureTarget(target);
+    setImpactLoading(true);
+    setImpactError(null);
+    try {
+      const result = await api.simulateImpact(target.kind, target.id);
+      setImpact(result);
+    } catch (err) {
+      setImpact(null);
+      setImpactError(err.message);
+    } finally {
+      setImpactLoading(false);
+    }
+  }
+
+  function handleClearImpact() {
+    clearImpact();
+    setFailureTarget(null);
+  }
+
+  /**
+   * Root the segment at a box (the OLT/CO the feeder lands in) and immediately
+   * re-run the simulation that was blocked on it — the point of setting the
+   * root is to make that answer trustworthy.
+   */
+  async function handleSetNetworkRoot(boxId) {
+    try {
+      await api.createHeadend({ root_enclosure_id: boxId, site_type: "olt" });
+      reloadAll();
+      if (failureTarget) await handleSimulateFailure(failureTarget);
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   function handleMapClick(latlng) {
@@ -148,7 +438,9 @@ export default function App() {
         return { ...draft, routePoints: [...draft.routePoints, latlng] };
       });
     }
-    // In view mode, clicking on the map clears any selection
+    // In view mode, clicking on the map clears any selection — but a simulated
+    // outage stays on screen until it is cleared, so the user can pan around
+    // the dark area without losing the analysis.
     if (mode === "view") {
       setSelectedPole(null);
       setSelectedEnclosure(null);
@@ -159,7 +451,11 @@ export default function App() {
   }
 
   function handlePoleClick(pole) {
-    if (mode === "add-enclosure") setPendingEnclosurePole(pole);
+    if (mode === "add-enclosure") {
+      setPendingEnclosurePole(pole);
+      return;
+    }
+    if (mode === "view") handleSelectPole(pole);
   }
 
   function handleEnclosureClick(enc) {
@@ -172,6 +468,7 @@ export default function App() {
       });
       return;
     }
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedCable(null);
   }
@@ -195,27 +492,48 @@ export default function App() {
   }
 
   function handleSelectPole(pole) {
+    if (selectedPole?.id !== pole.id) clearImpact();
     setSelectedPole(pole);
     setSelectedEnclosure(null);
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("pole", pole?.id);
+  }
+
+  /**
+   * Bring the enclosure chosen by the customer connection plan onto the map,
+   * using the existing fly-to and selection styling.
+   */
+  function handleShowCustomerPlanBox(boxId) {
+    const match = enclosures.find((enc) => String(enc.id) === String(boxId));
+    if (!match) {
+      // A box that is on the map but not in the loaded list (filtered out, or
+      // just added by somebody else) — refresh and let the next click find it.
+      reloadAll();
+      return;
+    }
+    handleSelectEnclosure(match);
   }
 
   function handleSelectEnclosure(enc) {
+    if (selectedEnclosure?.id !== enc.id) clearImpact();
     setSelectedEnclosure(enc);
     setSelectedPole(null);
     setSelectedCable(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("box", enc?.id);
   }
 
   function handleSelectCable(cable) {
+    if (selectedCable?.id !== cable.id) clearImpact();
     setSelectedCable(cable);
     setSelectedPole(null);
     setSelectedEnclosure(null);
     setSplitPointLngLat(null);
     setSplitRatio(null);
+    syncLocation("cable", cable?.id);
   }
 
   async function handleCreatePole(data) {
@@ -339,6 +657,9 @@ export default function App() {
     setTimeout(() => setIsTracking(false), 1000);
   }
 
+  // What the map paints red — one derivation shared by all three providers.
+  const overlay = useMemo(() => impactOverlay(impact), [impact]);
+
   const pendingCableRoute = cableDraft.from
     ? [
         [cableDraft.from.lat, cableDraft.from.lng],
@@ -371,36 +692,61 @@ export default function App() {
     };
   }, [isResizing]);
 
-  // Fetch customer route when customer point is set
+  // Design the customer connection when a point is dropped. The response is the
+  // single source for the enclosure, route geometry, capacity choice, steps, and
+  // optical budget shown in the panel and on the map.
   useEffect(() => {
-    if (customerPoint && mode === "locate-customer") {
-      api.customerLookup(customerPoint.lat, customerPoint.lng)
-        .then((result) => {
-          if (result.recommended_box) {
-            return api.getCustomerRoute(
-              customerPoint.lat,
-              customerPoint.lng,
-              result.recommended_box.id
-            );
-          }
-          return null;
-        })
-        .then((route) => {
-          if (route) {
-            setCustomerRoute(route);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to fetch customer route:", err);
-          setCustomerRoute(null);
-        });
-    } else {
+    if (!customerPoint || mode !== "locate-customer") {
       setCustomerRoute(null);
+      setCustomerPlan(null);
+      setCustomerPlanError(null);
+      setCustomerPlanLoading(false);
+      return undefined;
     }
-  }, [customerPoint, mode]);
+    let cancelled = false;
+    setCustomerPlanLoading(true);
+    setCustomerPlanError(null);
+    api
+      .customerConnectionPlan({ lat: customerPoint.lat, lng: customerPoint.lng })
+      .then((result) => {
+        if (cancelled) return;
+        setCustomerPlan(result);
+        setCustomerPlanError(null);
+        // The maps draw the same geometry the plan labels as a street route or
+        // direct haversine fallback; the latter is never presented as a road.
+        setCustomerRoute(
+          result?.route?.coordinates?.length >= 2
+            ? { route: result.route.coordinates, length_m: result.route.length_m, source: result.route.source }
+            : null
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("CustomerPlan check failed:", err);
+        setCustomerPlan(null);
+        setCustomerPlanError(err.message || "CustomerPlan check failed");
+        setCustomerRoute(null);
+      })
+      .finally(() => {
+        if (!cancelled) setCustomerPlanLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerPoint, mode, networkRevision]);
+
+  if (authChecking) {
+    return <main className="auth-shell"><p className="loading-row">Loading secure session…</p></main>;
+  }
+  if (!authUser) {
+    return <LoginScreen onLogin={handleLogin} error={authError} loading={loginLoading} />;
+  }
 
   return (
     <div className={"app-shell " + (theme === "light" ? "light-theme" : "dark-theme")} style={{ cursor: isResizing ? "col-resize" : "default" }}>
+      {showUserManagement && authUser.role === "admin" && <UserManagement currentUser={authUser} onClose={() => setShowUserManagement(false)} />}
+      {showNetworkQuery && <NetworkQuery onClose={() => setShowNetworkQuery(false)} onVisualize={handleNetworkVisualize} />}
       <div className="topbar">
         <div className="brand">
           FIBER<span>LINE</span>
@@ -464,8 +810,21 @@ export default function App() {
             onChange={(e) => setLabelOpacity(Number(e.target.value))}
           />
         </label>
+        <span className="session-user" title={`Signed in as ${authUser.username}`}>
+          {authUser.username} · {authUser.role}
+        </span>
+        <button className="btn btn-primary" onClick={() => { setNetworkVisualization(null); setShowNetworkQuery(true); }} style={{ padding: "4px 10px" }}>Ask network</button>
+        {authUser.role === "admin" && <button className="btn" onClick={() => setShowUserManagement(true)} style={{ padding: "4px 10px" }}>Team</button>}
+        <button className="btn" onClick={handleLogout} style={{ padding: "4px 10px" }}>Sign out</button>
         <div className="topbar-hint">{HINTS[mode]}</div>
       </div>
+
+      {qrNotice && (
+        <div className="qr-notice">
+          <span>{qrNotice}</span>
+          <button className="btn" onClick={() => setQrNotice(null)}>Dismiss</button>
+        </div>
+      )}
 
       <div className="main-flex">
         <div className="panel left">
@@ -519,11 +878,14 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
+              networkVisualization={networkVisualization}
               onMapClick={handleMapClick}
               onPoleClick={handlePoleClick}
               onEnclosureClick={handleEnclosureClick}
@@ -548,11 +910,14 @@ export default function App() {
                 selectedPoleId={selectedPole?.id}
                 selectedCableId={selectedCable?.id}
                 highlightCableId={highlightCableId}
+                overlay={overlay}
+                impact={impact}
                 locateNonce={locateNonce}
                 labelOpacity={labelOpacity}
                 splitPointLngLat={splitPointLngLat}
                 userPosition={userPosition}
                 customerRoute={customerRoute}
+              networkVisualization={networkVisualization}
                 onMapClick={handleMapClick}
                 onPoleClick={handlePoleClick}
                 onEnclosureClick={handleEnclosureClick}
@@ -577,11 +942,14 @@ export default function App() {
               selectedPoleId={selectedPole?.id}
               selectedCableId={selectedCable?.id}
               highlightCableId={highlightCableId}
+              overlay={overlay}
+              impact={impact}
               locateNonce={locateNonce}
               labelOpacity={labelOpacity}
               splitPointLngLat={splitPointLngLat}
               userPosition={userPosition}
               customerRoute={customerRoute}
+              networkVisualization={networkVisualization}
               onMapClick={handleMapClick}
               onPoleClick={handlePoleClick}
               onEnclosureClick={handleEnclosureClick}
@@ -589,6 +957,20 @@ export default function App() {
             />
           )}
           </ErrorBoundary>
+
+          {impact && (
+            <div className="impact-banner">
+              <span className="pill pill-damaged">
+                "Failure simulated"
+              </span>
+              <span className="impact-banner-text">
+                {failureTitle(impact)} — {overlayHeadline(impact)}
+              </span>
+              <button className="btn btn-danger" onClick={handleClearImpact}>
+                Clear
+              </button>
+            </div>
+          )}
         </div>
 
         <div
@@ -608,10 +990,24 @@ export default function App() {
             mode={mode}
             selectedEnclosure={selectedEnclosure}
             selectedCable={selectedCable}
+            selectedPole={selectedPole}
+            impact={impact}
+            impactLoading={impactLoading}
+            impactError={impactError}
+            headends={headends}
+            onSimulateFailure={handleSimulateFailure}
+            onClearImpact={handleClearImpact}
+            onSetNetworkRoot={handleSetNetworkRoot}
             customerPoint={customerPoint}
+            customerPlan={customerPlan}
+            customerPlanLoading={customerPlanLoading}
+            customerPlanError={customerPlanError}
+            onShowCustomerPlanBox={handleShowCustomerPlanBox}
             customers={customers}
             onCreateCustomer={handleCreateCustomer}
             onChanged={reloadAll}
+            networkRevision={networkRevision}
+            currentUser={authUser}
             onDeleteEnclosure={handleDeleteEnclosure}
             onDeleteCable={handleDeleteCable}
             onSplitPointChange={handleSplitPointChange}

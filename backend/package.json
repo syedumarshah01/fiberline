@@ -9,12 +9,19 @@
     "start": "node src/server.js",
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
+    "db:reset": "node scripts/resetDb.js",
+    "db:truncate": "node scripts/resetDb.js --truncate",
     "seed": "knex seed:run",
     "docs:index": "node scripts/build-doc-index.js",
     "llama:build": "bash scripts/build-llama-cpp.sh",
     "bundle:offline": "bash scripts/build-offline-bundle.sh",
     "benchmark:local-llm": "node scripts/benchmark-local-model.js",
-    "test": "node --test"
+    "test": "node --test",
+    "db:schema": "node scripts/schemaStatus.js",
+    "create-admin": "node scripts/createAdmin.js",
+    "test:migrations": "node --test tests/migrationSql.test.js",
+    "db:link-splits": "node scripts/linkSplits.js",
+    "benchmark:router": "node scripts/benchmarkToolRouter.js"
   },
   "engines": {
     "node": ">=18"

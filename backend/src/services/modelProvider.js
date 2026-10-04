@@ -113,13 +113,13 @@ class OpenAICompatibleProvider {
 
 function createModelProviderFromEnv(env = process.env, options = {}) {
   const provider = String(env.AI_PROVIDER || 'local').trim().toLowerCase();
-  const timeoutMs = Number(env.AI_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS;
+  const timeoutMs = Number(env.AI_REQUEST_TIMEOUT_MS || env.LLM_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS;
 
   if (provider === 'local') {
     return new OpenAICompatibleProvider({
-      baseUrl: env.LOCAL_LLM_BASE_URL || DEFAULT_LOCAL_BASE_URL,
-      model: env.LOCAL_LLM_MODEL || 'local-model',
-      apiKey: env.LOCAL_LLM_API_KEY || '',
+      baseUrl: env.LOCAL_LLM_BASE_URL || env.LLM_BASE_URL || DEFAULT_LOCAL_BASE_URL,
+      model: env.LOCAL_LLM_MODEL || env.LLM_MODEL || 'local-model',
+      apiKey: env.LOCAL_LLM_API_KEY || env.LLM_API_KEY || '',
       timeoutMs,
       fetchImpl: options.fetchImpl,
     });

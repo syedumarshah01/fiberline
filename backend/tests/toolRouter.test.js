@@ -1,70 +1,128 @@
-const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { getToolSchema } = require('../src/tools/toolSchema');
+const test = require('node:test');
 const {
-  ToolRouterError,
-  parseModelToolCall,
-  executeModelToolSelection,
-  createToolRouter,
-} = require('../src/tools/toolRouter');
+  TOOLS,
+  buildRouterInstruction,
+  buildRouterPrompt,
+  buildRouterResponseSchema,
+  validateToolCall,
+} = require('../src/ai/toolRouterSchema');
+const {
+  config,
+  inferToolCall,
+  routeToolCall,
+} = require('../src/services/toolRouter');
 
-describe('lookupDocs tool schema and routing', () => {
-  test('publishes a strict lookupDocs JSON schema for model tool calls', () => {
-    const schema = getToolSchema();
-    assert.equal(schema.length, 1);
-    assert.equal(schema[0].type, 'function');
-    assert.equal(schema[0].function.name, 'lookupDocs');
-    assert.deepEqual(schema[0].function.parameters.required, ['query']);
-    assert.equal(schema[0].function.parameters.additionalProperties, false);
-    assert.equal(schema[0].function.parameters.properties.query.maxLength, 1000);
+function response(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() { return payload; },
+  };
+}
+
+test('tool catalog stays deliberately small and builds one schema branch per tool', () => {
+  assert.deepEqual(TOOLS.map((tool) => tool.name), [
+    'checkServiceability',
+    'findPortRemediation',
+    'findPowerRemediation',
+    'findCoreRemediation',
+    'traceCore',
+    'simulateFailure',
+    'locateCustomer',
+    'lookupDocs',
+  ]);
+  const schema = buildRouterResponseSchema();
+  assert.equal(schema.oneOf.length, TOOLS.length);
+  assert.deepEqual(schema.oneOf.map((branch) => branch.properties.tool.enum[0]), TOOLS.map((tool) => tool.name));
+  assert.equal(schema.oneOf[0].properties.args.properties.enclosure_id.type, 'string');
+  assert.deepEqual(schema.oneOf[0].properties.args.required, ['enclosure_id']);
+});
+
+test('router prompt contains the complete short contract, examples, and actual query', () => {
+  const prompt = buildRouterPrompt('Which core should serve the customer at BOX-7?');
+  for (const tool of TOOLS) assert.match(prompt, new RegExp(`- ${tool.name}:`));
+  assert.match(prompt, /Examples:/);
+  assert.match(prompt, /Which core should serve the customer at BOX-7/);
+  // Keep the prompt bounded before any live context is added.
+  assert.ok(prompt.length < 8000, `prompt was ${prompt.length} characters`);
+});
+
+test('defense-in-depth validation accepts valid routes and rejects malformed routes', () => {
+  assert.deepEqual(validateToolCall({
+    tool: 'traceCore',
+    args: { core_id: 'core-123' },
+  }), { tool: 'traceCore', args: { core_id: 'core-123' } });
+  assert.deepEqual(validateToolCall({
+    tool: 'locateCustomer',
+    args: { lat: 34, lng: 71, radius_m: 500 },
+  }).tool, 'locateCustomer');
+  assert.throws(
+    () => validateToolCall({ tool: 'traceCore', args: {} }),
+    /missing required argument: core_id/,
+  );
+  assert.throws(
+    () => validateToolCall({ tool: 'not-a-tool', args: {} }),
+    /unknown tool/,
+  );
+  assert.throws(
+    () => validateToolCall({ tool: 'checkServiceability', args: { enclosure_id: 'box', made_up: 1 } }),
+    /unknown argument: made_up/,
+  );
+  assert.throws(
+    () => validateToolCall({ tool: 'locateCustomer', args: { lat: 34 } }),
+    /latitude and longitude must be provided together/i,
+  );
+  assert.throws(
+    () => validateToolCall({ tool: 'locateCustomer', args: { address: '' } }),
+    /requires an address or a latitude\/longitude pair/,
+  );
+});
+
+test('router uses Ollama structured output and returns only tool plus args', async () => {
+  const calls = [];
+  const result = await routeToolCall('Trace core core-123.', {
+    env: {
+      LLM_BASE_URL: 'http://127.0.0.1:11434/v1',
+      LLM_MODEL: 'llama3.2:1b',
+      LLM_TIMEOUT_MS: '12000',
+      OLLAMA_NUM_THREADS: '8',
+    },
+    requestId: 'request-1',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return response({ message: { content: JSON.stringify({ tool: 'traceCore', args: { core_id: 'core-123' } }) } });
+    },
   });
+  assert.deepEqual(result, { tool: 'traceCore', args: { core_id: 'core-123' } });
+  assert.equal(calls[0].url, 'http://127.0.0.1:11434/api/chat');
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.model, 'llama3.2:1b');
+  assert.equal(body.stream, false);
+  assert.equal(body.options.num_thread, 8);
+  assert.equal(body.options.temperature, 0);
+  assert.deepEqual(body.format, buildRouterResponseSchema());
+  assert.equal(body.messages[0].role, 'system');
+  assert.match(body.messages[0].content, /Trace fiber core fc-123/);
+  assert.deepEqual(body.messages[1], { role: 'user', content: 'Trace core core-123.' });
+});
 
-  test('routes the provider-agnostic {tool,args} invocation', async () => {
-    const router = createToolRouter({ lookupDocs: async (args) => ({ answer: `Doc answer for ${args.query}` }) });
-    assert.deepEqual(await router.execute({ tool: 'lookupDocs', args: { query: 'trace behavior' } }), {
-      answer: 'Doc answer for trace behavior',
-    });
-  });
+test('router reports a clear local-service error when Ollama is unavailable', async () => {
+  await assert.rejects(
+    () => inferToolCall('Trace core core-123.', {
+      env: { LLM_BASE_URL: 'http://127.0.0.1:11434/v1' },
+      fetchImpl: async () => { throw new TypeError('fetch failed'); },
+      requestId: 'request-2',
+    }),
+    (error) => error.code === 'TOOL_ROUTER_UNREACHABLE' && /local Ollama/.test(error.message),
+  );
+});
 
-  test('normalizes OpenAI-compatible model tool calls to {tool,args}', async () => {
-    const router = createToolRouter({ lookupDocs: async ({ query }) => query });
-    assert.deepEqual(parseModelToolCall({
-      id: 'call-1',
-      function: { name: 'lookupDocs', arguments: '{"query":"splitter loss"}' },
-    }), { tool: 'lookupDocs', args: { query: 'splitter loss' } });
-    assert.equal(await router.executeModelToolCall({
-      function: { name: 'lookupDocs', arguments: '{"query":"splitter loss"}' },
-    }), 'splitter loss');
-  });
-
-  test('uses either model provider with the same schema and {tool,args} dispatch', async () => {
-    const router = createToolRouter({ lookupDocs: async ({ query }) => ({ answer: query }) });
-    let request;
-    const result = await executeModelToolSelection({
-      provider: {
-        chatCompletion: async (payload) => {
-          request = payload;
-          return {
-            choices: [{ message: { tool_calls: [{ function: { name: 'lookupDocs', arguments: '{\"query\":\"trace behavior\"}' } }] } }],
-          };
-        },
-      },
-      toolRouter: router,
-      messages: [{ role: 'user', content: 'trace behavior' }],
-      toolChoice: 'required',
-      maxTokens: 80,
-    });
-    assert.deepEqual(result, { answer: 'trace behavior' });
-    assert.deepEqual(request.tools, getToolSchema());
-    assert.equal(request.toolChoice, 'required');
-    assert.equal(request.maxTokens, 80);
-  });
-
-  test('rejects invalid, unknown, and unconfigured tool calls', async () => {
-    const router = createToolRouter({});
-    await assert.rejects(router.execute(null), ToolRouterError);
-    await assert.rejects(router.execute({ tool: 'unknown', args: {} }), { statusCode: 404 });
-    await assert.rejects(router.execute({ tool: 'lookupDocs', args: {} }), { statusCode: 503 });
-    assert.throws(() => parseModelToolCall({ function: { name: 'lookupDocs', arguments: '{no-json' } }), /invalid JSON/i);
+test('router config defaults to the required local model and computation settings', () => {
+  assert.deepEqual(config({}), {
+    model: 'llama3.2:1b',
+    url: 'http://127.0.0.1:11434/api/chat',
+    timeoutMs: 180000,
+    numThreads: 8,
   });
 });

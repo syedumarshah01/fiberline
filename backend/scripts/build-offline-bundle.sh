@@ -66,10 +66,12 @@ mkdir -p "$TRANSFORMERS_CACHE_DIR" "$(dirname "$BUNDLE_DIR")"
 
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR/app" "$BUNDLE_DIR/app/data" "$BUNDLE_DIR/bin" \
-  "$BUNDLE_DIR/models/llm" "$BUNDLE_DIR/models/transformers-cache" "$BUNDLE_DIR/docs-source"
+  "$BUNDLE_DIR/ai" "$BUNDLE_DIR/models/llm" "$BUNDLE_DIR/models/transformers-cache" "$BUNDLE_DIR/docs-source"
 cp "$BACKEND_ROOT/package.json" "$BACKEND_ROOT/package-lock.json" "$BACKEND_ROOT/knexfile.js" "$BACKEND_ROOT/.env.example" "$BACKEND_ROOT/README.md" "$BUNDLE_DIR/app/"
 cp -a "$BACKEND_ROOT/src" "$BACKEND_ROOT/migrations" "$BUNDLE_DIR/app/"
 cp "$DOC_INDEX_PATH" "$BUNDLE_DIR/app/data/docs.sqlite"
+# toolRouterSchema resolves the shared catalog three levels above app/src/ai.
+cp "$REPO_ROOT/ai/tools.json" "$BUNDLE_DIR/ai/tools.json"
 cp -a "$TRANSFORMERS_CACHE_DIR/." "$BUNDLE_DIR/models/transformers-cache/"
 cp "$GGUF_SOURCE" "$BUNDLE_DIR/models/llm/model.gguf"
 cp "$LLAMA_SERVER_BIN" "$BUNDLE_DIR/bin/llama-server"

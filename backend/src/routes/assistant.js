@@ -1,50 +1,18 @@
 const express = require('express');
-const path = require('node:path');
 const { getToolSchema } = require('../tools/toolSchema');
 const { createToolRouter, executeModelToolSelection } = require('../tools/toolRouter');
-const { createEmbeddingService } = require('../services/embeddingService');
-const { openDocIndex } = require('../services/docIndexStore');
-const { createLookupDocsHandler, validateLookupDocsArgs } = require('../services/docsLookup');
-const { createModelProviderFromEnv } = require('../services/modelProvider');
+const { validateLookupDocsArgs } = require('../services/docsLookup');
+const { getDocsLookupRuntime } = require('../services/docsLookupRuntime');
 
 const router = express.Router();
 let runtimePromise;
 
-function createDefaultRuntime() {
-  const embeddingService = createEmbeddingService();
-  const modelProvider = createModelProviderFromEnv();
-  const indexPath = path.resolve(process.env.DOC_INDEX_PATH || path.resolve(__dirname, '../../data/docs.sqlite'));
-  let indexPromise;
-
-  async function getIndex() {
-    if (!indexPromise) {
-      indexPromise = openDocIndex({ indexPath, expectedModelId: embeddingService.modelId });
-      indexPromise.catch(() => { indexPromise = null; });
-    }
-    return indexPromise;
-  }
-
-  const lookupDocs = createLookupDocsHandler({
-    embedQuery: async (query) => {
-      // Fail fast on a missing/stale build artifact before loading the embedding model.
-      await getIndex();
-      return embeddingService.embed(query);
-    },
-    retrieve: async (queryVector, options) => (await getIndex()).search(queryVector, options),
-    generateText: (request) => modelProvider.generateText(request),
-    topK: process.env.DOCS_TOP_K,
-    minSimilarity: process.env.DOCS_MIN_SIMILARITY,
-  });
-
-  return {
-    modelProvider,
-    toolRouter: createToolRouter({ lookupDocs }),
-  };
-}
-
 function getDefaultRuntime() {
   if (!runtimePromise) {
-    runtimePromise = Promise.resolve().then(createDefaultRuntime);
+    runtimePromise = getDocsLookupRuntime().then(({ modelProvider, lookupDocs }) => ({
+      modelProvider,
+      toolRouter: createToolRouter({ lookupDocs }),
+    }));
     runtimePromise.catch(() => { runtimePromise = null; });
   }
   return runtimePromise;

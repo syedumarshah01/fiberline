@@ -90,6 +90,19 @@ describe('OpenAICompatibleProvider', () => {
     assert.throws(() => createModelProviderFromEnv({ AI_PROVIDER: 'mystery' }), /Unsupported AI_PROVIDER/);
   });
 
+  test('reuses the existing Ollama LLM_* settings for RAG when local provider overrides are absent', () => {
+    const local = createModelProviderFromEnv({
+      LLM_BASE_URL: 'http://127.0.0.1:11434/v1',
+      LLM_MODEL: 'llama3.2:1b',
+      LLM_API_KEY: 'ollama',
+      LLM_TIMEOUT_MS: '180000',
+    }, { fetchImpl: async () => {} });
+    assert.equal(local.baseUrl, 'http://127.0.0.1:11434/v1');
+    assert.equal(local.model, 'llama3.2:1b');
+    assert.equal(local.apiKey, 'ollama');
+    assert.equal(local.timeoutMs, 180000);
+  });
+
   test('extracts string and multipart response content', () => {
     assert.equal(messageContentToText(' hello '), 'hello');
     assert.equal(messageContentToText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]), 'a\nb');

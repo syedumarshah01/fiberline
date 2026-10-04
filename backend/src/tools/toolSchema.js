@@ -13,6 +13,13 @@ const TOOL_DEFINITIONS = Object.freeze([
             maxLength: 1000,
             description: 'A focused question about documented Fiberline behavior or setup.',
           }),
+          top_k: Object.freeze({
+            type: 'integer',
+            minimum: 1,
+            maximum: 3,
+            default: 3,
+            description: 'Number of matching documentation chunks to retrieve (one to three).',
+          }),
         }),
         required: Object.freeze(['query']),
         additionalProperties: false,

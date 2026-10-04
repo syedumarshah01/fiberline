@@ -13,7 +13,8 @@ function match(id, score, text = `Chunk text ${id}`) {
 describe('validateLookupDocsArgs', () => {
   test('trims valid questions and rejects malformed or oversized requests', () => {
     assert.equal(validateLookupDocsArgs({ query: '  how does tracing work?  ' }), 'how does tracing work?');
-    for (const args of [null, [], {}, { query: ' ' }, { query: 'question', extra: true }]) {
+    assert.equal(validateLookupDocsArgs({ query: 'question', top_k: 2 }), 'question');
+    for (const args of [null, [], {}, { query: ' ' }, { query: 'question', extra: true }, ...[0, 4, 1.5, '2'].map((top_k) => ({ query: 'question', top_k }))]) {
       assert.throws(() => validateLookupDocsArgs(args), { statusCode: 400 });
     }
     assert.throws(() => validateLookupDocsArgs({ query: 'x'.repeat(1001) }), { statusCode: 400 });
@@ -52,6 +53,21 @@ describe('createLookupDocsHandler', () => {
     assert.equal(result.sources.length, 3);
     assert.equal(result.mode, 'generated');
     assert.equal(result.answer, 'Fiber tracing follows recorded splices and returns the path.');
+  });
+
+  test('honors a schema-provided top_k value while capping retrieval at three', async () => {
+    let retrievalOptions;
+    const handler = createLookupDocsHandler({
+      embedQuery: async () => [1, 0],
+      retrieve: async (_vector, options) => {
+        retrievalOptions = options;
+        return [match('a', 0.9), match('b', 0.8), match('c', 0.7)];
+      },
+      generateText: async () => 'The docs describe this behavior.',
+    });
+    const result = await handler({ query: 'question?', top_k: 2 });
+    assert.equal(retrievalOptions.limit, 2);
+    assert.equal(result.sources.length, 2);
   });
 
   test('does not ask the model when no retrieved chunk clears the similarity threshold', async () => {

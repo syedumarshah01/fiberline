@@ -23,12 +23,15 @@ function validateLookupDocsArgs(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     throw invalidArgs('lookupDocs args must be an object');
   }
-  const unexpected = Object.keys(args).filter((key) => key !== 'query');
+  const unexpected = Object.keys(args).filter((key) => !['query', 'top_k'].includes(key));
   if (unexpected.length) throw invalidArgs(`lookupDocs does not accept: ${unexpected.join(', ')}`);
   if (typeof args.query !== 'string' || !args.query.trim()) {
     throw invalidArgs('lookupDocs requires a non-empty query string');
   }
   if (args.query.trim().length > 1000) throw invalidArgs('lookupDocs query must be 1000 characters or fewer');
+  if (args.top_k !== undefined && (!Number.isInteger(args.top_k) || args.top_k < 1 || args.top_k > 3)) {
+    throw invalidArgs('lookupDocs top_k must be an integer from 1 to 3');
+  }
   return args.query.trim();
 }
 
@@ -68,11 +71,12 @@ function createLookupDocsHandler({
 
   return async function lookupDocs(args) {
     const query = validateLookupDocsArgs(args);
+    const resultLimit = args.top_k ?? retrievalLimit;
     const queryVector = await embedQuery(query);
-    const retrieved = await retrieve(queryVector, { limit: retrievalLimit });
+    const retrieved = await retrieve(queryVector, { limit: resultLimit });
     const matches = (Array.isArray(retrieved) ? retrieved : [])
       .filter((match) => match && Number.isFinite(Number(match.score)) && Number(match.score) >= scoreThreshold)
-      .slice(0, retrievalLimit);
+      .slice(0, resultLimit);
 
     if (!matches.length) {
       return {
