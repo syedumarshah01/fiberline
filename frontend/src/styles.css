@@ -247,11 +247,15 @@ code, .mono { font-family: var(--font-mono); }
   padding: 2px 7px;
   border-radius: 999px;
 }
+.pill-spare { background: rgba(240,180,41,0.15); color: var(--amber); }
+.pill-in_use { background: rgba(63,208,201,0.15); color: var(--teal); }
+.pill-unknown { background: rgba(148,163,184,0.15); color: var(--muted); }
 .pill-available { background: rgba(240,180,41,0.15); color: var(--amber); }
 .pill-spliced { background: rgba(63,208,201,0.15); color: var(--teal); }
 .pill-terminated { background: rgba(139,124,246,0.15); color: var(--violet); }
 .pill-reserved { background: rgba(139,124,246,0.15); color: var(--violet); }
 .pill-damaged { background: rgba(239,83,80,0.15); color: var(--red); }
+.pill-healthy { background: rgba(63,208,201,0.15); color: var(--teal); }
 .pill-active { background: rgba(63,208,201,0.15); color: var(--teal); }
 .pill-planned { background: rgba(139,150,168,0.15); color: var(--text-muted); }
 
@@ -315,6 +319,7 @@ code, .mono { font-family: var(--font-mono); }
   width: 14px; height: 14px; border-radius: 3px;
   background: var(--amber); border: 2px solid var(--bg);
 }
+.enclosure-marker.agent-marked-enclosure { background: var(--agent-color) !important; border-color: var(--agent-color) !important; box-shadow: 0 0 0 5px color-mix(in srgb, var(--agent-color) 35%, transparent), 0 0 18px var(--agent-color); }
 .enclosure-marker.has-capacity { background: var(--teal); }
 .enclosure-marker.full { background: var(--red); }
 .enclosure-marker.selected-enclosure-marker {
@@ -364,6 +369,12 @@ code, .mono { font-family: var(--font-mono); }
 .cable-line-active {
   animation: pulse-dash 1.1s linear infinite;
 }
+/* Out (or partly out) spans are drawn from impactCableStyle; they must not
+   march. This is the hook for that, kept next to the live classes it replaces. */
+.cable-line-out {
+  animation: none;
+}
+
 /* Drop legs (the customer hop) march faster. */
 .cable-line-active.cable-line-drop {
   animation-duration: 0.6s;
@@ -396,6 +407,9 @@ code, .mono { font-family: var(--font-mono); }
   color: var(--text-muted);
   white-space: nowrap;
 }
+.chip-spare { color: var(--amber); border-color: rgba(240,180,41,0.4); }
+.chip-in_use { color: var(--teal); border-color: rgba(63,208,201,0.4); }
+.chip-unknown { color: var(--muted); border-color: rgba(148,163,184,0.4); }
 .chip-available { color: var(--amber); border-color: rgba(240,180,41,0.4); }
 .chip-spliced { color: var(--teal); border-color: rgba(63,208,201,0.4); }
 .chip-terminated { color: var(--violet); border-color: rgba(139,124,246,0.4); }
@@ -792,4 +806,638 @@ code, .mono { font-family: var(--font-mono); }
   .vdoc-legend { font-size: 10px; gap: 4px 10px; }
   .vdoc-upstream { padding-left: 20px; }
   .summary-grid, .summary-grid.cols-3 { grid-template-columns: 1fr; }
+}
+
+/* ---------- Loss budget (trace panel + box documentation) ---------- */
+/* Path rows lay out as [segment …………… loss + running total]. */
+.loss-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.loss-row.list-item { padding: 7px 8px; }
+.loss-col {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  flex: none;
+}
+.loss-col .loss-src {
+  font-family: var(--font-body);
+  font-size: 9.5px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+/* Verified vs assumed vs flagged — the whole point of the coloring is that a
+   tech can see at a glance which dB numbers are measurements and which are
+   planning defaults. */
+.loss-measured { color: var(--teal); }
+.loss-assumed { color: var(--amber); }
+.loss-flagged { color: var(--red); font-weight: 700; }
+.loss-neutral { color: var(--text-muted); }
+.loss-status-ok { color: var(--teal); }
+.loss-status-marginal { color: var(--amber); }
+.loss-status-fail { color: var(--red); }
+.loss-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.loss-controls label { color: var(--text-muted); }
+.loss-legend { font-size: 10px; color: var(--text-faint); }
+.loss-warnings {
+  background: rgba(240, 180, 41, 0.08);
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--amber);
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+/* Auto-flagged bad splices in the box documentation */
+.qc-flag {
+  background: rgba(239, 83, 80, 0.1);
+  border: 1px solid rgba(239, 83, 80, 0.4);
+  color: var(--red);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 11px;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Simulated failure (outage overlay) ---------- */
+/* Everything downstream of the simulated failure is painted red; the rest of
+   the network recedes (each map provider dims it inline, since Leaflet /
+   Google / Mapbox express opacity differently). */
+
+/* Leaflet dark box marker + the failed element at the centre of the outage */
+.enclosure-marker.dark {
+  background: var(--red);
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.25);
+}
+.enclosure-marker.failure-point {
+  box-shadow: 0 0 0 4px rgba(239, 83, 80, 0.5), 0 0 12px rgba(239, 83, 80, 0.85);
+}
+.pole-marker.failed-pole-marker {
+  width: 18px; height: 18px;
+  background: var(--red);
+  border: 3px solid var(--bg);
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.45);
+}
+
+/* "N customers are dark behind this box" badge, anchored to the marker */
+.enclosure-badge {
+  position: absolute;
+  top: -9px; right: -11px;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 1px solid var(--bg);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.leaflet-div-icon .enclosure-badge { position: absolute; }
+
+/* Mapbox box markers: dark boxes keep their label visible ("BOX-B · 3 dark") */
+.enc-dot-marker.is-dark .enc-dot-label,
+.enc-dot-marker.is-failure-point .enc-dot-label { display: block; }
+.enc-dot-marker.is-dark { box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.35); }
+.enc-dot-marker.is-failure-point { box-shadow: 0 0 0 4px rgba(239, 83, 80, 0.55); }
+
+/* Banner over the map while a simulation is displayed */
+.impact-banner {
+  position: absolute;
+  z-index: 1100; /* above Leaflet panes and map controls */
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.impact-banner-text {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Optimistic concurrency: another technician changed this box while it was open. */
+.box-edit-conflict {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(240, 180, 41, 0.65);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.1);
+  color: var(--amber);
+  font-size: 11px;
+}
+.box-edit-conflict .btn { justify-self: start; }
+
+.as-built-approvals {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(75, 190, 180, 0.06);
+}
+.approval-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.approval-live {
+  color: var(--teal);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.approval-explainer { margin: 6px 0 8px; }
+.approval-card {
+  display: grid;
+  gap: 3px;
+  margin-top: 7px;
+  padding: 8px;
+  border-left: 3px solid var(--amber);
+  background: rgba(240, 180, 41, 0.08);
+  font-size: 11px;
+}
+.approval-revision, .approval-admin-note { color: var(--text-muted); font-size: 10px; }
+.approval-actions { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+}
+.auth-card {
+  width: min(100%, 380px);
+  display: grid;
+  gap: 8px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, .28);
+}
+.auth-card .brand { margin-bottom: 10px; }
+.auth-card h1 { margin: 0; font-size: 22px; }
+.auth-label { margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.auth-card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.auth-submit { margin-top: 12px; }
+.session-user { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, .62);
+}
+.network-query {
+  width: min(100%, 760px);
+  max-height: min(90vh, 820px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, .4);
+}
+.network-query-form { display: grid; gap: 8px; margin-top: 18px; }
+.voice-query-hero { display: grid; justify-items: center; gap: 12px; min-height: 300px; align-content: center; text-align: center; }
+.voice-mic { position: relative; display: grid; place-items: center; width: 104px; height: 104px; border: 0; border-radius: 50%; background: radial-gradient(circle at 50% 42%, #61e4dc 0 16%, #2daba9 17% 36%, #176b75 37% 100%); color: white; cursor: pointer; box-shadow: 0 0 0 0 rgba(63, 208, 201, .55); transition: transform .2s ease, box-shadow .2s ease; }
+.voice-mic:hover { transform: scale(1.04); }
+.voice-mic-small { width: 64px; height: 64px; flex: 0 0 auto; }
+.voice-mic-small .voice-mic-icon { transform: scale(.72); }
+.voice-followup { display: flex; align-items: center; gap: 13px; margin: 14px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.voice-followup span { display: grid; gap: 3px; }
+.voice-followup small { color: var(--text-muted); }
+.voice-mic.is-listening { animation: voice-pulse 1.35s ease-out infinite; }
+.voice-mic-icon { display: block; width: 25px; height: 36px; overflow: hidden; border: 3px solid white; border-radius: 14px; color: transparent; }
+.voice-mic-icon::after { content: ""; display: block; width: 3px; height: 15px; margin: 32px auto 0; background: white; box-shadow: -9px 15px 0 -1px white, 9px 15px 0 -1px white; }
+.voice-mic-waves { position: absolute; inset: 12px; border: 2px solid rgba(255,255,255,.28); border-radius: 50%; opacity: 0; }
+.voice-mic.is-listening .voice-mic-waves { animation: voice-wave 1.35s ease-out infinite; }
+.voice-query-hint { max-width: 430px; color: var(--text-muted); font-size: 11px; }
+.voice-transcript { max-width: 540px; margin: 0; color: var(--text); font-size: 13px; }
+.voice-thinking { display: flex; gap: 8px; align-items: center; height: 104px; }
+.voice-thinking span { width: 12px; height: 12px; border-radius: 50%; background: var(--teal); animation: voice-thinking 1s ease-in-out infinite; }
+.voice-thinking span:nth-child(2) { animation-delay: .15s; }
+.voice-thinking span:nth-child(3) { animation-delay: .3s; }
+@keyframes voice-pulse { 0% { box-shadow: 0 0 0 0 rgba(63, 208, 201, .55); } 70% { box-shadow: 0 0 0 24px rgba(63, 208, 201, 0); } 100% { box-shadow: 0 0 0 0 rgba(63, 208, 201, 0); } }
+@keyframes voice-wave { 0% { transform: scale(.7); opacity: .7; } 100% { transform: scale(1.35); opacity: 0; } }
+@keyframes voice-thinking { 0%, 100% { transform: translateY(0); opacity: .45; } 50% { transform: translateY(-10px); opacity: 1; } }
+.network-query-form label { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.network-query-form textarea { box-sizing: border-box; width: 100%; resize: vertical; min-height: 76px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--text); font: inherit; }
+.network-query-actions { display: flex; justify-content: flex-end; }
+.network-query-examples { display: grid; gap: 5px; margin: 10px 0 16px; color: var(--text-muted); }
+.link-button { padding: 0; border: 0; background: transparent; color: var(--teal); cursor: pointer; font: inherit; text-align: left; }
+.query-results { display: grid; gap: 9px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.query-result-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.query-note { margin: 0; color: var(--text-muted); font-size: 11px; }
+.query-answer { white-space: pre-wrap; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); line-height: 1.55; }
+.agent-action-card { display: grid; gap: 7px; margin-top: 12px; padding: 12px; border: 1px solid rgba(245, 166, 35, .7); border-left: 3px solid var(--amber); border-radius: var(--radius); background: rgba(245, 166, 35, .09); }
+.agent-action-card p { margin: 0; }
+.agent-action-card small { color: var(--text-muted); }
+.query-tool-note { display: block; margin-top: 8px; color: var(--text-muted); }
+.query-list { display: grid; gap: 6px; max-height: 270px; overflow: auto; }
+.query-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 9px; border: 1px solid var(--border-soft); border-radius: var(--radius); font-size: 12px; }
+.query-row span, .query-row b { display: grid; gap: 2px; }
+.query-row small { color: var(--text-muted); font-size: 10px; }
+.query-warnings { margin-top: 12px; padding: 9px 11px; border-left: 3px solid var(--amber); background: rgba(245, 166, 35, .08); color: var(--text-muted); font-size: 11px; }
+.query-warnings p { margin: 3px 0; }
+.user-management {
+  width: min(100%, 700px);
+  max-height: min(90vh, 760px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, .4);
+}
+.user-management-header { display: flex; justify-content: space-between; gap: 15px; align-items: flex-start; }
+.user-management h3 { margin: 18px 0 8px; font-size: 13px; }
+.employee-form { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.employee-form input, .employee-form select { box-sizing: border-box; width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
+.employee-form > div { display: flex; gap: 7px; flex-wrap: wrap; }
+.credential-receipt { display: grid; gap: 7px; margin-top: 12px; padding: 11px; border: 1px solid rgba(63, 208, 201, .55); border-left: 3px solid var(--teal); border-radius: var(--radius); background: rgba(63, 208, 201, .08); }
+.credential-receipt code { white-space: pre-wrap; padding: 8px; border-radius: var(--radius); background: var(--bg); color: var(--text); }
+.credential-receipt small { color: var(--text-muted); }
+.user-list { display: grid; gap: 6px; }
+.user-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius); }
+.user-row span:first-child { display: grid; gap: 2px; }
+.user-row small { color: var(--text-muted); }
+.user-row span:last-child { display: flex; gap: 5px; flex-wrap: wrap; }
+
+/* The report in the right panel */
+.impact-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--red);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+.impact-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.impact-title {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+.impact-head .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
+.impact-root { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.impact-root b { color: var(--text); }
+.impact-root-missing {
+  padding: 8px 10px;
+  border: 1px solid rgba(240, 180, 41, 0.4);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.08);
+}
+.impact-root-missing p { margin: 0 0 8px; color: var(--amber); font-size: 11.5px; line-height: 1.5; }
+.impact-warning {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid rgba(240, 180, 41, 0.35);
+  border-radius: var(--radius);
+  background: rgba(240, 180, 41, 0.08);
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.impact-error { color: var(--red); font-size: 12px; }
+.impact-customer {
+  margin-bottom: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+}
+.impact-customer summary { cursor: pointer; }
+.impact-customer .code { font-family: var(--font-mono); color: var(--red); }
+.impact-customer .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 4px; line-height: 1.5; }
+.impact-option { cursor: default; }
+.impact-actions { display: flex; gap: 8px; margin-top: 12px; }
+.impact-simulate { margin-bottom: 16px; }
+/* A customer the analysis inferred rather than read from a label — kept muted
+   so it never looks like a data problem, just an unnamed leg. */
+.impact-inferred {
+  color: var(--amber);
+  font-style: italic;
+}
+
+/* ----------------------------------------------------------------------------
+   Field work: splice worksheets and QR tags.
+
+   Both are meant to leave the screen. On screen they are overlays over the map;
+   on paper they are the sheet a technician carries and the stickers they stick
+   on the pole — so the print rules below throw away the app chrome entirely and
+   keep only the sheet, in black on white (no dark-theme background swallowing
+   the ink, no scrollbars clipping the last steps).
+   ---------------------------------------------------------------------------- */
+.field-kit {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 10, 12, 0.66);
+  z-index: 4000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px 16px 60px;
+}
+
+.sheet-panel {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  width: 100%;
+  max-width: 760px;
+  padding: 16px;
+}
+
+.sheet-panel-wide { max-width: 940px; }
+
+.sheet-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.sheet-title { font-weight: 600; margin-right: auto; }
+.sheet-field { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); }
+.sheet-field input,
+.sheet-field select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.sheet-field input:focus,
+.sheet-field select:focus { outline: 1px solid var(--teal); }
+.sheet-link { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); word-break: break-all; }
+.sheet-footnote { color: var(--text-faint); font-size: 11px; margin-top: 12px; }
+.loading-row { color: var(--text-muted); font-size: 12.5px; }
+
+/* Notification for a scanned tag that no longer resolves. */
+.qr-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(240, 180, 41, 0.12);
+  color: var(--amber);
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* --- the worksheet ------------------------------------------------------- */
+.worksheet { font-size: 13px; line-height: 1.55; }
+.worksheet h2 { font-size: 17px; margin: 0 0 2px; }
+.worksheet h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 20px 0 8px;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 4px;
+}
+.worksheet-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.worksheet-meta { color: var(--text-muted); font-size: 12px; margin: 2px 0 0; }
+.worksheet-progress { text-align: right; white-space: nowrap; }
+.worksheet-progress strong { display: block; font-size: 18px; font-family: var(--font-mono); }
+.worksheet-progress span { font-size: 11px; color: var(--text-muted); }
+.worksheet-summary { color: var(--text-muted); font-size: 12.5px; margin: 10px 0 0; }
+
+.worksheet-steps { list-style: none; margin: 0; padding: 0; }
+.worksheet-steps > li { border-bottom: 1px solid var(--border-soft); padding: 9px 2px; }
+.worksheet-step { display: flex; gap: 9px; align-items: flex-start; cursor: pointer; }
+.worksheet-step input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--teal); }
+.worksheet-step-body { display: block; }
+.worksheet-step-task { font-weight: 600; }
+.worksheet-step-number { font-family: var(--font-mono); color: var(--text-muted); }
+.worksheet-step-detail { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.worksheet-done .worksheet-step-task { text-decoration: line-through; color: var(--text-faint); font-weight: 500; }
+.worksheet-info { display: flex; gap: 9px; align-items: flex-start; color: var(--text-muted); }
+.worksheet-info p { margin: 2px 0 0; font-size: 12px; }
+.worksheet-info-mark {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1px solid var(--border-soft);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.worksheet-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.worksheet-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 4px 6px;
+}
+.worksheet-table td { border-bottom: 1px solid var(--border-soft); padding: 5px 6px; vertical-align: top; }
+.worksheet-fibres td { font-family: var(--font-mono); font-size: 12px; }
+.worksheet-bad td { color: var(--red); }
+.worksheet-signoff { margin-top: 22px; border-top: 1px solid var(--border-soft); padding-top: 10px; font-size: 12.5px; }
+
+/* --- QR sticker cards ---------------------------------------------------- */
+.qr-labels { display: flex; flex-wrap: wrap; gap: 10px; }
+.qr-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius);
+  break-inside: avoid;
+}
+.qr-label img { display: block; background: #fff; }
+.qr-label-text { display: flex; flex-direction: column; gap: 2px; max-width: 140px; }
+.qr-label-text strong { font-size: 13.5px; }
+.qr-label-kind { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.qr-label-hint { font-size: 11px; color: var(--text-muted); }
+
+/* --- on paper ------------------------------------------------------------ */
+@media print {
+  /* Only the sheet: the map, both panels, the topbar and the resize handle are
+     chrome, and printing them wastes the page and hides the checklist. */
+  body { background: #fff; }
+  .topbar,
+  .panel.left,
+  .panel.right,
+  .map-container,
+  .resize-handle,
+  .impact-banner,
+  .qr-notice,
+  .no-print { display: none !important; }
+
+  .sheet-overlay {
+    position: static;
+    display: block;
+    overflow: visible;
+    padding: 0;
+    background: none;
+  }
+  .sheet-panel,
+  .sheet-panel-wide {
+    max-width: none;
+    width: auto;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    background: #fff;
+    color: #000;
+  }
+  .print-area { display: block !important; }
+
+  /* Print in ink, not in theme colours. */
+  .worksheet,
+  .worksheet * { color: #000 !important; background: none !important; }
+  .worksheet-bad td { color: #b00020 !important; font-weight: 600; }
+  .worksheet-table th,
+  .worksheet-table td,
+  .worksheet h3,
+  .worksheet-steps > li { border-color: #999 !important; }
+  .worksheet-steps > li { break-inside: avoid; }
+  .worksheet-step input { accent-color: #000; }
+  .worksheet-signoff { border-top-color: #999 !important; }
+  .qr-label { border-color: #999; }
+  .qr-label img { width: 120px; height: 120px; }
+
+  @page { margin: 12mm; }
+}
+
+/* ---------------------------------------------------------------------------
+   Customer connection plan (locate-customer mode)
+--------------------------------------------------------------------------- */
+.customer-plan {
+  border: 1px solid var(--line, #2b3242);
+  border-radius: 8px;
+  padding: 10px;
+}
+.customer-plan-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  border-left: 4px solid transparent;
+  background: rgba(119, 135, 157, 0.14);
+}
+.customer-plan-header.tone-ok { background: rgba(63, 208, 201, 0.12); border-left-color: #3fd0c9; }
+.customer-plan-header.tone-warn { background: rgba(240, 180, 41, 0.14); border-left-color: #f0b429; }
+.customer-plan-header.tone-bad { background: rgba(239, 83, 80, 0.14); border-left-color: #ef5350; }
+.customer-plan-header.tone-unknown { background: rgba(119, 135, 157, 0.14); border-left-color: #77879d; }
+.customer-plan-title { font-weight: 600; }
+.customer-plan-facts { display: flex; flex-direction: column; gap: 9px; margin-bottom: 12px; }
+.customer-plan-fact .l { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; }
+.customer-plan-fact .v { font-size: 13px; line-height: 1.35; }
+.customer-plan-fact .sub, .customer-plan-assumption { font-size: 11px; opacity: 0.75; margin-top: 2px; }
+.customer-plan-source, .customer-plan-budget { border-top: 1px solid var(--line, #2b3242); padding-top: 7px; margin-top: 8px; font-size: 12px; line-height: 1.4; }
+.customer-plan-source p { margin: 3px 0; }
+.customer-plan-warnings { margin-top: 8px; font-size: 11px; }
+.customer-plan-warnings summary { cursor: pointer; opacity: 0.8; }
+.customer-plan-warnings .impact-warnings { margin-top: 5px; }
+.customer-plan-source ol, .customer-plan-steps ol { margin: 4px 0 0 18px; padding: 0; }
+.customer-plan-source li, .customer-plan-steps li { margin-bottom: 5px; }
+.customer-plan-budget-summary { font-weight: 600; margin: 4px 0 8px; }
+.customer-plan-budget-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; font-size: 11px; }
+.customer-plan-budget-grid span { display: flex; flex-direction: column; gap: 2px; }
+.customer-plan-budget-grid strong { font-size: 12px; }
+.customer-plan-loss-details { margin-top: 9px; font-size: 11px; }
+.customer-plan-loss-details summary { cursor: pointer; opacity: 0.85; }
+.customer-plan-loss-details ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.customer-plan-loss-details li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(119, 135, 157, 0.18); }
+.customer-plan-loss-details li strong { white-space: nowrap; }
+.customer-plan-steps { border-top: 1px solid var(--line, #2b3242); margin-top: 10px; padding-top: 8px; font-size: 12px; line-height: 1.5; }
+.customer-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.customer-plan-actions .btn { font-size: 11px; padding: 4px 8px; }
+.customer-plan-error { color: #ef5350; }
+
+
+/* A button that reads as a link: used where the action is "show me that box". */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--teal, #3fd0c9);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline dotted;
+}
+
+.linklike:hover { text-decoration: underline; }
+
+@media print {
+  .customer-plan-actions { display: none !important; }
 }

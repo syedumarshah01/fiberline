@@ -1,0 +1,8 @@
+{
+  "status": "approved",
+  "schema": "tools.json",
+  "schema_version": 1,
+  "sha256": "0a3a7b20b237882a742db088c2687dd67a88854b07a1e1a6a489ed6e41d3e917",
+  "approved_at": "2026-10-05",
+  "review_context": "The user approved the displayed eight-tool schema in Arena after review. Any change to tools.json requires a new review."
+}
