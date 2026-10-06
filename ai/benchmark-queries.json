@@ -1,0 +1,122 @@
+[
+  {
+    "id": "serviceability-coordinates",
+    "query": "Can enclosure NAP-14 serve a customer at latitude 34.0083 and longitude 71.5788?",
+    "expected": { "tool": "checkServiceability", "args": { "enclosure_id": "NAP-14", "lat": 34.0083, "lng": 71.5788 } }
+  },
+  {
+    "id": "serviceability-explicit-box",
+    "query": "Check whether enclosure BOX-7 is serviceable at lat 34.0200, lng 71.5800.",
+    "expected": { "tool": "checkServiceability", "args": { "enclosure_id": "BOX-7", "lat": 34.02, "lng": 71.58 } }
+  },
+  {
+    "id": "serviceability-no-location",
+    "query": "Is enclosure ENC-002 able to serve this customer location?",
+    "expected": { "tool": "checkServiceability", "args": { "enclosure_id": "ENC-002" } }
+  },
+  {
+    "id": "port-remediation-code",
+    "query": "There is no free splitter port at BOX-21. Find a port remediation.",
+    "expected": { "tool": "findPortRemediation", "args": { "enclosure_id": "BOX-21" } }
+  },
+  {
+    "id": "port-remediation-nap",
+    "query": "What deterministic fix is available for the unavailable port at NAP-09?",
+    "expected": { "tool": "findPortRemediation", "args": { "enclosure_id": "NAP-09" } }
+  },
+  {
+    "id": "port-remediation-id",
+    "query": "Find splitter-port remediation options for enclosure enc-0007.",
+    "expected": { "tool": "findPortRemediation", "args": { "enclosure_id": "enc-0007" } }
+  },
+  {
+    "id": "power-remediation-core",
+    "query": "Find power remediation for fiber core core-19.",
+    "expected": { "tool": "findPowerRemediation", "args": { "core_id": "core-19" } }
+  },
+  {
+    "id": "power-remediation-local",
+    "query": "The optical power margin is low on core fc-8 at enclosure BOX-4. What can fix it?",
+    "expected": { "tool": "findPowerRemediation", "args": { "core_id": "fc-8", "enclosure_id": "BOX-4" } }
+  },
+  {
+    "id": "power-remediation-trace",
+    "query": "Evaluate remediation for the power budget of core fiber-002.",
+    "expected": { "tool": "findPowerRemediation", "args": { "core_id": "fiber-002" } }
+  },
+  {
+    "id": "core-remediation-box",
+    "query": "Find a spare core path for enclosure BOX-42.",
+    "expected": { "tool": "findCoreRemediation", "args": { "enclosure_id": "BOX-42" } }
+  },
+  {
+    "id": "core-remediation-bfs",
+    "query": "Use the connected BFS capacity search to find core remediation for NAP-3.",
+    "expected": { "tool": "findCoreRemediation", "args": { "enclosure_id": "NAP-3" } }
+  },
+  {
+    "id": "core-remediation-include-self",
+    "query": "Find core remediation for enclosure box-100 and include the enclosure itself as a possible source.",
+    "expected": { "tool": "findCoreRemediation", "args": { "enclosure_id": "box-100", "exclude_self": false } }
+  },
+  {
+    "id": "trace-core-id",
+    "query": "Trace fiber core fc-123 from end to end.",
+    "expected": { "tool": "traceCore", "args": { "core_id": "fc-123" } }
+  },
+  {
+    "id": "trace-core-cable",
+    "query": "Show the full path for core core-7.",
+    "expected": { "tool": "traceCore", "args": { "core_id": "core-7" } }
+  },
+  {
+    "id": "trace-core-network",
+    "query": "Trace the existing fiber core fiber-009 through its splices and splitters.",
+    "expected": { "tool": "traceCore", "args": { "core_id": "fiber-009" } }
+  },
+  {
+    "id": "failure-box-code",
+    "query": "Simulate failure of enclosure BOX-B and show downstream impact.",
+    "expected": { "tool": "simulateFailure", "args": { "enclosure_id": "BOX-B" } }
+  },
+  {
+    "id": "failure-nap",
+    "query": "What customers go dark if NAP-14 fails? Simulate it without changing data.",
+    "expected": { "tool": "simulateFailure", "args": { "enclosure_id": "NAP-14" } }
+  },
+  {
+    "id": "failure-uuid",
+    "query": "Run a read-only failure simulation for enclosure enc-77.",
+    "expected": { "tool": "simulateFailure", "args": { "enclosure_id": "enc-77" } }
+  },
+  {
+    "id": "locate-address",
+    "query": "Locate a customer at 12 Main Street and build the connection plan.",
+    "expected": { "tool": "locateCustomer", "args": { "address": "12 Main Street" } }
+  },
+  {
+    "id": "locate-coordinates",
+    "query": "Build a customer connection plan at latitude 34.0083 and longitude 71.5788.",
+    "expected": { "tool": "locateCustomer", "args": { "lat": 34.0083, "lng": 71.5788 } }
+  },
+  {
+    "id": "locate-radius-route",
+    "query": "Locate the customer at 34.0200, 71.5800 within 750 metres and request a street route.",
+    "expected": { "tool": "locateCustomer", "args": { "lat": 34.02, "lng": 71.58, "radius_m": 750, "route": true } }
+  },
+  {
+    "id": "docs-splitter",
+    "query": "What is the default loss for a 1:32 splitter?",
+    "expected": { "tool": "lookupDocs", "args": { "query": "default loss for a 1:32 splitter" } }
+  },
+  {
+    "id": "docs-trace",
+    "query": "How does the Fiberline trace feature work?",
+    "expected": { "tool": "lookupDocs", "args": { "query": "how does the Fiberline trace feature work" } }
+  },
+  {
+    "id": "docs-loss-budget",
+    "query": "Explain the documented assumptions used by the optical loss budget.",
+    "expected": { "tool": "lookupDocs", "args": { "query": "documented assumptions used by the optical loss budget" } }
+  }
+]

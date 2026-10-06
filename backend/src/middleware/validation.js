@@ -6,6 +6,8 @@
  * silently breaks whole UI workflows with 400s, so keep them in sync.
  */
 
+const { SUPPORTED_SPLIT_COUNTS } = require('../utils/splitters');
+
 function sanitizeString(str) {
   if (typeof str !== 'string') return str;
   let sanitized = str.replace(/<[^>]*>/g, '');
@@ -234,8 +236,10 @@ function validateSplitterData(req, res, next) {
       return res.status(400).json({ error: 'input_port must be { splitter_id, port_number }' });
     }
   }
-  if (split_count !== undefined && ![2, 4, 8].includes(Number(split_count))) {
-    return res.status(400).json({ error: 'split_count must be 2, 4, or 8' });
+  if (split_count !== undefined && !SUPPORTED_SPLIT_COUNTS.includes(Number(split_count))) {
+    return res.status(400).json({
+      error: `split_count must be one of ${SUPPORTED_SPLIT_COUNTS.join(', ')}`,
+    });
   }
   if (splice_type !== undefined && !['fusion', 'mechanical'].includes(splice_type)) {
     return res.status(400).json({ error: "splice_type must be 'fusion' or 'mechanical'" });
@@ -252,12 +256,20 @@ function validateSplitterData(req, res, next) {
 function validateFiberCoreData(req, res, next) {
   // Used on PATCH /api/fiber-cores/:id — every field is optional; the handler
   // decides what to apply. Just type-check what is present.
-  const { status, notes } = req.body;
+  const { status, notes, clear_termination, customer_id, customer_label, cable_id } = req.body;
   if (status !== undefined && typeof status !== 'string') {
     return res.status(400).json({ error: 'status must be a string' });
   }
   if (notes !== undefined && notes !== null && typeof notes !== 'string') {
     return res.status(400).json({ error: 'notes must be a string' });
+  }
+  if (clear_termination !== undefined && typeof clear_termination !== 'boolean') {
+    return res.status(400).json({ error: 'clear_termination must be a boolean' });
+  }
+  for (const [field, value] of Object.entries({ customer_id, customer_label, cable_id })) {
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      return res.status(400).json({ error: `${field} must be a string` });
+    }
   }
   if (status) req.body.status = sanitizeString(status);
   next();

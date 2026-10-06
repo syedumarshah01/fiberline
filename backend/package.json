@@ -5,21 +5,37 @@
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
-    "dev": "nodemon src/server.js",
+    "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
+    "db:reset": "node scripts/resetDb.js",
+    "db:truncate": "node scripts/resetDb.js --truncate",
     "seed": "knex seed:run",
-    "test": "node --test"
+    "docs:index": "node scripts/build-doc-index.js",
+    "schema:approval": "node scripts/check-schema-review.js",
+    "llama:build": "bash scripts/build-llama-cpp.sh",
+    "bundle:offline": "bash scripts/build-offline-bundle.sh",
+    "benchmark:local-llm": "node scripts/benchmark-local-model.js",
+    "test": "node --test",
+    "db:schema": "node scripts/schemaStatus.js",
+    "create-admin": "node scripts/createAdmin.js",
+    "test:migrations": "node --test tests/migrationSql.test.js",
+    "db:link-splits": "node scripts/linkSplits.js",
+    "benchmark:router": "node scripts/benchmarkToolRouter.js"
+  },
+  "engines": {
+    "node": ">=18.11.0"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "knex": "^3.1.0",
-    "pg": "^8.12.0"
+    "pg": "^8.12.0",
+    "sql.js": "^1.14.2"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.3.0"
   }
 }

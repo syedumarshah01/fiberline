@@ -28,7 +28,11 @@ const FIBER_COLORS = [
   "#ef4444", "#1f2937", "#eab308", "#8b5cf6", "#f472b6", "#22d3ee",
 ];
 
-const STATUS_ORDER = ["available", "spliced", "terminated", "reserved", "damaged"];
+const STATUS_ORDER = ["spare", "in_use", "reserved", "damaged", "unknown"];
+
+function coreStatusLabel(status) {
+  return status === "in_use" ? "in use" : status;
+}
 
 const SPLITTER_COLOR = "#8b7cf6";
 
@@ -65,7 +69,7 @@ function CoreRow({ core, side, pair, portRef, hot }) {
         )}
         <span className="vdoc-core-num">#{core.core_number}</span>
         <span className="fiber-chip" style={{ backgroundColor: fiberColor(core.core_number) }} title="fiber color code" />
-        <span className={`pill pill-${core.status} vdoc-core-status`}>{core.status}</span>
+        <span className={`pill pill-${core.status} vdoc-core-status`}>{coreStatusLabel(core.status)}</span>
         {side === "in" && (
           <span className="vdoc-edge">{tag}{dot}</span>
         )}
@@ -245,20 +249,24 @@ export default function VisualDocumentation({ doc, onBack, onChanged }) {
       {/* Summary strip */}
       <div className="vdoc-summary">
         <span className="core-count-chip">{summary.total_cores} cores</span>
-        {STATUS_ORDER.filter((s) =>
-          s === "available" ? summary.available_cores
-          : s === "spliced" ? summary.spliced_cores
-          : s === "terminated" ? summary.terminated_cores
-          : (summary[`${s}_cores`] || 0) > 0,
-        ).map((s) => (
-          <span key={s} className={`core-count-chip chip-${s}`}>
-            {s === "available" ? summary.available_cores
-              : s === "spliced" ? summary.spliced_cores
-              : s === "terminated" ? summary.terminated_cores
-              : summary[`${s}_cores`] || 0}{" "}
-            {s}
-          </span>
-        ))}
+        {STATUS_ORDER.filter((s) => {
+          const count = s === "spare" ? summary.available_cores
+            : s === "in_use" ? summary.in_use_cores
+            : summary[`${s}_cores`] || 0;
+          return count > 0;
+        }).map((s) => {
+          const count = s === "spare" ? summary.available_cores
+            : s === "in_use" ? summary.in_use_cores
+            : summary[`${s}_cores`] || 0;
+          return (
+            <span key={s} className={`core-count-chip chip-${s}`}>
+              {count} {coreStatusLabel(s)}
+            </span>
+          );
+        })}
+        {summary.terminated_cores > 0 && (
+          <span className="core-count-chip chip-terminated">{summary.terminated_cores} terminated</span>
+        )}
         <span style={{ flex: 1 }} />
         <button className="btn" style={{ padding: "3px 10px", fontSize: 11 }} onClick={() => onChanged?.()}>
           Refresh

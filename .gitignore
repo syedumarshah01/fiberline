@@ -1,6 +1,10 @@
 node_modules/
 dist/
 backend/node_modules/
+backend/.runtime-assets/
+backend/models/gguf/
+backend/data/*.sqlite
+backend/dist/
 backend/.env
 frontend/node_modules/
 frontend/dist/
