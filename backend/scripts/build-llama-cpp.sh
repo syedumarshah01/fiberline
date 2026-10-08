@@ -8,6 +8,18 @@ if [[ -f "$BACKEND_ROOT/.env" ]]; then
   source "$BACKEND_ROOT/.env"
   set +a
 fi
+# Reuse a complete prebuilt installation in place (including its shared libraries).
+# The npm entry point uses Node directly on Windows, avoiding Bash's WSL launcher.
+# Direct Git Bash invocations can use the same Windows prebuilt configuration.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    exec node "$BACKEND_ROOT/scripts/build-llama-cpp.js" --prebuilt
+    ;;
+esac
+if [[ -n "${LLAMA_CPP_DIR:-}" || -n "${LLAMA_SERVER_BIN:-}" ]]; then
+  exec node "$BACKEND_ROOT/scripts/build-llama-cpp.js" --prebuilt
+fi
+
 ASSET_ROOT="${FIBERLINE_ASSET_DIR:-$BACKEND_ROOT/.runtime-assets}"
 SOURCE_DIR="$ASSET_ROOT/llama.cpp-src"
 BUILD_DIR="$SOURCE_DIR/build"
