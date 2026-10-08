@@ -5,6 +5,9 @@ const { createQueryHandler, MAX_QUERY_LENGTH, ROUTER_SOURCE } = networkQueryRout
 const { routeToolCall } = require('../src/services/toolRouter');
 const { executeToolCall } = require('../src/services/toolExecutor');
 const { formatResponse } = require('../src/services/responseFormatter');
+const { fakeEntityDb } = require('./helpers/entityDb');
+const CORE_ID = 'bc2cb596-a88c-4637-82fc-0d21e0c18fc3';
+const BOX_ID = '3c651534-b5f8-4c8b-91d0-64578cb6c1a2';
 
 function fakeResponse() {
   const response = {
@@ -156,7 +159,7 @@ test('router, executor, and formatter work together end to end without live mode
             message: {
               tool_calls: [{
                 type: 'function',
-                function: { name: 'traceCore', arguments: JSON.stringify({ core_id: 'core-123' }) },
+                function: { name: 'traceCore', arguments: JSON.stringify({ core_id: CORE_ID }) },
               }],
             },
           }],
@@ -164,17 +167,9 @@ test('router, executor, and formatter work together end to end without live mode
       },
     };
   };
-  const dbClient = (table) => ({
-    where(criteria) {
-      return {
-        async first() {
-          return table === 'fiber_cores' && criteria.id === 'core-123' ? { id: 'core-123' } : null;
-        },
-      };
-    },
-  });
+  const dbClient = fakeEntityDb({ fiber_cores: [{ id: CORE_ID }] });
   const trace = [
-    { core_id: 'core-123', core_number: 4, cable_code: 'CAB-1' },
+    { core_id: CORE_ID, core_number: 4, cable_code: 'CAB-1' },
     { splice_id: 'splice-1', splice_type: 'fusion' },
     { core_id: 'core-456', core_number: 4, cable_code: 'CAB-2' },
   ];
@@ -195,7 +190,7 @@ test('router, executor, and formatter work together end to end without live mode
   });
   const res = fakeResponse();
 
-  await handler(postRequest('Trace fiber core core-123.'), res, () => {});
+  await handler(postRequest(`Trace fiber core ${CORE_ID}.`), res, () => {});
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.tool_calls[0].tool, 'traceCore');
@@ -305,4 +300,54 @@ test('router errors are forwarded to the application error handler with a reques
 
   assert.equal(nextError, failure);
   assert.equal(failure.request_id, res.headers['x-request-id']);
+});
+
+test('UI queries resolve box display codes before the real executor dispatches', async () => {
+  const dbClient = fakeEntityDb({ enclosures: [{ id: BOX_ID, code: 'BOX-0002' }] });
+  let received;
+  const handler = createQueryHandler({
+    route: async () => ({ tool: 'findPortRemediation', args: { enclosure_id: 'box-0002' } }),
+    execute: (toolCall, options) => executeToolCall(toolCall, {
+      ...options, dbClient,
+      handlers: { findPortRemediation: async (args) => {
+        received = args;
+        return { enclosure_id: args.enclosure_id, status: 'ok', candidates: [] };
+      } },
+    }),
+    format: formatResponse,
+  });
+  const res = fakeResponse();
+  await handler(postRequest('Find available port remedies at box-0002.'), res, (error) => assert.fail(error.message));
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(received, { enclosure_id: BOX_ID });
+  assert.equal(res.headers['x-request-id'], res.body.request_id);
+  assert.doesNotMatch(res.body.answer_text, /invalid input syntax|select .*from/i);
+});
+
+test('UI gets actionable 404/400/503 responses instead of UUID-cast SQL failures', async () => {
+  const scenarios = [
+    { args: { enclosure_id: 'box-0002' }, dbClient: fakeEntityDb(), status: 404, code: 'ENTITY_NOT_FOUND' },
+    { args: { enclosure_id: 'box-0002' }, dbClient: fakeEntityDb({ enclosures: [
+      { id: BOX_ID, code: 'BOX-0002' },
+      { id: '5252ae96-a1b9-4bf9-8971-ae44c58a36e2', code: 'box-0002' },
+    ] }), status: 400, code: 'AMBIGUOUS_ENTITY' },
+    { args: { core_id: 'core-123' }, dbClient: fakeEntityDb(), status: 400, code: 'INVALID_ARGUMENT' },
+    { args: { enclosure_id: 'box-0002' }, dbClient: () => { throw new Error('select "id" from "enclosures" - invalid input syntax for type uuid'); }, status: 503, code: 'ENTITY_LOOKUP_FAILED' },
+  ];
+  for (const { args, dbClient, status, code } of scenarios) {
+    const tool = args.core_id ? 'traceCore' : 'simulateFailure';
+    const handler = createQueryHandler({
+      route: async () => ({ tool, args }),
+      execute: (toolCall, options) => executeToolCall(toolCall, {
+        ...options, dbClient, handlers: { [tool]: async () => assert.fail('must not run') },
+      }),
+      format: formatResponse,
+    });
+    const res = fakeResponse();
+    await handler(postRequest('Check this network record.'), res, (error) => assert.fail(error.message));
+    assert.equal(res.statusCode, status);
+    assert.equal(res.body.error, code);
+    assert.equal(res.headers['x-request-id'], res.body.request_id);
+    assert.doesNotMatch(res.body.answer_text, /invalid input syntax|select .*from/i);
+  }
 });

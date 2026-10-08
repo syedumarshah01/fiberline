@@ -17,7 +17,7 @@ const {
 } = require('./networkTools');
 
 const ENTITY_CHECKS = Object.freeze({
-  enclosure_id: { table: 'enclosures', label: 'enclosure' },
+  enclosure_id: { table: 'enclosures', label: 'enclosure', codeColumn: 'code' },
   core_id: { table: 'fiber_cores', label: 'fiber core' },
 });
 
@@ -54,31 +54,84 @@ const DEFAULT_HANDLERS = Object.freeze({
   lookupDocs,
 });
 
+// PostgreSQL UUID columns cannot accept display codes such as BOX-0002.
+// Check syntax before any UUID predicate; do not restrict UUID version bits.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value) {
+  return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
 async function entityExists(dbClient, table, id) {
+  if (!isUuid(id)) return false;
   const row = await dbClient(table).where({ id }).first('id');
   return Boolean(row);
 }
 
-async function validateEntityArguments(args, dbClient) {
+/** Resolve user-facing identifiers without changing the model's route object.
+ * UUIDs are looked up as IDs. Enclosure codes use exact case-insensitive text
+ * equality, not LIKE/fuzzy/name matching. Only DB-backed IDs reach handlers.
+ */
+async function resolveEntityArguments(args, dbClient) {
+  const resolvedArgs = { ...args };
   for (const [argumentName, check] of Object.entries(ENTITY_CHECKS)) {
     if (!Object.prototype.hasOwnProperty.call(args, argumentName)) continue;
-    const identifier = args[argumentName];
-    if (typeof identifier !== 'string' || !identifier.trim()) {
+    const value = args[argumentName];
+    const identifier = typeof value === 'string' ? value.trim() : '';
+    if (!identifier) {
       return executionError(
         'INVALID_ARGUMENT',
         `${argumentName} must be a non-empty existing identifier.`,
         { param: argumentName },
       );
     }
-    if (!(await entityExists(dbClient, check.table, identifier))) {
+
+    let row;
+    if (isUuid(identifier)) {
+      row = await dbClient(check.table).where({ id: identifier }).first('id');
+    } else if (check.codeColumn) {
+      // Column/table names come only from ENTITY_CHECKS; values stay bound.
+      // Two matches suffice to detect case variants allowed by code's unique
+      // constraint. Never choose an arbitrary enclosure from an ambiguous code.
+      const matches = await dbClient(check.table)
+        .whereRaw('lower(??) = lower(?)', [check.codeColumn, identifier])
+        .select('id', check.codeColumn)
+        .limit(2);
+      if (matches.length > 1) {
+        return executionError(
+          'AMBIGUOUS_ENTITY',
+          `More than one ${check.label} matches code "${identifier}". Use its UUID to choose a specific record.`,
+          { param: argumentName, identifier, status_code: 400 },
+        );
+      }
+      [row] = matches;
+    } else {
+      // fiber_cores has cable_id + core_number, but no standalone display code.
+      // Never guess a core from a number or silently fabricate an ID mapping.
       return executionError(
-        'ENTITY_NOT_FOUND',
-        `${check.label} ${identifier} was not found. It may be hallucinated; ask the user to confirm the identifier or location.`,
+        'INVALID_ARGUMENT',
+        `${argumentName} must be an existing ${check.label} UUID. A core number or label alone does not uniquely identify a fiber core.`,
         { param: argumentName, identifier },
       );
     }
+
+    if (!row) {
+      const hint = check.codeColumn ? 'Use an existing enclosure code or UUID.' : 'Check the fiber-core UUID in the network inventory.';
+      return executionError(
+        'ENTITY_NOT_FOUND',
+        `No ${check.label} matched "${identifier}". ${hint}`,
+        { param: argumentName, identifier },
+      );
+    }
+    resolvedArgs[argumentName] = row.id;
   }
-  return null;
+  return { success: true, args: resolvedArgs };
+}
+
+// Preserve the validation-only helper for callers that do not execute a tool.
+async function validateEntityArguments(args, dbClient) {
+  const resolution = await resolveEntityArguments(args, dbClient);
+  return resolution.success ? null : resolution;
 }
 
 async function executeToolCall(toolCallResult, {
@@ -114,8 +167,18 @@ async function executeToolCall(toolCallResult, {
     );
   }
 
-  const entityError = await validateEntityArguments(route.args, dbClient);
-  if (entityError) return { ...entityError, tool: tool.name };
+  let resolution;
+  try {
+    resolution = await resolveEntityArguments(route.args, dbClient);
+  } catch (error) {
+    // Database failures are not missing entities and must not leak raw SQL,
+    // bindings or connection details into the assistant's user-facing response.
+    console.warn(`[tool-executor] entity lookup failed tool=${tool.name} code=${error.code || 'UNKNOWN'}`);
+    return executionError('ENTITY_LOOKUP_FAILED',
+      'The network inventory could not be checked. Please try again or ask an administrator to check the database.',
+      { tool: tool.name, status_code: 503 });
+  }
+  if (!resolution.success) return { ...resolution, tool: tool.name };
 
   const handler = handlers[tool.name];
   if (typeof handler !== 'function') {
@@ -126,7 +189,7 @@ async function executeToolCall(toolCallResult, {
   }
 
   try {
-    const result = await handler(route.args, context);
+    const result = await handler(resolution.args, context);
     if (result && result.success === false && result.error) {
       return { ...result, tool: tool.name };
     }
@@ -148,6 +211,8 @@ module.exports = {
   DEFAULT_HANDLERS,
   ENTITY_CHECKS,
   entityExists,
+  isUuid,
+  resolveEntityArguments,
   executeToolCall,
   validateEntityArguments,
 };
