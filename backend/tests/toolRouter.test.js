@@ -70,9 +70,9 @@ test('router schema bounds every string field, including tool names and all argu
 
 test('few-shot prompt examples cover all eight tools without copying benchmark test prompts', () => {
   const benchmarkQueries = require('../../ai/benchmark-queries.json').map((item) => item.query);
-  assert.equal(FEW_SHOT_EXAMPLES.length, TOOLS.length + 2);
+  assert.equal(FEW_SHOT_EXAMPLES.length, TOOLS.length + 5);
   for (const tool of TOOLS) {
-    const expectedCount = ['lookupDocs', 'locateCustomer'].includes(tool.name) ? 2 : 1;
+    const expectedCount = { checkServiceability: 2, lookupDocs: 3, locateCustomer: 2, traceCore: 2 }[tool.name] || 1;
     assert.equal(FEW_SHOT_EXAMPLES.filter((example) => example.result.tool === tool.name).length, expectedCount);
   }
   assert.deepEqual(
@@ -126,6 +126,53 @@ test('splitter examples contrast general documentation with live enclosure port 
     `User: ${remediation.query}\nJSON: ${JSON.stringify(remediation.result)}\n` +
     `User: ${docs.query}\nJSON: ${JSON.stringify(docs.result)}`,
   ));
+});
+
+test('serviceability examples omit location fields unless the query supplies coordinates', () => {
+  const examples = FEW_SHOT_EXAMPLES.filter((example) => example.result.tool === 'checkServiceability');
+  assert.equal(examples.length, 2);
+  const noLocation = examples.find((example) => example.query === 'Can enclosure CAB-57 serve this customer?');
+  assert.ok(noLocation);
+  assert.deepEqual(noLocation.result, { tool: 'checkServiceability', args: { enclosure_id: 'CAB-57' } });
+  for (const name of ['lat', 'lng', 'address']) {
+    assert.equal(Object.hasOwn(noLocation.result.args, name), false, `${name} must be absent, not guessed or zero`);
+  }
+  const withLocation = examples.find((example) => Object.hasOwn(example.result.args, 'lat'));
+  assert.ok(withLocation);
+  assert.match(withLocation.query, /latitude 33\.6844 and longitude 73\.0479/);
+  assert.deepEqual(withLocation.result.args, { enclosure_id: 'POP-31', lat: 33.6844, lng: 73.0479 });
+
+  const rules = buildRouterInstruction().split('Tools:')[0];
+  assert.match(rules, /Populate optional location parameters only when explicitly supplied in the user query/);
+  assert.match(rules, /otherwise omit them entirely, never guess or substitute zero/);
+});
+
+test('trace examples contrast general feature documentation with tracing a specific core', () => {
+  const docsIndex = FEW_SHOT_EXAMPLES.findIndex((example) =>
+    example.query === 'How does the fiber tracing feature work in general?');
+  assert.ok(docsIndex >= 0);
+  const docs = FEW_SHOT_EXAMPLES[docsIndex];
+  assert.deepEqual(docs.result, { tool: 'lookupDocs', args: { query: 'how the fiber tracing feature works' } });
+  assert.doesNotMatch(docs.query, /\b[A-Z]+-\d+\b/);
+  const trace = FEW_SHOT_EXAMPLES[docsIndex + 1];
+  assert.equal(trace.query, 'Trace fiber core FBR-62 through the network.');
+  assert.deepEqual(trace.result, { tool: 'traceCore', args: { core_id: 'FBR-62' } });
+
+  const instruction = buildRouterInstruction();
+  assert.ok(instruction.includes(
+    `User: ${docs.query}\nJSON: ${JSON.stringify(docs.result)}\n` +
+    `User: ${trace.query}\nJSON: ${JSON.stringify(trace.result)}`,
+  ));
+  const rules = instruction.split('Tools:')[0];
+  assert.match(rules, /general question about how a feature works, with no specific core\/cable\/enclosure ID, is a lookupDocs request/);
+  assert.match(rules, /even when its wording matches a tool name/);
+  assert.match(rules, /A request to trace a named core uses traceCore/);
+});
+
+test('Python benchmark export matches the current application prompt and schema without inference', () => {
+  const exported = require('../../ai/router-benchmark-config.json');
+  assert.equal(exported.system_prompt, buildRouterInstruction());
+  assert.deepEqual(exported.schema, buildRouterResponseSchema());
 });
 
 test('locateCustomer examples use mutually exclusive address-only and numeric coordinates-only inputs', () => {

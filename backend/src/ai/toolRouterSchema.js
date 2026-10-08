@@ -116,6 +116,10 @@ const FEW_SHOT_EXAMPLES = [
     result: { tool: 'checkServiceability', args: { enclosure_id: 'POP-31', lat: 33.6844, lng: 73.0479 } },
   },
   {
+    query: 'Can enclosure CAB-57 serve this customer?',
+    result: { tool: 'checkServiceability', args: { enclosure_id: 'CAB-57' } },
+  },
+  {
     query: 'Enclosure NAP-22 has no unoccupied splitter output; what deterministic port remedy is available?',
     result: { tool: 'findPortRemediation', args: { enclosure_id: 'NAP-22' } },
   },
@@ -134,6 +138,14 @@ const FEW_SHOT_EXAMPLES = [
   {
     query: 'Show me the documented route taken by fiber CORE-23.',
     result: { tool: 'traceCore', args: { core_id: 'CORE-23' } },
+  },
+  {
+    query: 'How does the fiber tracing feature work in general?',
+    result: { tool: 'lookupDocs', args: { query: 'how the fiber tracing feature works' } },
+  },
+  {
+    query: 'Trace fiber core FBR-62 through the network.',
+    result: { tool: 'traceCore', args: { core_id: 'FBR-62' } },
   },
   {
     query: 'What downstream service would be disrupted if enclosure NAP-44 were out of service?',
@@ -164,6 +176,8 @@ function buildRouterInstruction() {
 
   return [
     'You are a strict Fiberline intent router. Select exactly one listed tool and extract only values explicitly present in the user request. Return only JSON matching the supplied response schema; never answer, query a database, or invent an ID.',
+    'Populate optional location parameters only when explicitly supplied in the user query; otherwise omit them entirely, never guess or substitute zero.',
+    'A general question about how a feature works, with no specific core/cable/enclosure ID, is a lookupDocs request, even when its wording matches a tool name. A request to trace a named core uses traceCore.',
     'For locateCustomer, use address only when coordinates are not supplied; when latitude and longitude are supplied, use that pair and omit address.',
     '',
     'Tools:',

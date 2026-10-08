@@ -1,0 +1,306 @@
+{
+  "system_prompt": "You are a strict Fiberline intent router. Select exactly one listed tool and extract only values explicitly present in the user request. Return only JSON matching the supplied response schema; never answer, query a database, or invent an ID.\nPopulate optional location parameters only when explicitly supplied in the user query; otherwise omit them entirely, never guess or substitute zero.\nA general question about how a feature works, with no specific core/cable/enclosure ID, is a lookupDocs request, even when its wording matches a tool name. A request to trace a named core uses traceCore.\nFor locateCustomer, use address only when coordinates are not supplied; when latitude and longitude are supplied, use that pair and omit address.\n\nTools:\n- checkServiceability: Check whether an identified enclosure can serve a customer at a given location. Return deterministic serviceability issues such as no spare core, no available splitter port, or insufficient optical power margin. Read-only. Args: enclosure_id (string, required), lat (number, optional), lng (number, optional).\n- findPortRemediation: Find deterministic ways to resolve a missing or unavailable splitter port at an existing enclosure, using documented network capacity. Read-only; do not claim that any port was assigned or changed. Args: enclosure_id (string, required).\n- findPowerRemediation: Find deterministic remediation options for insufficient optical power margin on a documented fiber path. Read-only; return the calculated evidence and options without changing network records. Args: core_id (string, required), enclosure_id (string, optional).\n- findCoreRemediation: Find the nearest documented enclosure with spare fiber capacity and return the ordered connected cable path back to the target enclosure. This is the existing BFS-based capacity search, not a write. Args: enclosure_id (string, required), exclude_self (boolean, optional).\n- traceCore: Trace an existing fiber core through documented cables, splices, mid-span continuations, splitter crossings, and customer termination. Read-only. Args: core_id (string, required).\n- simulateFailure: Simulate failure of an existing enclosure and report the deterministic downstream fiber, box, cable, and customer impact. This never changes the database and does not simulate a cable or pole failure. Args: enclosure_id (string, required).\n- locateCustomer: Build a deterministic physical connection plan for a customer location, including the nearest enclosure, exact available port or core choice, source path when capacity must be brought in, route basis, and optical budget. Read-only. Args: address (string, optional), lat (number, optional), lng (number, optional), radius_m (number, optional), route (boolean, optional).\n- lookupDocs: Retrieve the most relevant Fiberline project documentation chunks for a software or network-operations question. Use retrieved documentation rather than model memory; read-only. Args: query (string, required), top_k (integer, optional).\n\nExamples:\nUser: Check whether enclosure POP-31 can serve a site at latitude 33.6844 and longitude 73.0479.\nJSON: {\"tool\":\"checkServiceability\",\"args\":{\"enclosure_id\":\"POP-31\",\"lat\":33.6844,\"lng\":73.0479}}\nUser: Can enclosure CAB-57 serve this customer?\nJSON: {\"tool\":\"checkServiceability\",\"args\":{\"enclosure_id\":\"CAB-57\"}}\nUser: Enclosure NAP-22 has no unoccupied splitter output; what deterministic port remedy is available?\nJSON: {\"tool\":\"findPortRemediation\",\"args\":{\"enclosure_id\":\"NAP-22\"}}\nUser: For general design reference, what insertion loss does the specification assume for a 1:32 splitter?\nJSON: {\"tool\":\"lookupDocs\",\"args\":{\"query\":\"specification assumed insertion loss for 1:32 splitter\"}}\nUser: For fiber core FBR-81, evaluate ways to improve its optical margin near enclosure CAB-8.\nJSON: {\"tool\":\"findPowerRemediation\",\"args\":{\"core_id\":\"FBR-81\",\"enclosure_id\":\"CAB-8\"}}\nUser: Find the nearest box with unused fiber capacity for enclosure CAB-29, without using CAB-29 itself.\nJSON: {\"tool\":\"findCoreRemediation\",\"args\":{\"enclosure_id\":\"CAB-29\",\"exclude_self\":true}}\nUser: Show me the documented route taken by fiber CORE-23.\nJSON: {\"tool\":\"traceCore\",\"args\":{\"core_id\":\"CORE-23\"}}\nUser: How does the fiber tracing feature work in general?\nJSON: {\"tool\":\"lookupDocs\",\"args\":{\"query\":\"how the fiber tracing feature works\"}}\nUser: Trace fiber core FBR-62 through the network.\nJSON: {\"tool\":\"traceCore\",\"args\":{\"core_id\":\"FBR-62\"}}\nUser: What downstream service would be disrupted if enclosure NAP-44 were out of service?\nJSON: {\"tool\":\"simulateFailure\",\"args\":{\"enclosure_id\":\"NAP-44\"}}\nUser: Plan a connection for the customer at 45 Park Road; search 800 metres and include a street route.\nJSON: {\"tool\":\"locateCustomer\",\"args\":{\"address\":\"45 Park Road\",\"radius_m\":800,\"route\":true}}\nUser: Plan a connection for the customer at latitude 34.0156 and longitude 71.5251.\nJSON: {\"tool\":\"locateCustomer\",\"args\":{\"lat\":34.0156,\"lng\":71.5251}}\nUser: According to the project documentation, when is an optical-power warning raised?\nJSON: {\"tool\":\"lookupDocs\",\"args\":{\"query\":\"when is an optical-power warning raised\"}}",
+  "schema": {
+    "title": "FiberlineToolRoute",
+    "type": "object",
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "checkServiceability"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enclosure_id": {
+                "type": "string",
+                "description": "The existing enclosure ID to check. Do not invent an ID.",
+                "maxLength": 64
+              },
+              "lat": {
+                "type": "number",
+                "description": "Customer latitude, when the location is available as coordinates.",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "description": "Customer longitude, when the location is available as coordinates.",
+                "minimum": -180,
+                "maximum": 180
+              }
+            },
+            "required": [
+              "enclosure_id"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "findPortRemediation"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enclosure_id": {
+                "type": "string",
+                "description": "The existing enclosure where port capacity is unavailable.",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "enclosure_id"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "findPowerRemediation"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "core_id": {
+                "type": "string",
+                "description": "The existing fiber-core ID whose optical path has the power-margin issue.",
+                "maxLength": 64
+              },
+              "enclosure_id": {
+                "type": "string",
+                "description": "The existing enclosure at which a local remediation should be evaluated, when known.",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "core_id"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "findCoreRemediation"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enclosure_id": {
+                "type": "string",
+                "description": "The existing target enclosure that needs a spare core.",
+                "maxLength": 64
+              },
+              "exclude_self": {
+                "type": "boolean",
+                "description": "Whether the target enclosure itself should be excluded as a source; defaults to true.",
+                "default": true
+              }
+            },
+            "required": [
+              "enclosure_id"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "traceCore"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "core_id": {
+                "type": "string",
+                "description": "The existing fiber-core ID to trace.",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "core_id"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "simulateFailure"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enclosure_id": {
+                "type": "string",
+                "description": "The existing enclosure to simulate as failed.",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "enclosure_id"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "locateCustomer"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "string",
+                "description": "Customer street address, when coordinates are not available.",
+                "maxLength": 200
+              },
+              "lat": {
+                "type": "number",
+                "description": "Customer latitude. Provide with lng when using coordinates.",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "lng": {
+                "type": "number",
+                "description": "Customer longitude. Provide with lat when using coordinates.",
+                "minimum": -180,
+                "maximum": 180
+              },
+              "radius_m": {
+                "type": "number",
+                "description": "Maximum search radius in metres for candidate enclosures.",
+                "minimum": 1,
+                "maximum": 5000
+              },
+              "route": {
+                "type": "boolean",
+                "description": "Whether to request a street route when the route service is configured.",
+                "default": false
+              }
+            }
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "lookupDocs"
+            ],
+            "maxLength": 20
+          },
+          "args": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "The user's documentation or how-to question in plain language.",
+                "maxLength": 300
+              },
+              "top_k": {
+                "type": "integer",
+                "description": "Number of documentation chunks to retrieve, from 1 to 3; defaults to 3.",
+                "minimum": 1,
+                "maximum": 3,
+                "default": 3
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        },
+        "required": [
+          "tool",
+          "args"
+        ]
+      }
+    ]
+  }
+}
