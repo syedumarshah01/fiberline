@@ -41,6 +41,20 @@ By default the harness discovers the three candidates in `models/gguf/`, checks 
 
 `benchmark-results.md` now records the 2026-10-06 exploratory Ollama run. It is not the requested final GGUF comparison: Llama ran as Q8_0 instead of Q4_K_M, and the report lacks local filenames and file sizes. Do not select a default from it. The local-GGUF harness in the current worktree is the intended route for the fair comparison; make sure that updated script is in the checkout you run.
 
+### First-call latency investigation (2026-10-08; code inspection only)
+
+The reported Qwen-1.5B first query (~19.5 s versus 2–4 s later) and Llama-1B first query (~12 s versus 2–3 s later) were not reproduced here: no benchmark or model inference was run. There is no `run_benchmark.py` in this checkout. The relevant runner is `../backend/scripts/benchmarkToolRouter.js`:
+
+- `withModelServer` spawns a local `llama-server`, waits for a successful `/health` response, then invokes the callback. Its `serverLoadMs` measures startup-to-health readiness (starting just after spawn), not a pure weight-loading profiler measurement. This interval is outside the scored request latency.
+- `smokeCandidates` loads each candidate, performs one short inference, and stops that server in `withModelServer`'s `finally` block. `benchmarkCandidates` starts a **fresh server** for each candidate; the earlier smoke inference does not warm that process.
+- `runModel` sends all cases and repetitions sequentially to that same server. It does not restart or reload the model between queries. `inferToolCall` measures request/response and validation latency after health readiness; the first scored request can still pay first-use costs such as cold prompt evaluation, cache population, lazy allocation or paging. The code does not establish which of these caused the reported spike. The report summarizes scored latencies rather than retaining a per-query timing series.
+
+The separate `../backend/scripts/benchmark-local-model.js` likewise measures spawn-to-health as `llamaServerLoadMs`, then times a single completion as `firstCompletionMs` and terminates the server. It cannot demonstrate later-call latency because it sends only one completion.
+
+The reported pattern and router-runner lifecycle are consistent with a **one-time first-inference cost per loaded model/server process**, not a recurring per-query model load. That cost can recur after a restart, model reload/eviction, or loss of warm cache state; code inspection alone cannot prove it never recurs on a long-lived process. Repeated spikes within an unchanged, resident process would need separate investigation rather than being dismissed as startup overhead.
+
+For the shipping integration, after an explicitly configured model is loaded and healthy, recommend one harmless, bounded startup inference using the normal router prompt/schema (for example, a general documentation question). Call only the inference layer, discard the entire output, and **never dispatch a tool**, query the network database, or send it through the execute-and-format endpoint. Keep the model/server resident and distinguish load, warm-up, and user-request timings. This is a recommendation, not an implemented warm-up or a model selection; the benchmark harness remains unchanged.
+
 ## Grounded documentation retrieval
 
 `lookupDocs` shares the same `{ tool, args }` execution boundary and RAG runtime as the network tools. The authoritative Phase 5 corpus lives together in `docs/specs/`: `serviceability-remediation-rules.md`, `failure-simulation-algorithm.md`, and `capacity-remediation-feature-spec.md`. These are the only index sources; the repository-derived `backend/knowledge/fiberline-reference.md` is not substituted. Build by Markdown section at roughly 200–400 tokens with `Xenova/all-MiniLM-L6-v2`, then retrieve the top 2–3 chunks. The local SQLite index is built before runtime (`cd backend && npm run docs:index`); it is not silently rebuilt on API startup. The corpus covers system rules/logic, not click-by-click UI help. UI how-to coverage remains a separate, open, non-blocking gap.

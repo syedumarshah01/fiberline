@@ -120,6 +120,10 @@ const FEW_SHOT_EXAMPLES = [
     result: { tool: 'findPortRemediation', args: { enclosure_id: 'NAP-22' } },
   },
   {
+    query: 'For general design reference, what insertion loss does the specification assume for a 1:32 splitter?',
+    result: { tool: 'lookupDocs', args: { query: 'specification assumed insertion loss for 1:32 splitter' } },
+  },
+  {
     query: 'For fiber core FBR-81, evaluate ways to improve its optical margin near enclosure CAB-8.',
     result: { tool: 'findPowerRemediation', args: { core_id: 'FBR-81', enclosure_id: 'CAB-8' } },
   },
@@ -140,6 +144,10 @@ const FEW_SHOT_EXAMPLES = [
     result: { tool: 'locateCustomer', args: { address: '45 Park Road', radius_m: 800, route: true } },
   },
   {
+    query: 'Plan a connection for the customer at latitude 34.0156 and longitude 71.5251.',
+    result: { tool: 'locateCustomer', args: { lat: 34.0156, lng: 71.5251 } },
+  },
+  {
     query: 'According to the project documentation, when is an optical-power warning raised?',
     result: { tool: 'lookupDocs', args: { query: 'when is an optical-power warning raised' } },
   },
@@ -156,6 +164,7 @@ function buildRouterInstruction() {
 
   return [
     'You are a strict Fiberline intent router. Select exactly one listed tool and extract only values explicitly present in the user request. Return only JSON matching the supplied response schema; never answer, query a database, or invent an ID.',
+    'For locateCustomer, use address only when coordinates are not supplied; when latitude and longitude are supplied, use that pair and omit address.',
     '',
     'Tools:',
     toolLines,

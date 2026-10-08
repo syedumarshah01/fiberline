@@ -70,15 +70,96 @@ test('router schema bounds every string field, including tool names and all argu
 
 test('few-shot prompt examples cover all eight tools without copying benchmark test prompts', () => {
   const benchmarkQueries = require('../../ai/benchmark-queries.json').map((item) => item.query);
-  assert.equal(FEW_SHOT_EXAMPLES.length, TOOLS.length);
+  assert.equal(FEW_SHOT_EXAMPLES.length, TOOLS.length + 2);
+  for (const tool of TOOLS) {
+    const expectedCount = ['lookupDocs', 'locateCustomer'].includes(tool.name) ? 2 : 1;
+    assert.equal(FEW_SHOT_EXAMPLES.filter((example) => example.result.tool === tool.name).length, expectedCount);
+  }
   assert.deepEqual(
     [...new Set(FEW_SHOT_EXAMPLES.map((example) => example.result.tool))].sort(),
     TOOLS.map((tool) => tool.name).sort(),
   );
   for (const example of FEW_SHOT_EXAMPLES) {
     assert.ok(!benchmarkQueries.includes(example.query), `few-shot query duplicates a benchmark case: ${example.query}`);
+    assert.deepEqual(Object.keys(example.result).sort(), ['args', 'tool']);
+    assert.deepEqual(validateToolCall(example.result), example.result);
+    const branch = buildRouterResponseSchema().oneOf.find((entry) =>
+      entry.properties.tool.enum[0] === example.result.tool);
+    assert.deepEqual(branch.required, ['tool', 'args']);
+    assert.equal(branch.additionalProperties, false);
+    const argsSchema = branch.properties.args;
+    assert.equal(argsSchema.additionalProperties, false);
+    for (const required of argsSchema.required || []) {
+      assert.ok(Object.hasOwn(example.result.args, required), `${example.result.tool} requires ${required}`);
+    }
+    for (const [name, value] of Object.entries(example.result.args)) {
+      const parameter = argsSchema.properties[name];
+      assert.ok(parameter, `${example.result.tool}.${name} must be a schema property`);
+      assert.equal(typeof value, parameter.type);
+      if (parameter.maxLength !== undefined) assert.ok(value.length <= parameter.maxLength);
+      if (parameter.minimum !== undefined) assert.ok(value >= parameter.minimum);
+      if (parameter.maximum !== undefined) assert.ok(value <= parameter.maximum);
+    }
+  }
+});
+
+test('splitter examples contrast general documentation with live enclosure port remediation', () => {
+  const docsIndex = FEW_SHOT_EXAMPLES.findIndex((example) =>
+    example.result.tool === 'lookupDocs' && example.query.includes('1:32 splitter'));
+  assert.ok(docsIndex >= 0);
+  const docs = FEW_SHOT_EXAMPLES[docsIndex];
+  assert.match(docs.query, /general design reference.*insertion loss.*specification assume/);
+  assert.deepEqual(docs.result, {
+    tool: 'lookupDocs',
+    args: { query: 'specification assumed insertion loss for 1:32 splitter' },
+  });
+  const remediation = FEW_SHOT_EXAMPLES[docsIndex - 1];
+  assert.match(remediation.query, /NAP-22.*no unoccupied splitter output.*deterministic port remedy/);
+  assert.deepEqual(remediation.result, { tool: 'findPortRemediation', args: { enclosure_id: 'NAP-22' } });
+  assert.ok(FEW_SHOT_EXAMPLES.some((example) =>
+    example.query === 'According to the project documentation, when is an optical-power warning raised?' &&
+    example.result.tool === 'lookupDocs' &&
+    example.result.args.query === 'when is an optical-power warning raised'));
+
+  const instruction = buildRouterInstruction();
+  assert.ok(instruction.includes(
+    `User: ${remediation.query}\nJSON: ${JSON.stringify(remediation.result)}\n` +
+    `User: ${docs.query}\nJSON: ${JSON.stringify(docs.result)}`,
+  ));
+});
+
+test('locateCustomer examples use mutually exclusive address-only and numeric coordinates-only inputs', () => {
+  const examples = FEW_SHOT_EXAMPLES.filter((example) => example.result.tool === 'locateCustomer');
+  assert.equal(examples.length, 2);
+  const addressExample = examples.find((example) => Object.hasOwn(example.result.args, 'address'));
+  const coordinatesExample = examples.find((example) => Object.hasOwn(example.result.args, 'lat'));
+  assert.ok(addressExample);
+  assert.ok(coordinatesExample);
+  assert.match(addressExample.query, /45 Park Road/);
+  assert.doesNotMatch(addressExample.query, /latitude|longitude|34\.0156|71\.5251/);
+  assert.deepEqual(addressExample.result.args, { address: '45 Park Road', radius_m: 800, route: true });
+  assert.match(coordinatesExample.query, /latitude 34\.0156 and longitude 71\.5251/);
+  assert.doesNotMatch(coordinatesExample.query, /address|Park Road/);
+  assert.deepEqual(coordinatesExample.result.args, { lat: 34.0156, lng: 71.5251 });
+  for (const example of examples) {
+    const { args } = example.result;
+    const hasAddress = Object.hasOwn(args, 'address');
+    const hasLat = Object.hasOwn(args, 'lat');
+    const hasLng = Object.hasOwn(args, 'lng');
+    assert.equal(hasLat, hasLng, 'coordinates must be a complete pair');
+    assert.notEqual(hasAddress, hasLat, 'use exactly one location alternative');
     assert.deepEqual(validateToolCall(example.result), example.result);
   }
+});
+
+test('system instruction prioritizes supplied coordinates and renders every example as exact JSON', () => {
+  const instruction = buildRouterInstruction();
+  const systemRules = instruction.split('Tools:')[0];
+  assert.match(systemRules, /For locateCustomer, use address only when coordinates are not supplied;/);
+  assert.match(systemRules, /when latitude and longitude are supplied, use that pair and omit address/);
+  const renderedExamples = instruction.split('\n').filter((line) => line.startsWith('JSON: '))
+    .map((line) => JSON.parse(line.slice('JSON: '.length)));
+  assert.deepEqual(renderedExamples, FEW_SHOT_EXAMPLES.map((example) => example.result));
 });
 
 test('router prompt contains the complete short contract, examples, and actual query', () => {
