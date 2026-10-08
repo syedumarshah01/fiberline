@@ -43,6 +43,7 @@ class OpenAICompatibleProvider {
     tools,
     toolChoice,
     responseFormat,
+    cachePrompt,
     maxTokens = 128,
     temperature = 0.2,
   } = {}) {
@@ -59,6 +60,8 @@ class OpenAICompatibleProvider {
     if (Array.isArray(tools) && tools.length) body.tools = tools;
     if (toolChoice !== undefined) body.tool_choice = toolChoice;
     if (responseFormat !== undefined) body.response_format = responseFormat;
+    // llama.cpp extension; cloud requests and generic callers omit it.
+    if (cachePrompt !== undefined) body.cache_prompt = Boolean(cachePrompt);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);

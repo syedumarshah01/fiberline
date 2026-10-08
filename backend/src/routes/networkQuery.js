@@ -1,5 +1,6 @@
 const express = require('express');
 const { randomUUID } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const { routeToolCall } = require('../services/toolRouter');
 const { executeToolCall } = require('../services/toolExecutor');
 const { formatResponse } = require('../services/responseFormatter');
@@ -114,7 +115,9 @@ function createQueryHandler({
 
     console.info(`[network-query:${requestId}] accepted prompt length=${query.length}`);
     try {
+      const routingStarted = performance.now();
       const toolCall = await route(query, { requestId });
+      console.info(`[network-query:${requestId}] router_latency_ms=${Math.round(performance.now() - routingStarted)}`);
       const execution = await execute(toolCall, { context });
       if (!execution || execution.success !== true) {
         const errorCode = execution?.error || 'TOOL_EXECUTION_FAILED';

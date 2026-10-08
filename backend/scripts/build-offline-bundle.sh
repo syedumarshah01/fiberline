@@ -79,6 +79,9 @@ cp "$LLAMA_SERVER_BIN" "$BUNDLE_DIR/bin/llama-server"
 chmod +x "$BUNDLE_DIR/bin/llama-server"
 cp "$BACKEND_ROOT/scripts/start-offline.sh" "$BUNDLE_DIR/start-offline.sh"
 chmod +x "$BUNDLE_DIR/start-offline.sh"
+# Keep the inference-only startup diagnostic available in the installed app.
+mkdir -p "$BUNDLE_DIR/app/scripts"
+cp "$BACKEND_ROOT/scripts/check-router-startup.js" "$BUNDLE_DIR/app/scripts/"
 mkdir -p "$BUNDLE_DIR/docs-source/specs"
 cp "$REPO_ROOT/docs/specs/serviceability-remediation-rules.md" \
   "$REPO_ROOT/docs/specs/failure-simulation-algorithm.md" \
@@ -138,6 +141,6 @@ Offline package assembled:
   Archive:          $ARCHIVE_PATH
 
 Run on the target machine with: ./start-offline.sh
-Measure first-load startup on the lowest-spec supported target using:
-  LLAMA_SERVER_BIN=... LLAMA_MODEL_PATH=... npm run benchmark:local-llm
+After starting a fresh model server, measure application warm-up and the first inference using:
+  cd "$BUNDLE_DIR/app" && npm run check:router-startup
 SUMMARY

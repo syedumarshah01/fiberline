@@ -215,6 +215,9 @@ async function inferCompatibleToolCall(query, {
       }
     : {
         messages,
+        // Reuse the system-prefix KV cache populated by startup warm-up.
+        // Set TOOL_ROUTER_CACHE_PROMPT=0 for local APIs without this extension.
+        ...(env.TOOL_ROUTER_CACHE_PROMPT === '0' ? {} : { cachePrompt: true }),
         // llama.cpp's OpenAI-compatible server accepts JSON Schema constrained
         // output. The same union and post-validation are used as with Ollama.
         responseFormat: {

@@ -22,6 +22,7 @@ const authRouter = require('./routes/auth');
 const networkQueryRouter = require('./routes/networkQuery');
 const { attachUser, requireAuth, requireCsrf } = require('./services/auth');
 const { bootstrapSchemaNow } = require('./utils/schemaBootstrap');
+const { listenAfterRouterWarmup } = require('./services/routerWarmup');
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || true, credentials: true }));
@@ -77,13 +78,19 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, async () => {
-  console.log(`Fiber network API listening on port ${PORT}`);
-  // Before reporting what the database is missing, try to make it not missing:
-  // apply the migrations this build has that the database does not (see
-  // utils/schemaBootstrap.js). Then report whatever is genuinely left.
-  await bootstrapSchemaNow();
-  await reportSchema();
+// No HTTP listener exists while the selected local router is cold. The bundle
+// launcher starts/health-checks llama-server first; standalone npm start expects
+// the configured model service to be running. A failed warm-up fails startup.
+listenAfterRouterWarmup({
+  listen: () => app.listen(PORT, '0.0.0.0', async () => {
+    console.log(`Fiber network API listening on port ${PORT}`);
+    // Before reporting what the database is missing, apply pending migrations.
+    await bootstrapSchemaNow();
+    await reportSchema();
+  }),
+}).catch((error) => {
+  console.error(`[router-startup] ${error.code || 'STARTUP_FAILED'}: ${error.message}`);
+  process.exitCode = 1;
 });
 
 /**

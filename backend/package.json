@@ -14,6 +14,7 @@
     "seed": "knex seed:run",
     "docs:index": "node scripts/build-doc-index.js",
     "schema:approval": "node scripts/check-schema-review.js",
+    "check:router-startup": "node scripts/check-router-startup.js",
     "llama:build": "node scripts/build-llama-cpp.js",
     "bundle:offline": "bash scripts/build-offline-bundle.sh",
     "benchmark:local-llm": "node scripts/benchmark-local-model.js",

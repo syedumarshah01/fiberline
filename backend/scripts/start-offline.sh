@@ -28,6 +28,7 @@ mkdir -p "$LOG_DIR"
   --port "$PORT" \
   --threads "${LLAMA_THREADS:-2}" \
   --ctx-size "${LLAMA_CTX_SIZE:-4096}" \
+  --parallel 1 \
   --n-gpu-layers 0 \
   >"$LOG_DIR/llama-server.log" 2>&1 &
 LLAMA_PID=$!

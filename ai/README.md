@@ -1,6 +1,6 @@
 # Constrained Fiberline tool router
 
-**Current selection:** Qwen2.5-1.5B-Instruct Q4_K_M is the default after the user-reported final comparison (23/24 exact match). See [selection and Phase 6 status](model-selection-and-phase6.md). Cold-start confirmation and packaging acceptance remain blocked by missing assets/hardware; older benchmark/dated status sections below are historical.
+**Current selection:** Qwen2.5-1.5B-Instruct Q4_K_M is the default after the user-reported final comparison (23/24 exact match). See [selection and Phase 6 status](model-selection-and-phase6.md). The user confirmed the cold/warm latency drop; startup warm-up is implemented, while shipping-path timing and packaging acceptance remain unmeasured here; older benchmark/dated status sections below are historical.
 
 The network-query endpoint routes each natural-language prompt to exactly one catalog operation. It never treats model prose as an answer: the router returns `{ "tool", "args" }`, the deterministic backend handler runs, and the user-facing response is formatted from its result. `lookupDocs` is the exception to network-data formatting: it returns an answer grounded in retrieved project-documentation chunks plus source metadata.
 
@@ -43,7 +43,7 @@ By default the harness discovers the three candidates in `models/gguf/`, checks 
 
 `benchmark-results.md` now records the 2026-10-06 exploratory Ollama run. It is not the requested final GGUF comparison: Llama ran as Q8_0 instead of Q4_K_M, and the report lacks local filenames and file sizes. Do not select a default from it. The local-GGUF harness in the current worktree is the intended route for the fair comparison; make sure that updated script is in the checkout you run.
 
-### First-call latency investigation (2026-10-08; code inspection only)
+### First-call latency investigation (historical: 2026-10-08; code inspection only)
 
 The reported Qwen-1.5B first query (~19.5 s versus 2–4 s later) and Llama-1B first query (~12 s versus 2–3 s later) were not reproduced here: no benchmark or model inference was run. There is no `run_benchmark.py` in this checkout. The relevant runner is `../backend/scripts/benchmarkToolRouter.js`:
 
