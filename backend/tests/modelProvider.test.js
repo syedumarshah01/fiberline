@@ -1,5 +1,6 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
+const { SELECTED_LOCAL_MODEL } = require('../src/ai/localModelConfig');
 const {
   OpenAICompatibleProvider,
   ModelProviderError,
@@ -75,11 +76,10 @@ describe('OpenAICompatibleProvider', () => {
     });
   });
 
-  test('requires an explicitly selected local model and validates cloud credentials', () => {
-    assert.throws(
-      () => createModelProviderFromEnv({ AI_PROVIDER: 'local' }, { fetchImpl: async () => {} }),
-      /requires a model selected after reviewing the Phase 2 benchmark/,
-    );
+  test('defaults to selected Qwen, permits local overrides, and validates cloud credentials', () => {
+    const defaults = createModelProviderFromEnv({ AI_PROVIDER: 'local' }, { fetchImpl: async () => {} });
+    assert.equal(defaults.model, SELECTED_LOCAL_MODEL);
+    assert.equal(defaults.baseUrl, 'http://127.0.0.1:8080/v1');
     const local = createModelProviderFromEnv({ AI_PROVIDER: 'local', LOCAL_LLM_MODEL: 'reviewed-local-model' }, { fetchImpl: async () => {} });
     assert.equal(local.model, 'reviewed-local-model');
     assert.equal(local.baseUrl, 'http://127.0.0.1:8080/v1');

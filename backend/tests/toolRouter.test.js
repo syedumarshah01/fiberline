@@ -12,6 +12,7 @@ const {
   buildRouterResponseSchema,
   validateToolCall,
 } = require('../src/ai/toolRouterSchema');
+const { SELECTED_LOCAL_MODEL } = require('../src/ai/localModelConfig');
 const {
   config,
   inferToolCall,
@@ -382,27 +383,43 @@ test('router reports a clear local-service error when Ollama is unavailable', as
   );
 });
 
-test('router has no model default and uses the Phase 6 core-count ceiling', () => {
+test('router defaults to selected Qwen GGUF and uses the Phase 6 core-count ceiling', () => {
   assert.deepEqual(config({}), {
-    model: '',
-    url: 'http://127.0.0.1:11434/api/chat',
+    model: SELECTED_LOCAL_MODEL,
+    url: 'http://127.0.0.1:8080/api/chat',
     timeoutMs: 180000,
     numThreads: 4,
   });
 });
 
-test('router refuses inference until an explicitly reviewed model is configured', async () => {
+test('native Ollama still requires an explicit installed-model tag', async () => {
   let requested = false;
   await assert.rejects(
     () => inferToolCall('Trace core core-123.', {
-      env: {},
+      env: { TOOL_ROUTER_TRANSPORT: 'ollama' },
       requestId: 'no-model',
       fetchImpl: async () => {
         requested = true;
         return response({ message: { content: '{}' } });
       },
     }),
-    (error) => error.code === 'TOOL_ROUTER_MODEL_NOT_CONFIGURED' && /Phase 2 benchmark/.test(error.message),
+    (error) => error.code === 'TOOL_ROUTER_MODEL_NOT_CONFIGURED' && /installed Ollama model tag/.test(error.message),
   );
   assert.equal(requested, false, 'no provider request is sent with an implicit model');
+});
+
+
+test('unconfigured local router sends the selected model to llama.cpp, not Ollama', async () => {
+  let request;
+  const route = await routeToolCall('Trace core core-123.', {
+    env: {},
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return response({ choices: [{ message: { content: '{"tool":"traceCore","args":{"core_id":"core-123"}}' } }] });
+    },
+  });
+  assert.deepEqual(route, { tool: 'traceCore', args: { core_id: 'core-123' } });
+  assert.equal(request.url, 'http://127.0.0.1:8080/v1/chat/completions');
+  assert.equal(request.body.model, SELECTED_LOCAL_MODEL);
+  assert.deepEqual(request.body.response_format.json_schema.schema, buildRouterResponseSchema());
 });

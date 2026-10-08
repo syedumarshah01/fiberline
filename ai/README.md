@@ -1,5 +1,7 @@
 # Constrained Fiberline tool router
 
+**Current selection:** Qwen2.5-1.5B-Instruct Q4_K_M is the default after the user-reported final comparison (23/24 exact match). See [selection and Phase 6 status](model-selection-and-phase6.md). Cold-start confirmation and packaging acceptance remain blocked by missing assets/hardware; older benchmark/dated status sections below are historical.
+
 The network-query endpoint routes each natural-language prompt to exactly one catalog operation. It never treats model prose as an answer: the router returns `{ "tool", "args" }`, the deterministic backend handler runs, and the user-facing response is formatted from its result. `lookupDocs` is the exception to network-data formatting: it returns an answer grounded in retrieved project-documentation chunks plus source metadata.
 
 ## Catalog and inference
@@ -13,7 +15,7 @@ The network-query endpoint routes each natural-language prompt to exactly one ca
 - `../backend/src/routes/networkQuery.js` is the active `/api/network/query` integration. It routes, executes, formats, and returns `answer_text` plus the structured tool result expected by the console. The UI displays trace, outage, source-path, connection-plan, and documentation-citation details.
 - `../backend/src/services/toolExecutor.js` validates calls and referenced entity IDs, then dispatches only to a deterministic in-process allowlist. The model does not provide SQL, module paths, or executable code.
 
-For Ollama, `LLM_BASE_URL=http://127.0.0.1:11434/v1`, `LLM_TIMEOUT_MS`, and `OLLAMA_NUM_THREADS` configure transport and execution. A model must be set explicitly with `LLM_MODEL` only after Phase 2 benchmark results have been reviewed; there is no runtime model default. Set `TOOL_ROUTER_TRANSPORT=ollama` or `openai` to override transport detection for a local endpoint. For a local OpenAI-compatible server, use `AI_PROVIDER=local`, `LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1`, and an explicitly reviewed `LOCAL_LLM_MODEL`. For a cloud-compatible endpoint, set `AI_PROVIDER=cloud`, `CLOUD_LLM_BASE_URL`, `CLOUD_LLM_API_KEY`, and `CLOUD_LLM_MODEL`. The tool catalog and `{ tool, args }` execution boundary do not change when switching providers. The caller does not silently switch to a different provider if inference fails.
+For Ollama, `LLM_BASE_URL=http://127.0.0.1:11434/v1`, `LLM_TIMEOUT_MS`, and `OLLAMA_NUM_THREADS` configure transport and execution. Native Ollama requires an explicit installed tag in `LLM_MODEL`; the selected GGUF default applies to llama.cpp, not Ollama tag names. Set `TOOL_ROUTER_TRANSPORT=ollama` or `openai` to override transport detection for a local endpoint. For a local OpenAI-compatible server, use `AI_PROVIDER=local`, `LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1`, and optionally override `LOCAL_LLM_MODEL`; it defaults to the selected Qwen GGUF filename alias. For a cloud-compatible endpoint, set `AI_PROVIDER=cloud`, `CLOUD_LLM_BASE_URL`, `CLOUD_LLM_API_KEY`, and `CLOUD_LLM_MODEL`. The tool catalog and `{ tool, args }` execution boundary do not change when switching providers. The caller does not silently switch to a different provider if inference fails.
 
 ## Execution status
 
@@ -61,7 +63,7 @@ For the shipping integration, after an explicitly configured model is loaded and
 
 ## Offline packaging
 
-The offline bundle scripts can package a Phase-2-selected GGUF, llama.cpp server, embedding cache, and prebuilt docs index. No GGUF has been selected and no matching-device measurements are available. Phase 6 targets an Intel Core i5 7th generation or newer, 2–4 physical cores, no discrete GPU, and 8GB RAM. The combined resident-memory budget must include the main model (about 2–3GB), all-MiniLM-L6-v2 embeddings (about 80MB), and the vector store. Report resident memory, cold-start model load time, and first-inference latency on matching hardware or an explicitly identified 2–4-core/8GB proxy. None of these results is currently measured; do not claim device acceptance or release readiness.
+The offline bundle scripts can package a Phase-2-selected GGUF, llama.cpp server, embedding cache, and prebuilt docs index. Qwen2.5-1.5B-Instruct Q4_K_M has now been selected; matching-device measurements and a built package are still unavailable. Phase 6 targets an Intel Core i5 7th generation or newer, 2–4 physical cores, no discrete GPU, and 8GB RAM. The combined resident-memory budget must include the main model (about 2–3GB), all-MiniLM-L6-v2 embeddings (about 80MB), and the vector store. Report resident memory, cold-start model load time, and first-inference latency on matching hardware or an explicitly identified 2–4-core/8GB proxy. None of these results is currently measured; do not claim device acceptance or release readiness.
 
 ## Release-gate status (2026-10-05)
 

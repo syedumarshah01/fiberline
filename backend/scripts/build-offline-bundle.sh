@@ -14,7 +14,8 @@ ASSET_ROOT="${FIBERLINE_ASSET_DIR:-$BACKEND_ROOT/.runtime-assets}"
 TRANSFORMERS_CACHE_DIR="${TRANSFORMERS_CACHE:-$ASSET_ROOT/transformers-cache}"
 DOC_INDEX_PATH="$BACKEND_ROOT/data/docs.sqlite"
 EMBEDDING_MODEL_ID="${DOC_EMBEDDING_MODEL_ID:-Xenova/all-MiniLM-L6-v2}"
-GGUF_SOURCE="${LLAMA_MODEL_PATH:-${FIBERLINE_GGUF_PATH:-}}"
+# The source checkout defaults to the user-selected Qwen GGUF; explicit paths win.
+GGUF_SOURCE="$(node -e 'console.log(require(process.argv[1]).localModelPath())' "$BACKEND_ROOT/src/ai/localModelConfig.js")"
 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-$ASSET_ROOT/llama.cpp-src/build/bin/llama-server}"
 BUNDLE_DIR="${FIBERLINE_BUNDLE_DIR:-$BACKEND_ROOT/dist/fiberline-offline}"
 ARCHIVE_PATH="${FIBERLINE_BUNDLE_ARCHIVE:-$BACKEND_ROOT/dist/fiberline-offline.tar.gz}"
@@ -26,7 +27,7 @@ if [[ -z "$GGUF_SOURCE" || ! -f "$GGUF_SOURCE" ]]; then
     echo "Downloading selected GGUF model to $GGUF_SOURCE"
     curl --fail --location --retry 3 --output "$GGUF_SOURCE" "$GGUF_MODEL_URL"
   else
-    echo "Set LLAMA_MODEL_PATH (or FIBERLINE_GGUF_PATH/GGUF_MODEL_URL) to the Phase 2-selected GGUF model." >&2
+    echo "Selected GGUF not found at $GGUF_SOURCE. Install it there or set LLAMA_MODEL_PATH (or FIBERLINE_GGUF_PATH/GGUF_MODEL_URL)." >&2
     exit 1
   fi
 fi
@@ -41,8 +42,8 @@ fi
 
 MODEL_BYTES="$(wc -c < "$GGUF_SOURCE" | tr -d ' ')"
 MODEL_MIB="$((MODEL_BYTES / 1024 / 1024))"
-if (( MODEL_MIB < 300 || MODEL_MIB > 700 )); then
-  echo "Warning: model is ${MODEL_MIB} MiB; expected roughly 300–700 MiB for the intended small local model." >&2
+if (( MODEL_MIB < 800 || MODEL_MIB > 1300 )); then
+  echo "Warning: model is ${MODEL_MIB} MiB; expected roughly 800–1300 MiB for Qwen2.5-1.5B Q4_K_M; verify the selected asset." >&2
 fi
 if [[ -n "${GGUF_MODEL_SHA256:-}" ]]; then
   ACTUAL_SHA="$(sha256sum "$GGUF_SOURCE" | awk '{print $1}')"

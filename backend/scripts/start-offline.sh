@@ -3,19 +3,18 @@ set -euo pipefail
 
 BUNDLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLAMA_BIN="${LLAMA_SERVER_BIN:-$BUNDLE_ROOT/bin/llama-server}"
-MODEL_PATH="${LLAMA_MODEL_PATH:-}"
+MODEL_PATH="${LLAMA_MODEL_PATH:-$BUNDLE_ROOT/models/llm/model.gguf}"
 PORT="${LLAMA_PORT:-8080}"
 STARTUP_TIMEOUT="${LLAMA_STARTUP_TIMEOUT_MS:-180000}"
 LOG_DIR="${FIBERLINE_LOG_DIR:-$BUNDLE_ROOT/logs}"
 
 [[ -x "$LLAMA_BIN" ]] || { echo "llama-server binary not found: $LLAMA_BIN" >&2; exit 1; }
-[[ -n "$MODEL_PATH" ]] || { echo "Set LLAMA_MODEL_PATH to the GGUF selected after Phase 2 benchmark review." >&2; exit 2; }
 [[ -f "$MODEL_PATH" ]] || { echo "GGUF model not found: $MODEL_PATH" >&2; exit 1; }
-[[ -n "${LOCAL_LLM_MODEL:-}" ]] || { echo "Set LOCAL_LLM_MODEL to the reviewed model identifier." >&2; exit 2; }
+MODEL_ALIAS="$(node -e 'console.log(require(process.argv[1]).localModelName())' "$BUNDLE_ROOT/app/src/ai/localModelConfig.js")"
 
 export AI_PROVIDER=local
 export LOCAL_LLM_BASE_URL="${LOCAL_LLM_BASE_URL:-http://127.0.0.1:$PORT/v1}"
-export LOCAL_LLM_MODEL="${LOCAL_LLM_MODEL}"
+export LOCAL_LLM_MODEL="$MODEL_ALIAS"
 export DOC_INDEX_PATH="${DOC_INDEX_PATH:-$BUNDLE_ROOT/app/data/docs.sqlite}"
 export DOC_EMBEDDING_MODEL_ID="${DOC_EMBEDDING_MODEL_ID:-Xenova/all-MiniLM-L6-v2}"
 export DOC_EMBEDDING_OFFLINE=1
@@ -24,6 +23,7 @@ export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$BUNDLE_ROOT/models/transformer
 mkdir -p "$LOG_DIR"
 "$LLAMA_BIN" \
   --model "$MODEL_PATH" \
+  --alias "$MODEL_ALIAS" \
   --host 127.0.0.1 \
   --port "$PORT" \
   --threads "${LLAMA_THREADS:-2}" \

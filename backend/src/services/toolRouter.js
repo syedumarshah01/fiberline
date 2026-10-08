@@ -7,7 +7,7 @@ const {
 } = require('../ai/toolRouterSchema');
 const { createModelProviderFromEnv } = require('./modelProvider');
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
+const { DEFAULT_LOCAL_BASE_URL: DEFAULT_BASE_URL, localModelName } = require('../ai/localModelConfig');
 const DEFAULT_TIMEOUT_MS = 180000;
 const DEFAULT_NUM_THREADS = 4;
 const MAX_QUERY_LENGTH = 4000;
@@ -32,9 +32,11 @@ function config(env = process.env) {
   const timeout = Number(env.LLM_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const threadCount = Number(env.OLLAMA_NUM_THREADS || env.LLM_NUM_THREADS || DEFAULT_NUM_THREADS);
   return {
-    // Model selection is intentionally explicit until the Phase 2 benchmark is
-    // reviewed; an empty value must never fall back to an unapproved model.
-    model: env.TOOL_ROUTER_MODEL || env.LOCAL_LLM_MODEL || env.LLM_MODEL || '',
+    // GGUF selection applies to llama.cpp. An Ollama installation still needs
+    // its own explicit installed-model tag, not a GGUF filename alias.
+    model: usesOllamaTransport(env)
+      ? (env.TOOL_ROUTER_MODEL || env.LOCAL_LLM_MODEL || env.LLM_MODEL || '')
+      : localModelName(env),
     url: `${ollamaBase}/api/chat`,
     timeoutMs: Number.isFinite(timeout) ? Math.max(1000, timeout) : DEFAULT_TIMEOUT_MS,
     numThreads: Number.isFinite(threadCount) ? Math.max(1, Math.round(threadCount)) : DEFAULT_NUM_THREADS,
@@ -117,7 +119,7 @@ function parseCompatibleResponse(payload) {
 async function inferOllamaToolCall(query, { settings, fetchImpl, requestId }) {
   if (!settings.model) {
     throw routerError(
-      'No local tool-router model is configured. Select a model after reviewing the Phase 2 benchmark.',
+      'Set LLM_MODEL to an installed Ollama model tag; the selected GGUF default is for llama.cpp.',
       503,
       'TOOL_ROUTER_MODEL_NOT_CONFIGURED',
       { request_id: requestId },
@@ -182,23 +184,11 @@ async function inferCompatibleToolCall(query, {
   requestId,
 } = {}) {
   const selectedProvider = providerName(env);
-  if (
-    selectedProvider === 'local' &&
-    !suppliedProvider &&
-    !(env.TOOL_ROUTER_MODEL || env.LOCAL_LLM_MODEL || env.LLM_MODEL)
-  ) {
-    throw routerError(
-      'No local tool-router model is configured. Select a model after reviewing the Phase 2 benchmark.',
-      503,
-      'TOOL_ROUTER_MODEL_NOT_CONFIGURED',
-      { request_id: requestId },
-    );
-  }
   let provider = suppliedProvider;
   try {
     if (!provider) {
       const providerEnv = selectedProvider === 'local'
-        ? { ...env, LOCAL_LLM_MODEL: env.TOOL_ROUTER_MODEL || env.LOCAL_LLM_MODEL || env.LLM_MODEL }
+        ? { ...env, LOCAL_LLM_MODEL: localModelName(env) }
         : env;
       provider = createModelProviderFromEnv(providerEnv, { fetchImpl });
     }

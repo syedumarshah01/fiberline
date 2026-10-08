@@ -1,4 +1,4 @@
-const DEFAULT_LOCAL_BASE_URL = 'http://127.0.0.1:8080/v1';
+const { DEFAULT_LOCAL_BASE_URL, localModelName } = require('../ai/localModelConfig');
 const DEFAULT_CLOUD_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 
@@ -118,13 +118,7 @@ function createModelProviderFromEnv(env = process.env, options = {}) {
   const timeoutMs = Number(env.AI_REQUEST_TIMEOUT_MS || env.LLM_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS;
 
   if (provider === 'local') {
-    const model = env.LOCAL_LLM_MODEL || env.LLM_MODEL || '';
-    if (!model) {
-      throw new ModelProviderError(
-        'AI_PROVIDER=local requires a model selected after reviewing the Phase 2 benchmark',
-        { statusCode: 503 },
-      );
-    }
+    const model = localModelName(env);
     return new OpenAICompatibleProvider({
       baseUrl: env.LOCAL_LLM_BASE_URL || env.LLM_BASE_URL || DEFAULT_LOCAL_BASE_URL,
       model,
